@@ -6,6 +6,11 @@
 ## [Unreleased]
 
 ### Added
+- `trit-vcs handoff <提交id> --out <包>` 产出自带 `manifest.json` 的交接包：
+  commit/tree/parents、intent、claims、冲突面、diff、改动文件的文件映射与内容；
+  `trit-vcs handoff-verify <包>` 逐项重算，缺件/篡改/悬空引用一律判红。
+  测试 `tests/handoff_cli.rs` 6 条（含"删掉包里任意一个部件 ⇒ verify 必红"、语义篡改 diff、
+  悬空引用、根提交无父）；登记 5 条变异，本机 5/5 全抓。
 - `intent.accept` 变成可机器验证的判据，**默认关**：`preflight` / `admit --verify-accept --claims FILE`
   才执行；执行前必须 `gate::check` 判 `Allowed`（只跑在效认领范围内的改动）。
   命令按 argv 切分，含 shell 元字符（管道、重定向、`$`、`;`、`&`、反引号、括号）直接拒 ——

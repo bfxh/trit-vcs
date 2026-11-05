@@ -1205,5 +1205,50 @@
   "filter": "a_judgement_that_writes_the_repo_is_red",
   "pkg": "trit-vcs",
   "runner": "cargo"
- }
+ },
+{
+ "name": "vcs: handoff 篡改部件不校验 hash（verify 放行）",
+ "file": "src/handoff.rs",
+ "old": "        if actual != component.object {",
+ "new": "        if false {",
+ "filter": "handoff_verify_rejects_tampered_component",
+ "pkg": "trit-vcs",
+ "runner": "cargo"
+},
+{
+ "name": "vcs: handoff 缺件不判红（继续读文件）",
+ "file": "src/handoff.rs",
+ "old": "        if !path.is_file() {",
+ "new": "        if false {",
+ "filter": "handoff_round_trip_and_delete_each_component_is_red",
+ "pkg": "trit-vcs",
+ "runner": "cargo"
+},
+{
+ "name": "vcs: handoff 包 id 不校验（清单可改）",
+ "file": "src/handoff.rs",
+ "old": "    if expected_package.to_hex() != manifest.package_id {",
+ "new": "    if false {",
+ "filter": "handoff_verify_rejects_tampered_package_id",
+ "pkg": "trit-vcs",
+ "runner": "cargo"
+},
+{
+ "name": "vcs: handoff 悬空引用不判红（树引用缺对象也绿）",
+ "file": "src/handoff.rs",
+ "old": "        if !objects.contains_key(&id) {",
+ "new": "        if false {",
+ "filter": "handoff_verify_rejects_dangling_reference",
+ "pkg": "trit-vcs",
+ "runner": "cargo"
+},
+{
+ "name": "vcs: handoff diff 不看树（语义篡改也绿）",
+ "file": "src/handoff.rs",
+ "old": "    if changes != expected_changes {",
+ "new": "    if false {",
+ "filter": "handoff_verify_rejects_tampered_diff",
+ "pkg": "trit-vcs",
+ "runner": "cargo"
+}
 ]

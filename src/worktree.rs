@@ -7,14 +7,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::hash::Hash;
 use crate::repo::{Repo, RepoError};
 use crate::status_cache::{CachedFile, StatusCache};
 use crate::store::StoreError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Added,
@@ -22,7 +22,7 @@ pub enum Kind {
     Deleted,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Change {
     pub kind: Kind,
     pub path: String,

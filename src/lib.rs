@@ -23,6 +23,7 @@ pub mod chunk;
 pub mod delta;
 pub mod gate;
 pub mod git_bridge;
+pub mod handoff;
 pub mod hash;
 pub mod journal;
 pub mod mcp;

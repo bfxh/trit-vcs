@@ -19,6 +19,7 @@ mod bridge;
 mod central_sync;
 mod cli_args;
 mod cli_fail;
+mod handoff_cli;
 mod mcp_serve;
 mod query;
 mod transport;
@@ -51,6 +52,8 @@ fn usage() -> ExitCode {
          trit-vcs mcp [--repo PATH]\n  \
          trit-vcs git-import <git目录> [--map FILE] [--repo PATH]\n  \
          trit-vcs merge <ours提交> <theirs提交> [--base <提交>] [--json] [--repo PATH]\n  \
+         trit-vcs handoff <提交id> --out <包目录> [--repo PATH]\n  \
+         trit-vcs handoff-verify <包目录> [--repo PATH]\n  \
          trit-vcs status [--prefix DIR] [--json] [--budget N] [--repo PATH]\n  \
          trit-vcs checkout <提交id> [--prefix DIR] [--force] [--repo PATH]\n  \
          trit-vcs log [--json] [--budget N] [--tag T] [--evidence 文本] [--session S] [--grep 文本] [--repo PATH]\n  \
@@ -620,6 +623,20 @@ fn main() -> ExitCode {
                     }
                     ExitCode::SUCCESS
                 }
+                Err(err) => fail_err(&err, &root, "", &args),
+            }
+        }
+        "handoff" => {
+            let root = repo_path(&args);
+            match handoff_cli::handoff_cmd(&args) {
+                Ok(code) => code,
+                Err(err) => fail_err(&err, &root, "", &args),
+            }
+        }
+        "handoff-verify" => {
+            let root = repo_path(&args);
+            match handoff_cli::verify_cmd(&args) {
+                Ok(code) => code,
                 Err(err) => fail_err(&err, &root, "", &args),
             }
         }
