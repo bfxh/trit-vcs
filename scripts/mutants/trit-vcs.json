@@ -1142,5 +1142,68 @@
   "filter": "mcp_failures_carry_kind_and_next_steps",
   "pkg": "trit-vcs",
   "runner": "cargo"
+ },
+ {
+  "name": "vcs: accept 默认就开（不带开关也执行提交里的命令）",
+  "file": "src/bin/trit-vcs/accept_cli.rs",
+  "old": "pub(crate) fn enabled(args: &[String]) -> bool {\n    has(args, \"--verify-accept\")\n}",
+  "new": "pub(crate) fn enabled(args: &[String]) -> bool {\n    let _ = args;\n    true\n}",
+  "filter": "accept_is_off_by_default_and_failures_stop_the_preflight",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: accept 不看认领覆盖（陌生提交的命令照跑）",
+  "file": "src/bin/trit-vcs/accept_cli.rs",
+  "old": "    if !verdict.allowed() {",
+  "new": "    if false {",
+  "filter": "accept_refuses_to_run_without_claim_coverage",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: accept 不认 shell 元字符（判据当脚本跑）",
+  "file": "src/accept.rs",
+  "old": "command.chars().find(|c| is_shell_meta(*c))",
+  "new": "command.chars().find(|_| false)",
+  "filter": "accept_refuses_to_run_without_claim_coverage",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: accept 超时不杀（跑多久算多久）",
+  "file": "src/accept.rs",
+  "old": "        if started.elapsed() >= timeout {",
+  "new": "        if false {",
+  "filter": "accept_timeout_is_a_failure_not_a_skip",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: accept 输出里的密钥不打码",
+  "file": "src/accept.rs",
+  "old": "        out.push_str(prefix);\n        out.push_str(\"<已打码>\");",
+  "new": "        out.push_str(prefix);",
+  "filter": "secrets_are_masked_in_excerpts",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: accept 输出不截断（一把灌满上下文）",
+  "file": "src/accept.rs",
+  "old": "                if kept.len() < cap {\n                    let room = cap - kept.len();\n                    kept.extend_from_slice(&buf[..read.min(room)]);\n                }",
+  "new": "                kept.extend_from_slice(&buf[..read]);",
+  "filter": "output_is_capped_and_truncation_is_declared",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: accept 不查仓库有没有被写坏",
+  "file": "src/bin/trit-vcs/accept_cli.rs",
+  "old": "    let after = verify_fresh(repo)?;\n    if (before.events",
+  "new": "    let after = verify_fresh(repo)?;\n    if false && (before.events",
+  "filter": "a_judgement_that_writes_the_repo_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
  }
 ]
