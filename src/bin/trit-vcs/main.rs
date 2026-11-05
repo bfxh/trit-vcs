@@ -22,6 +22,7 @@ mod mcp_serve;
 mod query;
 mod transport;
 mod verdict;
+use verdict::{fail_err, fail_repo};
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -220,7 +221,7 @@ fn main() -> ExitCode {
                     println!("已初始化：{}", repo.root().join(".tritvcs").display());
                     ExitCode::SUCCESS
                 }
-                Err(err) => fail(err.to_string()),
+                Err(err) => fail_err(&err, &root, "", &args),
             }
         }
         "add" => {
@@ -244,7 +245,7 @@ fn main() -> ExitCode {
             }
             let mut repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             if targets.is_empty() {
                 eprintln!("add 需要至少一个路径");
@@ -266,7 +267,7 @@ fn main() -> ExitCode {
                     );
                     ExitCode::SUCCESS
                 }
-                Err(err) => fail(err.to_string()),
+                Err(err) => fail_err(&err, &root, "", &args),
             }
         }
         "commit" => {
@@ -281,7 +282,7 @@ fn main() -> ExitCode {
                 .map(|bytes| trit_vcs::Hash::of(bytes));
             let mut repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             if has(&args, "--dry-run") {
                 return verdict::preflight_run(&repo, &request, &args);
@@ -315,7 +316,7 @@ fn main() -> ExitCode {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             let Some(sep) = args.iter().position(|arg| arg == "--") else {
                 eprintln!("witness 需要 `-- <命令>`");
@@ -386,7 +387,7 @@ fn main() -> ExitCode {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             let ids = positionals(&args, &["--repo", "--witness"]);
             let Some(target) = ids.first() else {
@@ -418,7 +419,7 @@ fn main() -> ExitCode {
                     );
                     ExitCode::SUCCESS
                 }
-                Err(err) => fail(err.to_string()),
+                Err(err) => fail_err(&err, &root, "", &args),
             }
         }
         "export" => transport::export_cmd(&args),
@@ -431,7 +432,7 @@ fn main() -> ExitCode {
             };
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             verdict::preflight_run(&repo, &request, &args)
         }
@@ -444,7 +445,7 @@ fn main() -> ExitCode {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             let ids = positionals(&args, &["--repo", "--base"]);
             if ids.len() < 2 {
@@ -521,7 +522,7 @@ fn main() -> ExitCode {
                         ExitCode::FAILURE
                     }
                 }
-                Err(err) => fail(err.to_string()),
+                Err(err) => fail_err(&err, &root, "", &args),
             }
         }
         "where" => query::where_cmd(&args),
@@ -531,7 +532,7 @@ fn main() -> ExitCode {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             let filter = CommitFilter {
                 tag: flag(&args, "--tag").map(str::to_string),
@@ -541,7 +542,7 @@ fn main() -> ExitCode {
             };
             let log = match repo.query(&filter) {
                 Ok(log) => log,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_err(&err, &root, "", &args),
             };
             if has(&args, "--json") {
                 let rows: Vec<_> = log
@@ -595,7 +596,7 @@ fn main() -> ExitCode {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             let prefix = flag(&args, "--prefix").map(str::to_string);
             match worktree::status_scoped(&repo, prefix.as_deref()) {
@@ -624,14 +625,14 @@ fn main() -> ExitCode {
                     );
                     ExitCode::SUCCESS
                 }
-                Err(err) => fail(err.to_string()),
+                Err(err) => fail_err(&err, &root, "", &args),
             }
         }
         "checkout" => {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             let ids = positionals(&args, &["--repo", "--prefix"]);
             let Some(target) = ids.first() else {
@@ -653,14 +654,14 @@ fn main() -> ExitCode {
                     );
                     ExitCode::SUCCESS
                 }
-                Err(err) => fail(err.to_string()),
+                Err(err) => fail_err(&err, &root, "", &args),
             }
         }
         "diff" => {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             let ids: Vec<&str> = args
                 .iter()
@@ -689,14 +690,14 @@ fn main() -> ExitCode {
                     }
                     ExitCode::SUCCESS
                 }
-                Err(err) => fail(err.to_string()),
+                Err(err) => fail_err(&err, &root, "", &args),
             }
         }
         "verify" => {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             match repo.verify() {
                 Ok(report) => {
@@ -710,14 +711,14 @@ fn main() -> ExitCode {
                     );
                     ExitCode::SUCCESS
                 }
-                Err(err) => fail(err.to_string()),
+                Err(err) => fail_err(&err, &root, "", &args),
             }
         }
         "stats" => {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,
-                Err(err) => return fail(err.to_string()),
+                Err(err) => return fail_repo(&err, &root, "", &args),
             };
             match repo.store().stats() {
                 Ok(stats) => {
@@ -729,7 +730,7 @@ fn main() -> ExitCode {
                     );
                     ExitCode::SUCCESS
                 }
-                Err(err) => fail(err.to_string()),
+                Err(err) => fail_err(&err, &root, "", &args),
             }
         }
         "-h" | "--help" | "help" => usage(),

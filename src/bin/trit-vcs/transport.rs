@@ -6,13 +6,14 @@ use std::process::ExitCode;
 use trit_vcs::bundle;
 use trit_vcs::repo::Repo;
 
+use super::verdict::{fail_err, fail_repo};
 use super::{fail, flag, positionals, repo_path};
 
 pub(crate) fn export_cmd(args: &[String]) -> ExitCode {
     let root = repo_path(args);
     let repo = match Repo::open(&root) {
         Ok(repo) => repo,
-        Err(err) => return fail(err.to_string()),
+        Err(err) => return fail_repo(&err, &root, "", args),
     };
     let ids = positionals(args, &["--repo", "--out", "--dest", "--prefix"]);
     let Some(target) = ids.first() else {
@@ -29,7 +30,7 @@ pub(crate) fn export_cmd(args: &[String]) -> ExitCode {
     let dest = match flag(args, "--dest") {
         Some(path) => match Repo::open(path) {
             Ok(repo) => Some(repo),
-            Err(err) => return fail(err.to_string()),
+            Err(err) => return fail_repo(&err, std::path::Path::new(path), "", args),
         },
         None => None,
     };
@@ -65,7 +66,7 @@ pub(crate) fn export_cmd(args: &[String]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(err) => fail(err.to_string()),
+        Err(err) => fail_err(&err, &root, "", args),
     }
 }
 
@@ -73,7 +74,7 @@ pub(crate) fn import_cmd(args: &[String]) -> ExitCode {
     let root = repo_path(args);
     let repo = match Repo::open(&root) {
         Ok(repo) => repo,
-        Err(err) => return fail(err.to_string()),
+        Err(err) => return fail_repo(&err, &root, "", args),
     };
     let ids = positionals(args, &["--repo"]);
     let Some(path) = ids.first() else {
@@ -98,6 +99,6 @@ pub(crate) fn import_cmd(args: &[String]) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        Err(err) => fail(err.to_string()),
+        Err(err) => fail_err(&err, &root, "", args),
     }
 }

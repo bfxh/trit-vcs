@@ -141,6 +141,52 @@ fn publish_then_sparse_pull() {
         "失败要带 FAIL 前缀：{}",
         stderr(&blocked)
     );
+    assert!(
+        stderr(&blocked).contains("worktree_dirty"),
+        "工作树这张面的 kind 要出现在判决行上：{}",
+        stderr(&blocked)
+    );
+    assert!(
+        stderr(&blocked).contains("下一步 1."),
+        "挡住 pull 也得给能跑的下一步：{}",
+        stderr(&blocked)
+    );
+    let blocked_json = run(
+        &client,
+        &[
+            "pull",
+            "main",
+            "--central",
+            &central_text,
+            "--prefix",
+            "gen/d00",
+            "--json",
+        ],
+    );
+    let payload: serde_json::Value = serde_json::from_str(&stdout(&blocked_json))
+        .unwrap_or_else(|e| panic!("--json 失败时也要吐纯对象：{e}｜{}", stdout(&blocked_json)));
+    assert_eq!(payload["error"]["kind"], "worktree_dirty", "{payload}");
+    let steps = payload["remediation"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        steps.len() >= 3,
+        "status / commit / --force 三条都要给：{steps:?}"
+    );
+    assert!(
+        steps[0].as_str().unwrap_or_default().contains("status"),
+        "{steps:?}"
+    );
+    assert!(
+        steps
+            .last()
+            .unwrap()
+            .as_str()
+            .unwrap_or_default()
+            .contains("--force"),
+        "破坏性选项必须排最后：{steps:?}"
+    );
     assert_eq!(
         fs::read(client.join("gen/d00/f0.txt")).unwrap(),
         b"local edit\n"

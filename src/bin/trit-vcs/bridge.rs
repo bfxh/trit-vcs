@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use trit_vcs::git_bridge;
 use trit_vcs::repo::Repo;
 
+use super::verdict::{fail_err, fail_repo};
 use super::{fail, flag, positionals, repo_path};
 
 fn write_map(path: Option<&str>, rows: Vec<serde_json::Value>) -> Result<(), String> {
@@ -20,7 +21,7 @@ pub(crate) fn export_cmd(args: &[String]) -> ExitCode {
     let root = repo_path(args);
     let repo = match Repo::open(&root) {
         Ok(repo) => repo,
-        Err(err) => return fail(err.to_string()),
+        Err(err) => return fail_repo(&err, &root, "", args),
     };
     let ids = positionals(args, &["--repo", "--map"]);
     let Some(target) = ids.first() else {
@@ -43,7 +44,7 @@ pub(crate) fn export_cmd(args: &[String]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(err) => fail(err.to_string()),
+        Err(err) => fail_err(&err, &root, "", args),
     }
 }
 
@@ -51,7 +52,7 @@ pub(crate) fn import_cmd(args: &[String]) -> ExitCode {
     let root = repo_path(args);
     let mut repo = match Repo::open(&root) {
         Ok(repo) => repo,
-        Err(err) => return fail(err.to_string()),
+        Err(err) => return fail_repo(&err, &root, "", args),
     };
     let ids = positionals(args, &["--repo", "--map"]);
     let Some(target) = ids.first() else {
@@ -74,6 +75,6 @@ pub(crate) fn import_cmd(args: &[String]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(err) => fail(err.to_string()),
+        Err(err) => fail_err(&err, &root, "", args),
     }
 }

@@ -14,6 +14,13 @@ use std::path::Path;
 use crate::repo::RepoError;
 use crate::witness::WitnessError;
 
+mod faces;
+pub use faces::{
+    Remediable, commands_bundle, commands_central, commands_git, commands_merge, commands_store,
+    commands_worktree, explain_any, explain_json_any, kind_bundle, kind_central, kind_git,
+    kind_merge, kind_store, kind_worktree,
+};
+
 /// trit-vcs CLI 的真实调用前缀（在仓根跑）。
 pub const VCS: &str = "cargo run -p trit-vcs --";
 /// 跨智能体认领账本的入口（与库里的 `ClaimStore::gate` 读同一张表）。
@@ -32,7 +39,9 @@ pub struct Context<'a> {
 pub fn kind(err: &RepoError) -> &'static str {
     match err {
         RepoError::Io(_) => "io",
-        RepoError::Store(_) => "store",
+        // 对象库的六种坏法解锁动作不同 ⇒ 不再 lump 成一个 `store`（智能体按 kind 分支时
+        // "坏了"和"被人占着"必须是两个值，否则只能去抠文案）。
+        RepoError::Store(inner) => kind_store(inner),
         RepoError::Journal(_) => "journal",
         RepoError::NotInitialized(_) => "not_initialized",
         RepoError::NothingStaged => "nothing_staged",
@@ -95,7 +104,8 @@ pub fn commands(err: &RepoError, ctx: Context<'_>) -> Vec<String> {
         RepoError::UnknownCommit(id) => {
             vec![format!("{VCS} log --json --repo {repo}   # 里面没有 {id}")]
         }
-        RepoError::BadHead(_) | RepoError::Store(_) | RepoError::Journal(_) | RepoError::Io(_) => {
+        RepoError::Store(inner) => commands_store(inner, ctx),
+        RepoError::BadHead(_) | RepoError::Journal(_) | RepoError::Io(_) => {
             vec![
                 format!("{VCS} verify --repo {repo}"),
                 format!("{VCS} stats --repo {repo}"),

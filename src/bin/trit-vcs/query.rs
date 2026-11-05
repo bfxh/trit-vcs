@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use trit_vcs::repo::Repo;
 use trit_vcs::techmap::{Techmap, test_command};
 
+use super::verdict::fail_repo;
 use super::{fail, flag, has, positionals, repo_path, verdict};
 
 pub(crate) fn load_techmap(args: &[String]) -> Result<Techmap, String> {
@@ -78,7 +79,7 @@ pub(crate) fn explain_cmd(args: &[String]) -> ExitCode {
     let root = repo_path(args);
     let repo = match Repo::open(&root) {
         Ok(repo) => repo,
-        Err(err) => return fail(err.to_string()),
+        Err(err) => return fail_repo(&err, &root, "", args),
     };
     let ids = positionals(args, &["--repo", "--techmap"]);
     let Some(target) = ids.first() else {
@@ -90,7 +91,7 @@ pub(crate) fn explain_cmd(args: &[String]) -> ExitCode {
     };
     let commit = match repo.commit_at(&id) {
         Ok(commit) => commit,
-        Err(err) => return fail(err.to_string()),
+        Err(err) => return fail_repo(&err, &root, "", args),
     };
     let map = if flag(args, "--techmap").is_some() || std::env::var("TRIT_TECHMAP").is_ok() {
         match load_techmap(args) {

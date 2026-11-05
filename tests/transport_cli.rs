@@ -120,3 +120,41 @@ fn export_partial_import_and_resume() {
     );
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn importing_a_non_bundle_names_the_kind_and_next_step() {
+    let dir = temp("bad-magic");
+    let text = dir.display().to_string();
+    assert!(run(&dir, &["init"]).status.success(), "init 失败");
+    let bogus = dir.join("not-a-bundle.tvbd");
+    fs::write(&bogus, "NOT-A-TRITVCS-BUNDLE").unwrap();
+    let bogus_text = bogus.display().to_string();
+
+    let tried = run(&dir, &["import", &bogus_text, "--repo", &text]);
+    assert!(!tried.status.success(), "假包必须判失败");
+    assert!(
+        stderr(&tried).contains("bundle_bad_magic"),
+        "要说清是哪条判决：{}",
+        stderr(&tried)
+    );
+    assert!(
+        stderr(&tried).contains("下一步 1."),
+        "包这张面也要给能跑的下一步：{}",
+        stderr(&tried)
+    );
+
+    let json = run(&dir, &["import", &bogus_text, "--repo", &text, "--json"]);
+    let payload: serde_json::Value = serde_json::from_str(&stdout(&json))
+        .unwrap_or_else(|e| panic!("--json 失败时也要吐纯对象：{e}｜{}", stdout(&json)));
+    assert_eq!(payload["error"]["kind"], "bundle_bad_magic", "{payload}");
+    let steps = payload["remediation"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(!steps.is_empty(), "一条动作都没给：{steps:?}");
+    assert!(
+        steps[0].as_str().unwrap_or_default().contains("export"),
+        "重导一次是这条路的第一动作：{steps:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

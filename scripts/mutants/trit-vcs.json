@@ -785,7 +785,7 @@
  },
  {
   "name": "vcs: 撞车判决的 kind 改名（智能体按名字分支失效）",
-  "file": "src/remediation.rs",
+  "file": "src/remediation/mod.rs",
   "old": "        RepoError::Conflict { .. } => \"claim_conflict\",",
   "new": "        RepoError::Conflict { .. } => \"conflict\",",
   "filter": "rejection_ships_the_command_that_clears_it",
@@ -794,7 +794,7 @@
  },
  {
   "name": "vcs: 撞车时教智能体替别人撤销认领",
-  "file": "src/remediation.rs",
+  "file": "src/remediation/mod.rs",
   "old": "                    \"等 {other} 的认领到期再重来（别替它 release；能拆就先把触碰集拆到不相交）\"",
   "new": "                    \"{CLAIMS} release --who {other}\"",
   "filter": "conflict_names_the_other_side_but_never_tells_me_to_release_it",
@@ -861,6 +861,159 @@
   "old": "    .into_iter()\n    .map(with_budget)\n    .collect()",
   "new": "    .into_iter()\n    .collect()",
   "filter": "every_tool_advertises_budget_and_commit_advertises_dry_run",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 对象库的坏法又并回一个 store（六条判决没法分支）",
+  "file": "src/remediation/mod.rs",
+  "old": "        RepoError::Store(inner) => kind_store(inner),",
+  "new": "        RepoError::Store(_) => \"store\",",
+  "filter": "remediation::faces::tests::every_store_verdict_has_its_own_snake_case_kind",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: RepoError 套一层就不转命令了（退回两句老话）",
+  "file": "src/remediation/mod.rs",
+  "old": "        RepoError::Store(inner) => commands_store(inner, ctx),",
+  "new": "        RepoError::Store(_) => vec![\n            format!(\"{VCS} verify --repo {repo}\"),\n            format!(\"{VCS} stats --repo {repo}\"),\n        ],",
+  "filter": "remediation::faces::tests::every_store_verdict_has_its_own_snake_case_kind",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 库被占与对象缺失共用一个 kind",
+  "file": "src/remediation/faces.rs",
+  "old": "        StoreError::Locked(_) => \"store_locked\",",
+  "new": "        StoreError::Locked(_) => \"store\",",
+  "filter": "remediation::faces::tests::every_store_verdict_has_its_own_snake_case_kind",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 锁的下一步教我删掉别人的锁",
+  "file": "src/remediation/faces.rs",
+  "old": "            format!(\"等那个进程跑完再重来（锁文件 {lock} 是它正在写的证据，别删）\"),",
+  "new": "            format!(\"删掉 {lock} 再重来\"),",
+  "filter": "remediation::faces::tests::a_locked_store_never_tells_me_to_delete_someone_elses_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 重取对象不说明只补差异（听起来像整库重写）",
+  "file": "src/remediation/faces.rs",
+  "old": "        format!(\"{VCS} import <包文件> --repo {repo}   # 已有块会跳过，只补这一个\"),",
+  "new": "        format!(\"{VCS} import <包文件> --repo {repo}\"),",
+  "filter": "remediation::faces::tests::a_missing_object_is_refetched_from_a_peer_not_hand_edited",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 截断的包先教人整包重导（白丢续传这一条）",
+  "file": "src/remediation/faces.rs",
+  "old": "                \"{VCS} import <同一个包文件> --repo {repo}   # 断点续传：已有块跳过，接着补剩下的\"",
+  "new": "                \"{VCS} export <树id> --out <包文件> --repo <源仓>   # 整包重导一次\"",
+  "filter": "remediation::faces::tests::a_truncated_bundle_retries_import_before_reexporting",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 工作树脏了不点名条数与路径",
+  "file": "src/remediation/faces.rs",
+  "old": "                format!(\"{VCS} status --repo {repo}   # 这 {count} 条就是挡着的改动：{listed}\"),",
+  "new": "                format!(\"{VCS} status --repo {repo}\"),",
+  "filter": "remediation::faces::tests::worktree_dirty_orders_status_commit_then_force_last",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 覆盖性工作选项不再排在最后",
+  "file": "src/remediation/faces.rs",
+  "old": "                    \"{VCS} pull <ref> --central <仓目录> --repo {repo} --force   # 确定这些改动可以丢时才覆盖\"",
+  "new": "                    \"{VCS} pull <ref> --central <仓目录> --repo {repo}   # 确定这些改动可以丢时才覆盖\"",
+  "filter": "remediation::faces::tests::worktree_dirty_orders_status_commit_then_force_last",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 工作树面的 kind 退回成通用值",
+  "file": "src/remediation/faces.rs",
+  "old": "        WorktreeError::Dirty(..) => \"worktree_dirty\",",
+  "new": "        WorktreeError::Dirty(..) => \"dirty\",",
+  "filter": "remediation::faces::tests::worktree_dirty_orders_status_commit_then_force_last",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 中央仓的判决不转发（里面什么都看不出来）",
+  "file": "src/remediation/faces.rs",
+  "old": "        CentralError::Worktree(inner) => kind_worktree(inner),",
+  "new": "        CentralError::Worktree(_) => \"central\",",
+  "filter": "remediation::faces::tests::worktree_and_central_verdicts_delegate_to_the_layer_inside",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: git 桥红了不带回外部 stderr",
+  "file": "src/remediation/faces.rs",
+  "old": "                \"外部 git 在跑 `git {args}` 时红了：{stderr}   # 先确认这台机器上的 git 能跑：git --version\"",
+  "new": "                \"外部 git 跑红了   # 先确认这台机器上的 git 能跑：git --version\"",
+  "filter": "remediation::faces::tests::the_git_bridge_face_returns_the_external_failure_and_a_way_around_it",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: git 桥失败不指出原生包这条退路",
+  "file": "src/remediation/faces.rs",
+  "old": "                \"{VCS} export <树id> --out <包文件> --repo {repo}   # 只要传对象，用原生包这条路径不依赖 git\"",
+  "new": "                \"{VCS} verify --repo {repo}   # 只会让人再看一次库\"",
+  "filter": "remediation::faces::tests::the_git_bridge_face_returns_the_external_failure_and_a_way_around_it",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: git_command_failed 并成一个 git 值",
+  "file": "src/remediation/faces.rs",
+  "old": "        GitError::Git { .. } => \"git_command_failed\",",
+  "new": "        GitError::Git { .. } => \"git\",",
+  "filter": "remediation::faces::tests::the_git_bridge_face_returns_the_external_failure_and_a_way_around_it",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 空仓导出不给「先提交」这一步",
+  "file": "src/remediation/faces.rs",
+  "old": "                \"{VCS} add <文件或目录> --repo {repo}，然后 {VCS} commit --repo {repo} …   # 空仓没什么可导\"",
+  "new": "                \"{VCS} log --json --repo {repo}   # 只会让人再看一次空日志\"",
+  "filter": "remediation::faces::tests::the_git_bridge_face_returns_the_external_failure_and_a_way_around_it",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: JSON 出口的 kind 写死成 error（分支失效）",
+  "file": "src/remediation/faces.rs",
+  "old": "            \"kind\": err.kind(),",
+  "new": "            \"kind\": \"error\",",
+  "filter": "remediation::faces::tests::every_face_explains_with_kind_message_and_runnable_steps",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: CLI 的失败行不再带 kind（只能回去抠文案）",
+  "file": "src/bin/trit-vcs/verdict.rs",
+  "old": "    let mut line = format!(\"FAIL {err}（{}）\", err.kind());",
+  "new": "    let mut line = format!(\"FAIL {err}\");",
+  "filter": "publish_then_sparse_pull",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: --json 下的非 RepoError 失败不吐对象",
+  "file": "src/bin/trit-vcs/verdict.rs",
+  "old": "    if has(args, \"--json\") {\n        println!(\n            \"{}\",\n            serde_json::to_string_pretty(&remediation::explain_json_any(err, ctx))",
+  "new": "    if false {\n        println!(\n            \"{}\",\n            serde_json::to_string_pretty(&remediation::explain_json_any(err, ctx))",
+  "filter": "publish_then_sparse_pull",
   "pkg": "trit-vcs",
   "runner": "cargo"
  }
