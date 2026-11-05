@@ -146,17 +146,95 @@ fn ok_result(value: Value) -> Value {
     })
 }
 
-fn err_result(message: impl Into<String>) -> Value {
-    let text = message.into();
+/// MCP 工具面的一条失败：与 CLI 同形状 —— 档位 + 至少一条下一步。
+///
+/// 以前工具面返回 `String`：库层的 `WorktreeError` / `BundleError` 在 `map_err(|e| e.to_string())`
+/// 那里被抹平成一句话，智能体读到"某文件: 拒绝访问"既分不出是哪张面、也拿不到解锁命令。
+pub struct McpFail {
+    kind: String,
+    message: String,
+    next: Vec<String>,
+}
+
+impl McpFail {
+    pub fn new(kind: &str, message: impl Into<String>, next: Vec<String>) -> Self {
+        Self {
+            kind: kind.to_string(),
+            message: message.into(),
+            next,
+        }
+    }
+
+    /// 库层错误原样带上来：档位与下一步归 `crate::remediation` 决定，这里不复制规则。
+    pub fn from_error<E: remediation::Remediable + std::fmt::Display>(
+        err: &E,
+        ctx: Context<'_>,
+    ) -> Self {
+        Self {
+            kind: err.kind().to_string(),
+            message: err.to_string(),
+            next: err.commands(ctx),
+        }
+    }
+
+    pub fn local_io(path: &str, err: &std::io::Error) -> Self {
+        Self::new(
+            "mcp_local_io",
+            format!("{path}: {err}"),
+            vec![
+                format!("确认 {path} 可读写；换一个工作目录内的路径再试"),
+                "读不到的对象不做猜测：先 `verify` 看对象库本身有没有缺块".to_string(),
+            ],
+        )
+    }
+
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    pub fn next_steps(&self) -> &[String] {
+        &self.next
+    }
+}
+
+impl std::fmt::Display for McpFail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+fn err_result(fail: McpFail) -> Value {
+    let mut text = fail.message.clone();
+    for (index, command) in fail.next.iter().enumerate() {
+        text.push_str(&format!("\n  下一步 {}. {command}", index + 1));
+    }
     json!({
         "content": [{"type": "text", "text": text}],
         "isError": true,
-        "_meta": {"usage": {"bytes": text.len(), "tokens_est": estimate(&text)}},
+        "_meta": {
+            "kind": fail.kind,
+            "next_steps": fail.next,
+            "usage": {"bytes": text.len(), "tokens_est": estimate(&text)},
+        },
     })
 }
 
 fn arg<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
     args.get(name).and_then(Value::as_str)
+}
+
+/// 必填参数：缺了就判 `mcp_bad_args`，下一步直接说清这个工具要什么。
+fn need<'a>(args: &'a Value, name: &str) -> Result<&'a str, McpFail> {
+    arg(args, name).ok_or_else(|| {
+        McpFail::new(
+            "mcp_bad_args",
+            format!("缺少 {name}"),
+            vec![
+                format!("这个工具要 {name}；`tools/list` 里有 schema"),
+                "把上一轮成功调用的参数照抄再把这一项补上".to_string(),
+            ],
+        )
+    })
 }
 
 fn arg_strings(args: &Value, name: &str) -> Vec<String> {
@@ -172,18 +250,27 @@ fn arg_strings(args: &Value, name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn hex(value: &str, what: &str) -> Result<Hash, String> {
-    Hash::from_hex(value).ok_or_else(|| format!("{what} 不是合法 id：{value}"))
+fn hex(value: &str, what: &str) -> Result<Hash, McpFail> {
+    Hash::from_hex(value).ok_or_else(|| {
+        McpFail::new(
+            "mcp_bad_args",
+            format!("{what} 不是合法 id：{value}"),
+            vec!["先用 `log` 拿最近的提交 id（十六进制），再把同一条传回来".to_string()],
+        )
+    })
 }
 
-fn collect(root: &Path, targets: &[String]) -> Result<BTreeMap<String, Vec<u8>>, String> {
+fn collect(root: &Path, targets: &[String]) -> Result<BTreeMap<String, Vec<u8>>, McpFail> {
     let mut out = BTreeMap::new();
     let mut stack: Vec<std::path::PathBuf> =
         targets.iter().map(|target| root.join(target)).collect();
     while let Some(path) = stack.pop() {
         if path.is_dir() {
-            for entry in std::fs::read_dir(&path).map_err(|err| err.to_string())? {
-                let entry = entry.map_err(|err| err.to_string())?;
+            for entry in std::fs::read_dir(&path)
+                .map_err(|err| McpFail::local_io(&path.display().to_string(), &err))?
+            {
+                let entry =
+                    entry.map_err(|err| McpFail::local_io(&path.display().to_string(), &err))?;
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name == ".tritvcs" || name == ".git" {
                     continue;
@@ -193,23 +280,49 @@ fn collect(root: &Path, targets: &[String]) -> Result<BTreeMap<String, Vec<u8>>,
         } else if path.is_file() {
             let rel = path
                 .strip_prefix(root)
-                .map_err(|_| format!("不在仓库内：{}", path.display()))?
+                .map_err(|_| {
+                    McpFail::new(
+                        "mcp_path_outside_repo",
+                        format!("不在仓库内：{}", path.display()),
+                        vec![format!("用仓库根 `{}` 之下的相对路径", root.display())],
+                    )
+                })?
                 .to_string_lossy()
                 .replace('\\', "/");
-            out.insert(rel, std::fs::read(&path).map_err(|err| err.to_string())?);
+            out.insert(
+                rel,
+                std::fs::read(&path)
+                    .map_err(|err| McpFail::local_io(&path.display().to_string(), &err))?,
+            );
         } else {
-            return Err(format!("找不到：{}", path.display()));
+            return Err(McpFail::new(
+                "mcp_path_missing",
+                format!("找不到：{}", path.display()),
+                vec!["路径是相对仓库根的；目录会递归展开（`.tritvcs` 与 `.git` 跳过）".to_string()],
+            ));
         }
     }
     Ok(out)
 }
 
-fn techmap(args: &Value) -> Result<Techmap, String> {
+fn techmap(args: &Value) -> Result<Techmap, McpFail> {
     let path = arg(args, "techmap")
         .map(str::to_string)
         .or_else(|| std::env::var("TRIT_TECHMAP").ok())
-        .ok_or_else(|| "需要 techmap 路径".to_string())?;
-    Techmap::load(&path).map_err(|err| format!("{path}: {err}"))
+        .ok_or_else(|| {
+            McpFail::new(
+                "mcp_bad_args",
+                "需要 techmap 路径",
+                vec!["给 techmap 参数（或设 TRIT_TECHMAP）指向索引文件".to_string()],
+            )
+        })?;
+    Techmap::load(&path).map_err(|err| {
+        McpFail::new(
+            "mcp_techmap_unreadable",
+            format!("{path}: {err}"),
+            vec!["确认这个文件是 techmap 导出的 JSON（不是仓库自己的对象库）".to_string()],
+        )
+    })
 }
 
 /// MCP 服务状态：持有一个打开的仓库。
@@ -265,7 +378,7 @@ impl Mcp {
                         }
                         ok_result(value)
                     }
-                    Err(message) => err_result(message),
+                    Err(fail) => err_result(fail),
                 };
                 Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
             }
@@ -276,11 +389,18 @@ impl Mcp {
         }
     }
 
-    fn call(&mut self, name: &str, args: &Value) -> Result<Value, String> {
+    fn ctx(&self) -> Context<'_> {
+        Context {
+            dir: self.repo.root(),
+            session: "",
+        }
+    }
+
+    fn call(&mut self, name: &str, args: &Value) -> Result<Value, McpFail> {
         match name {
             "status" => {
-                let (changes, stats) =
-                    worktree::status_with_cache(&self.repo).map_err(|err| err.to_string())?;
+                let (changes, stats) = worktree::status_with_cache(&self.repo)
+                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
                 Ok(json!({
                     "changes": changes,
                     "hashed": stats.hashed,
@@ -302,7 +422,7 @@ impl Mcp {
                 let rows: Vec<Value> = self
                     .repo
                     .query(&filter)
-                    .map_err(|err| err.to_string())?
+                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?
                     .into_iter()
                     .take(limit)
                     .map(|(id, commit)| {
@@ -322,8 +442,11 @@ impl Mcp {
                 Ok(json!({"commits": rows, "count": rows.len()}))
             }
             "explain" => {
-                let id = hex(arg(args, "commit").ok_or("缺少 commit")?, "commit")?;
-                let commit = self.repo.commit_at(&id).map_err(|err| err.to_string())?;
+                let id = hex(need(args, "commit")?, "commit")?;
+                let commit = self
+                    .repo
+                    .commit_at(&id)
+                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
                 let map = techmap(args)?;
                 let entries = map.for_tags(&commit.tags);
                 let mut tests = std::collections::BTreeSet::new();
@@ -349,26 +472,30 @@ impl Mcp {
             "add" => {
                 let paths = arg_strings(args, "paths");
                 if paths.is_empty() {
-                    return Err("paths 不能为空".to_string());
+                    return Err(McpFail::new(
+                        "mcp_bad_args",
+                        "paths 不能为空",
+                        vec!["至少要给一个相对仓库根的路径（目录会递归展开）".to_string()],
+                    ));
                 }
                 let files = collect(self.repo.root(), &paths)?;
                 let (tree, put) = self
                     .repo
                     .stage(&files, now_secs())
-                    .map_err(|err| err.to_string())?;
+                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
                 Ok(json!({
                     "tree": tree.to_hex(), "files": files.len(),
                     "new_chunks": put.new_chunks, "reused_chunks": put.reused_chunks,
                 }))
             }
             "commit" => {
-                let message = arg(args, "message").ok_or("缺少 message")?;
-                let session = arg(args, "session").ok_or("缺少 session")?;
+                let message = need(args, "message")?;
+                let session = need(args, "session")?;
                 let intent =
                     arg(args, "goal").map(|goal| Intent::new(goal, arg_strings(args, "accept")));
                 let witness = match arg(args, "witness_path") {
                     Some(path) => {
-                        Some(std::fs::read(path).map_err(|err| format!("{path}: {err}"))?)
+                        Some(std::fs::read(path).map_err(|err| McpFail::local_io(path, &err))?)
                     }
                     None => None,
                 };
@@ -387,9 +514,6 @@ impl Mcp {
                     parent_override: None,
                     now_secs: now_secs(),
                 };
-                // 目录先拷出来：解释错误时只需要字符串，不能占着 self 的不可变借用
-                let dir = self.repo.root().to_path_buf();
-                let where_ctx = || Context { dir: &dir, session };
                 // 判决段与 commit() 同源（preflight::decide），所以 dry_run 说放行就真放行
                 if args
                     .get("dry_run")
@@ -400,31 +524,31 @@ impl Mcp {
                         Ok(facts) => {
                             Ok(json!({"dry_run": true, "verdict": facts.verdict, "facts": facts}))
                         }
-                        Err(err) => Err(remediation::explain(&err, where_ctx())),
+                        Err(err) => Err(McpFail::from_error(&err, self.ctx())),
                     };
                 }
                 let outcome = self
                     .repo
                     .commit(request)
-                    .map_err(|err| remediation::explain(&err, where_ctx()))?;
+                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
                 Ok(json!({"id": outcome.id.to_hex(), "verdict": outcome.verdict.label()}))
             }
             "diff" => {
-                let from = hex(arg(args, "from").ok_or("缺少 from")?, "from")?;
-                let to = hex(arg(args, "to").ok_or("缺少 to")?, "to")?;
-                let changes =
-                    worktree::diff(&self.repo, &from, &to).map_err(|err| err.to_string())?;
+                let from = hex(need(args, "from")?, "from")?;
+                let to = hex(need(args, "to")?, "to")?;
+                let changes = worktree::diff(&self.repo, &from, &to)
+                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
                 Ok(json!({"changes": changes}))
             }
             "merge" => {
-                let ours = hex(arg(args, "ours").ok_or("缺少 ours")?, "ours")?;
-                let theirs = hex(arg(args, "theirs").ok_or("缺少 theirs")?, "theirs")?;
+                let ours = hex(need(args, "ours")?, "ours")?;
+                let theirs = hex(need(args, "theirs")?, "theirs")?;
                 let base = match arg(args, "base") {
                     Some(value) => Some(hex(value, "base")?),
                     None => None,
                 };
                 let outcome = merge::merge(&self.repo, &ours, &theirs, base.as_ref())
-                    .map_err(|err| err.to_string())?;
+                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
                 let conflicts: Vec<Value> = outcome
                     .conflicts
                     .iter()
@@ -443,14 +567,20 @@ impl Mcp {
                 }))
             }
             "admit" => {
-                let id = hex(arg(args, "commit").ok_or("缺少 commit")?, "commit")?;
-                let path = arg(args, "witness_path").ok_or("缺少 witness_path")?;
-                let bytes = std::fs::read(path).map_err(|err| format!("{path}: {err}"))?;
+                let id = hex(need(args, "commit")?, "commit")?;
+                let path = need(args, "witness_path")?;
+                let bytes = std::fs::read(path).map_err(|err| McpFail::local_io(path, &err))?;
                 let witness = self
                     .repo
                     .admit(&id, &bytes)
-                    .map_err(|err| err.to_string())?;
-                let subject_tree = witness.subject_tree().map_err(|err| err.to_string())?;
+                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
+                let subject_tree = witness.subject_tree().map_err(|err| {
+                    McpFail::new(
+                        "mcp_witness_shape",
+                        err.to_string(),
+                        vec!["见证文件要用 `witness` 导出的那份；重跑一次再传回来".to_string()],
+                    )
+                })?;
                 Ok(json!({
                     "admitted": true,
                     "tree": subject_tree.to_hex(),
@@ -459,14 +589,16 @@ impl Mcp {
                 }))
             }
             "bundle_export" => {
-                let tree = hex(arg(args, "tree").ok_or("缺少 tree")?, "tree")?;
-                let out_path = arg(args, "out").ok_or("缺少 out")?;
+                let tree = hex(need(args, "tree")?, "tree")?;
+                let out_path = need(args, "out")?;
                 let dest = match arg(args, "dest") {
-                    Some(path) => Some(Repo::open(path).map_err(|err| err.to_string())?),
+                    Some(path) => Some(
+                        Repo::open(path).map_err(|err| McpFail::from_error(&err, self.ctx()))?,
+                    ),
                     None => None,
                 };
-                let mut file =
-                    std::fs::File::create(out_path).map_err(|err| format!("{out_path}: {err}"))?;
+                let mut file = std::fs::File::create(out_path)
+                    .map_err(|err| McpFail::local_io(out_path, &err))?;
                 let stats = bundle::export(
                     self.repo.store(),
                     tree,
@@ -474,7 +606,7 @@ impl Mcp {
                     dest.as_ref().map(|repo| repo.store()),
                     &mut file,
                 )
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
                 Ok(json!({
                     "files": stats.files, "objects": stats.objects,
                     "sent_objects": stats.sent_objects,
@@ -482,10 +614,11 @@ impl Mcp {
                 }))
             }
             "bundle_import" => {
-                let path = arg(args, "bundle").ok_or("缺少 bundle")?;
-                let mut file = std::fs::File::open(path).map_err(|err| format!("{path}: {err}"))?;
-                let stats =
-                    bundle::import(self.repo.store(), &mut file).map_err(|err| err.to_string())?;
+                let path = need(args, "bundle")?;
+                let mut file =
+                    std::fs::File::open(path).map_err(|err| McpFail::local_io(path, &err))?;
+                let stats = bundle::import(self.repo.store(), &mut file)
+                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
                 Ok(json!({
                     "received": stats.received, "skipped": stats.skipped,
                     "bytes": stats.bytes,
@@ -493,13 +626,13 @@ impl Mcp {
                 }))
             }
             "where" => {
-                let needle = arg(args, "needle").ok_or("缺少 needle")?;
+                let needle = need(args, "needle")?;
                 let map = techmap(args)?;
                 let hits = map.where_entries(needle);
                 Ok(json!({"entries": hits, "count": hits.len()}))
             }
             "tests" => {
-                let needle = arg(args, "needle").ok_or("缺少 needle")?;
+                let needle = need(args, "needle")?;
                 let map = techmap(args)?;
                 let mut seen = std::collections::BTreeSet::new();
                 for entry in map.where_entries(needle) {
@@ -510,14 +643,21 @@ impl Mcp {
                 Ok(json!({"commands": seen.into_iter().collect::<Vec<_>>()}))
             }
             "verify" => {
-                let report = self.repo.verify().map_err(|err| err.to_string())?;
+                let report = self
+                    .repo
+                    .verify()
+                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
                 Ok(json!({
                     "events": report.events, "objects": report.objects,
                     "commits": report.commits, "witnessed": report.witnessed,
                     "head": report.head,
                 }))
             }
-            other => Err(format!("未知工具：{other}")),
+            other => Err(McpFail::new(
+                "mcp_unknown_tool",
+                format!("未知工具：{other}"),
+                vec!["`tools/list` 看可用工具与它们的 schema".to_string()],
+            )),
         }
     }
 }

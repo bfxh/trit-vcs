@@ -1088,5 +1088,59 @@
   "filter": "every_cli_failure_names_its_kind_and_next_step",
   "pkg": "trit-vcs",
   "runner": "cargo"
+ },
+ {
+  "name": "vcs: MCP 失败不再报档位（智能体只能抠文案）",
+  "file": "src/mcp.rs",
+  "old": "            \"kind\": fail.kind,",
+  "new": "            \"kind\": \"\",",
+  "filter": "mcp_failures_carry_kind_and_next_steps",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: MCP 失败不再给下一步",
+  "file": "src/mcp.rs",
+  "old": "            \"next_steps\": fail.next,",
+  "new": "            \"next_steps\": Vec::<String>::new(),",
+  "filter": "mcp_failures_carry_kind_and_next_steps",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: MCP 正文里不写编号命令（只看 content 的客户端拿不到动作）",
+  "file": "src/mcp.rs",
+  "old": "        text.push_str(&format!(\"\\n  下一步 {}. {command}\", index + 1));",
+  "new": "        let _ = (index, command);",
+  "filter": "mcp_failures_carry_kind_and_next_steps",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: MCP 透传库层错误时改掉档位（两份规则分叉）",
+  "file": "src/mcp.rs",
+  "old": "            kind: err.kind().to_string(),",
+  "new": "            kind: \"mcp_bad_args\".to_string(),",
+  "filter": "mcp_failures_carry_kind_and_next_steps",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: MCP 透传库层错误时丢掉解锁命令",
+  "file": "src/mcp.rs",
+  "old": "            next: err.commands(ctx),",
+  "new": "            next: Vec::new(),",
+  "filter": "mcp_failures_carry_kind_and_next_steps",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: MCP 本地文件失败混成别的档（按档分支会分错）",
+  "file": "src/mcp.rs",
+  "old": "            \"mcp_local_io\",",
+  "new": "            \"mcp_bad_args\",",
+  "filter": "mcp_failures_carry_kind_and_next_steps",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
  }
 ]

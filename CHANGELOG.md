@@ -11,6 +11,12 @@
   库层错误由 `CliFail::Repo` **原样透传**（档位与下一步仍归 `src/remediation` 那一份决定，CLI 不重讲规则）。
   新测试 `tests/cli_fail_kinds.rs` 钉的是形状而不是条数：FAIL 行必须以 `（档位）` 收尾、且至少一条 `下一步 1.`；
   登记 8 条变异（本机复跑 8/8 全抓、存活 0）。
+- MCP 工具面的失败也带档位与下一步：`McpFail` 有 `mcp_bad_args` / `mcp_unknown_tool` / `mcp_path_missing` /
+  `mcp_path_outside_repo` / `mcp_local_io` / `mcp_techmap_unreadable` / `mcp_witness_shape` 七档，
+  库层错误经 `from_error` **原样透传**；`_meta.kind` 与 `_meta.next_steps` 可分支，正文里也带编号命令
+  （只看 `content` 的客户端同样能用）。工具面里 `.map_err(|err| err.to_string())` 清零：
+  13 处库层错误透传、7 处本地 IO、14 个必填参数统一走 `need()`。
+  新测试 `tests/mcp_fail_kinds.rs`（7 条失败形状 + 正例反证），登记 6 条变异，本机 6/6 全抓。
 - 旧仓的四道门搬进本仓并改成认"一 crate 在根"的布局：`module_budget.py`（800 行上帝模块棘轮）、
   `test_surface.py`（自测面防空转）、`docs_hygiene.py`（CHANGELOG 形状 + 盘符路径棘轮）、
   `ci_integrity.py`（workflow ↔ `required-checks.txt` ↔ GitHub 保护规则三方对账）。
