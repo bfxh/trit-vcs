@@ -44,8 +44,9 @@ cargo test -p trit-vcs                                             # 12 个测�
 python scripts/mutation_check.py --pkg trit-vcs                    # 96 条：95 断言抓住 + 1 条声明的死循环
 ```
 
-最后一条要在单体仓 `bfxh/trit` 里跑（`scripts/` 还没随拆分搬走）。变异登记的口径：
-每条 = 一个单点文本改动 + 点名的那条测试；测试必须变红，否则算存活。
+最后一条在本仓就能跑（`scripts/mutation_check.py` + `scripts/mutants/` 已随拆分一起搬过来，
+路径口径改成新仓根：`src/…`）。门自身的自测面在镜像仓会 SKIP 掉只对单体仓成立的 7 条夹具，并大声打 SKIP。
+变异登记的口径：每条 = 一个单点文本改动 + 点名的那条测试；测试必须变红，否则算存活。
 
 ## 库面
 
@@ -61,6 +62,18 @@ python scripts/mutation_check.py --pkg trit-vcs                    # 96 条：95
 | `gate` / `witness` / `model` | 认领门（三态判决 + `ClaimSpec`）、提交见证（in-toto 形状，v0 不签名）、`Commit`/`HLC`/`Intent` |
 | `worktree` / `merge` / `delta` | 扫描与稀疏物化、行级三路合并、前后缀 delta |
 | `git_bridge` / `techmap` / `status_cache` / `mcp` | Git 双向桥、技术标签索引、status 缓存、13 个工具的 stdio JSON-RPC |
+
+## 这仓是怎么来的 / 依赖边界
+
+从单体仓 `bfxh/trit` 的 `crates/trit-vcs` 用 `git subtree split` 搬出，**带着原来的提交历史**
+（12 笔，从 M1 到写前预检那片）。三值裁决层 `trit-core` 与编排内核 `trit-orch` 不进这仓，
+按 `Cargo.toml` 里的 `rev` 固定 pin 到 `bfxh/trit` —— 复制进来就等于把"哪个是正本"问错了对象。
+改 pin 必须是一笔看得见的提交，不许跟着别人的 main 漂。
+
+- 本机跑 `cargo` 需要一次性口径 `CARGO_NET_GIT_FETCH_WITH_CLI=true`（本机的全局 git 配置把
+  `https://github.com/` 改写成 SSH 且挂着死代理；GitHub Actions 的默认 runner 没这个问题）。
+- `scripts/agent_claims.py` 的认领表在单体仓里跟着 `trit-orch` 的测试夹具走；这仓用同名的
+  `fixtures/claim_gate_cases.json` 兜住，Python 侧与 Rust 侧的语义对拍仍以 `bfxh/trit` 为准。
 
 ## 踩过的坑（留在仓里，免得再踩）
 

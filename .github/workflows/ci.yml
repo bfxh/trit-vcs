@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # 内部依赖（trit-core / trit-orch）是 bfxh/trit 的 git pin：actions 的默认 runner 直连 GitHub，
+  # 不需要本机那套 insteadOf/代理口径。
+  TMPDIR: /tmp
+
+jobs:
+  check:
+    name: fmt + clippy + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace --locked
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - run: cargo test --workspace --locked
+
+  mutation:
+    name: mutation gate (changed crates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # 全量跑：库面 96 条 + 门自身 16 条 + 认领账本 39 条（登记表在 scripts/mutants/）。
+      # 判红口径：存活、编译红假杀、超时、无输出都算红；声明了 hang_secs 的死循环单列不计入抓住。
+      - name: gate self-test
+        run: python scripts/mutation_check.py --self-test
+      - name: mutation
+        run: python scripts/mutation_check.py --pkg trit-vcs --pkg scripts/mutation_check.py --pkg scripts/agent_claims.py
+
+  claims:
+    name: claims self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/agent_claims.py --self-test
