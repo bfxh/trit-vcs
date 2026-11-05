@@ -320,20 +320,25 @@ def self_test() -> int:
          "files": 1, "next": ["gh pr merge 2 --auto"]},
         {"number": 3, "problems": [], "tier": "L2", "state": "跑着", "title": "", "author": "",
          "files": 1, "next": ["不用盯"]},
+        {"number": 4, "problems": ["挡着一条"], "tier": "L2", "state": "全绿", "title": "", "author": "",
+         "files": 1, "next": ["要人拍板"]},
+        {"number": 5, "problems": [], "tier": "L1", "state": "冲突", "title": "", "author": "",
+         "files": 1, "next": ["作者自己修"]},
     ]
     ordered = order(rows)
-    check("要人拍板的排最前", ordered[0]["number"], 1)
-    check("全绿的排最后", ordered[-1]["number"], 2)
+    check("排序逐位固定：欠人看的先于机器的事", [row["number"] for row in ordered], [1, 4, 5, 3, 2])
+    check("要人拍板的一律排在最前（哪怕它 CI 全绿）",
+          [bool(row["problems"]) for row in ordered], [True, True, False, False, False])
     text = summarize(ordered)
-    check("汇总里三个数都对", ("要你拍板 1" in text, "可直接合 1" in text, "自己的事 1" in text), (True, True, True))
-    check("表格不为空", render(ordered, True).count("\n") >= 3, True)
+    check("汇总里三个数都对", ("要你拍板 2" in text, "可直接合 1" in text, "自己的事 2" in text), (True, True, True))
+    check("表格不为空", render(ordered, True).count(chr(10)) >= 7, True)
 
     # 五、origin 样式：本机 origin 是 scp 写法，认不出就等于工具在自己机器上不能用
     check("scp 样式认得出", repo_from_url("git@github.com:bfxh/trit-vcs.git"), "bfxh/trit-vcs")
     check("https 样式认得出", repo_from_url("https://github.com/bfxh/trit-vcs.git"), "bfxh/trit-vcs")
     check("非 github 地址不硬猜", repo_from_url("file:///E:/KF/trit-parity"), "")
 
-    # 六、分级表不许串仓用（拿 A 仓的规则判 B 仓 = 看着像判过的假结论）
+    # 六、分级表不许串仓用（拿 A 仓的规则判 B 仓 = 一眼看不出的假判定）
     check("判别仓且没给策略 ⇒ 跳过分级", skip_grading("bfxh/trit", "bfxh/trit-vcs", False), True)
     check("判本仓 ⇒ 不跳过", skip_grading("bfxh/trit-vcs", "bfxh/trit-vcs", False), False)
     check("没给仓库名（判本 checkout）⇒ 不跳过", skip_grading("", "bfxh/trit-vcs", False), False)
