@@ -25,5 +25,32 @@
   "pkg": "scripts/ci_integrity.py",
   "filter": "",
   "runner": "python"
+ },
+ {
+  "name": "ci-integrity: 认不出仓也照样核对（等于拿别的仓凑）",
+  "file": "scripts/ci_integrity.py",
+  "old": "    if not repo:",
+  "new": "    if False:",
+  "pkg": "scripts/ci_integrity.py",
+  "filter": "",
+  "runner": "python"
+ },
+ {
+  "name": "ci-integrity: 读不到保护当核对过（没核对冒充核对）",
+  "file": "scripts/ci_integrity.py",
+  "old": "    if remote is None:",
+  "new": "    if False:",
+  "pkg": "scripts/ci_integrity.py",
+  "filter": "",
+  "runner": "python"
+ },
+ {
+  "name": "ci-integrity: 认仓不再走 repo_triage 那份实现（分叉开始）",
+  "file": "scripts/ci_integrity.py",
+  "old": "    return load_triage().repo_from_url(url)",
+  "new": "    return url",
+  "pkg": "scripts/ci_integrity.py",
+  "filter": "",
+  "runner": "python"
  }
 ]

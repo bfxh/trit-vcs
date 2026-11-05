@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import pathlib
 import re
@@ -129,6 +130,30 @@ def read_required(root: pathlib.Path) -> list[str]:
     ]
 
 
+def current_repo() -> str:
+    """从 origin 认本仓是谁。
+
+    旧版把默认仓写死成 `bfxh/trit` ⇒ 搬到独立仓后它去核对**别人**的保护规则，
+    还照样打印"通过"：这是最坏的一种绿（判据跑在错对象上）。认不出就返回空，由调用方判红。"""
+    done = subprocess.run(["git", "remote", "get-url", "origin"], cwd=ROOT,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return repo_from_url((done.stdout or "").strip())
+
+
+def load_triage():
+    """按路径加载 repo_triage —— 与它加载 change_policy 同一条理由：同一判据只准有一份实现。"""
+    path = ROOT / "scripts" / "repo_triage.py"
+    spec = importlib.util.spec_from_file_location("repo_triage", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def repo_from_url(url: str) -> str:
+    """认仓库名用 repo_triage 那份：scp 样式与 https 样式都要认，两份拷贝迟早分叉。"""
+    return load_triage().repo_from_url(url)
+
+
 def remote_required(repo: str) -> list[str] | None:
     result = subprocess.run(
         ["gh", "api", f"repos/{repo}/branches/main/protection/required_status_checks"],
@@ -146,6 +171,17 @@ def remote_required(repo: str) -> list[str] | None:
         return json.loads(result.stdout).get("contexts", [])
     except json.JSONDecodeError:
         return None
+
+
+def remote_guard(repo: str, remote: list[str] | None) -> str:
+    """`--remote` 的两道 fail-loud：认不出本仓是谁、读不到保护。返回空串才放行核对结果。
+
+    "没核对成功"不等于"核对过"：旧版在独立仓里拿写死的默认仓去比保护规则，比完照样打印通过。"""
+    if not repo:
+        return "FAIL --remote 要知道核对哪个仓，而 origin 不是 github 地址 ⇒ 不猜默认仓"
+    if remote is None:
+        return f"FAIL 读不到 {repo} 的分支保护（gh 没登录或没权限）⇒ 没核对不等于核对过"
+    return ""
 
 
 def self_test() -> int:
@@ -189,6 +225,25 @@ def self_test() -> int:
     drift = validate(jobs, good, remote=good[:-1] + ["stale-name"])
     check("远端漂移判红", bool(drift), True)
 
+    # 认仓：判据跑在错对象上是最坏的一种绿（照样打印"通过"）
+    check("scp 样式的 origin 认得出", repo_from_url("git@github.com:bfxh/trit-vcs.git"), "bfxh/trit-vcs")
+    check("https 样式的 origin 认得出", repo_from_url("https://github.com/bfxh/trit-vcs.git"), "bfxh/trit-vcs")
+    check("不带 .git 后缀也要认得出", repo_from_url("https://github.com/bfxh/trit-vcs"), "bfxh/trit-vcs")
+    check("ssh:// 带斜杠的形式认得出（段首斜杠要切掉）",
+          repo_from_url("ssh://git@github.com/bfxh/trit-vcs.git"), "bfxh/trit-vcs")
+    check("冒号后接斜杠的 scp 变体也要切掉段首斜杠",
+          repo_from_url("git@github.com:/bfxh/trit-vcs.git"), "bfxh/trit-vcs")
+    check("结尾多一个斜杠也要切掉", repo_from_url("https://github.com/bfxh/trit-vcs/"), "bfxh/trit-vcs")
+    check("别的托管站认不出（不许当成 github 仓）", repo_from_url("https://gitlab.com/bfxh/trit-vcs.git"), "")
+    check("本地路径当 origin 要返回空", repo_from_url("/srv/git/trit-vcs.git"), "")
+    check("别人 fork 的 owner 要照实认（不许顶成 bfxh）",
+          repo_from_url("git@github.com:someone/trit-vcs.git"), "someone/trit-vcs")
+    check("认不出仓时 --remote 要出声", remote_guard("", ["a"]) != "", True)
+    check("读不到保护时 --remote 要出声", remote_guard("bfxh/trit-vcs", None) != "", True)
+    check("认得出仓且读到保护时放行", remote_guard("bfxh/trit-vcs", ["a"]), "")
+    check("保护规则存在但是空列表要交给核对判红（不许当成没读到）",
+          remote_guard("bfxh/trit-vcs", []), "")
+
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         (root / WORKFLOWS).mkdir(parents=True)
@@ -218,12 +273,19 @@ def main(argv: list[str]) -> int:
     root = ROOT
     if "--root" in argv:
         root = pathlib.Path(argv[argv.index("--root") + 1]).resolve()
-    repo = argv[argv.index("--repo") + 1] if "--repo" in argv else "bfxh/trit"
+    repo = argv[argv.index("--repo") + 1] if "--repo" in argv else current_repo()
     required = read_required(root)
     if not required:
         print(f"{REQUIRED_FILE} 为空或不存在 ⇒ 判红（否则这层等于没开）")
         return 1
-    problems = validate(parse_workflows(root), required, remote_required(repo) if "--remote" in argv else None)
+    remote = None
+    if "--remote" in argv:
+        remote = remote_required(repo) if repo else None
+        problem = remote_guard(repo, remote)
+        if problem:
+            print(problem)
+            return 2
+    problems = validate(parse_workflows(root), required, remote)
     if problems:
         print(f"CI 完整性失败（{len(problems)} 项）：")
         for problem in problems:

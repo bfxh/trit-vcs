@@ -6,11 +6,20 @@
 ## [Unreleased]
 
 ### Added
+- 旧仓的四道门搬进本仓并改成认"一 crate 在根"的布局：`module_budget.py`（800 行上帝模块棘轮）、
+  `test_surface.py`（自测面防空转）、`docs_hygiene.py`（CHANGELOG 形状 + 盘符路径棘轮）、
+  `ci_integrity.py`（workflow ↔ `required-checks.txt` ↔ GitHub 保护规则三方对账）。
+  四道门共登记 32 条变异；搬运那轮 gates 面全量 101 条 ⇒ 99 断言抓住 + 2 崩溃抓住、存活 0。
+  随后给 `ci_integrity`（+3）与 `repo_triage`（+2）补了认仓的刀，两道面复跑 6/6、8/8 全抓（gates 面现共 106 条）。
 - 治理面三件套（PR #3，squash `1ba95c3`）：`scripts/change_policy.py` 改动分级门（L0–L3 + 冻结契约行 +
   台账只防改薄）、`scripts/repo_triage.py` PR 分诊台、CI 并发取消 + 变异门按面并行。
   自测 28/28 与 22/22；两道新门登记 17 条变异，复跑全抓。
 
 ### Changed
+- `ci_integrity.py` 不再把默认仓写死成 `bfxh/trit`：搬仓后它拿别人仓的保护规则比对完照样打印"通过"，
+  这是最坏的一种绿（判据跑在错对象上）。现在认不出 origin、或读不到保护 ⇒ rc=2 出声；
+  认仓只留 `repo_triage.py` 一份实现，`--self-test` 从 14 条涨到 27 条；顺带收掉 `repo_from_url`
+  里两道斜杠兜底（留一道 —— 留两道时另一道就是杀不死的等价变异，实测 SURVIVED 过）。
 - 变异门目标采集从 workflow 内联抽成 `scripts/mutation_targets.sh`，并加"改了库面却零目标 ⇒ 判红"的防空跑一步。
 
 ## [0.12.0] - 2026-11-06
