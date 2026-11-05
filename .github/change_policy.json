@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "note": "改动面分级：AI 该不该自己拍板，由这张表判，不靠人记。规则实现见 scripts/change_policy.py。",
+  "approve_label": "approved:contract",
+  "big_diff_label": "approved:big-diff",
+  "tiers": [
+    {
+      "tier": "L3",
+      "paths": ["src/bundle.rs", "src/journal.rs", "src/model.rs"],
+      "why": "对外格式（包/哈希链/提交对象形状）：改了别人的旧包与旧提交就读不动，必须人拍板。变异台账另算 —— 只有删条目要人批。"
+    },
+    {
+      "tier": "L2",
+      "paths": ["src/**", "tests/**", "examples/**", "Cargo.toml", "Cargo.lock"],
+      "why": "产品代码与其测试：AI 可以改，但必须带证据（测试改动 + 读数 + 新判定登记变异）。"
+    },
+    {
+      "tier": "L1",
+      "paths": [".github/**", "scripts/**"],
+      "why": "CI/CD 与门脚本：鼓励 AI 自己动 —— 但门脚本必须有 --self-test，且改动要能被变异门杀到。"
+    },
+    {
+      "tier": "L0",
+      "paths": ["**/*.md", "docs/**"],
+      "why": "文档：最低门，机器只查形状。"
+    }
+  ],
+  "frozen_markers": [
+    {
+      "path": "src/bundle.rs",
+      "why": "TVBD 包的 magic 与 schema：中央仓、镜像、别人的旧包都按这两行解读",
+      "must_contain": ["pub const MAGIC: &[u8; 4] = b\"TVBD\";", "pub const SCHEMA: u32 = 1;"]
+    },
+    {
+      "path": "src/journal.rs",
+      "why": "哈希链的证据字段：去掉 prev 就不是「改分支留痕」，审计面整个失效",
+      "must_contain": ["pub prev: Option<Hash>,"]
+    },
+    {
+      "path": "src/model.rs",
+      "why": "提交对象的 schema 号：它被写进别人的仓与包，改号 = 历史读不动",
+      "must_contain": ["pub const COMMIT_SCHEMA: u32 = 1;"]
+    },
+    {
+      "path": "Cargo.toml",
+      "why": "MSRV 与依赖正本（trit-core/trit-orch 的 pin rev）：换 pin 就是换语义来源",
+      "must_contain": ["rust-version = \"1.88\"", "rev = \"2400fb9d2de751cab358455e3bf622b7a3288f1c\""]
+    }
+  ],
+  "limits": {"max_l2_files": 25, "max_added_lines": 2500},
+  "test_evidence": {
+    "watch": ["src/"],
+    "test_paths": ["tests/"],
+    "escape": "NO-TEST-NEEDED:"
+  }
+}

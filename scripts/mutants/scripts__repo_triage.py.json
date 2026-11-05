@@ -1,0 +1,56 @@
+[
+ {
+  "name": "repo-triage: 跨仓也硬分级（拿本仓的表判别仓）",
+  "file": "scripts/repo_triage.py",
+  "old": "    if policy_given or not repo:",
+  "new": "    if True:",
+  "filter": "",
+  "pkg": "scripts/repo_triage.py",
+  "runner": "python"
+ },
+ {
+  "name": "repo-triage: 仓名不一致也照样判（串表变成常态）",
+  "file": "scripts/repo_triage.py",
+  "old": "    return repo != (local_repo or \"\")",
+  "new": "    return False",
+  "filter": "",
+  "pkg": "scripts/repo_triage.py",
+  "runner": "python"
+ },
+ {
+  "name": "repo-triage: 要人拍板的不再排前面（分诊等于没分）",
+  "file": "scripts/repo_triage.py",
+  "old": "    needs_human = 0 if row[\"problems\"] else 1",
+  "new": "    needs_human = 1",
+  "filter": "",
+  "pkg": "scripts/repo_triage.py",
+  "runner": "python"
+ },
+ {
+  "name": "repo-triage: 挡着的规则不打印（只给一句 gh pr merge）",
+  "file": "scripts/repo_triage.py",
+  "old": "    if problems:",
+  "new": "    if False:",
+  "filter": "",
+  "pkg": "scripts/repo_triage.py",
+  "runner": "python"
+ },
+ {
+  "name": "repo-triage: 汇总里「要人拍板」永远 0（看着没事）",
+  "file": "scripts/repo_triage.py",
+  "old": "    human = sum(1 for row in rows if row[\"problems\"])",
+  "new": "    human = 0",
+  "filter": "",
+  "pkg": "scripts/repo_triage.py",
+  "runner": "python"
+ },
+ {
+  "name": "repo-triage: scp 样式的 origin 认不出（本机直接不可用）",
+  "file": "scripts/repo_triage.py",
+  "old": "    for marker in (\"github.com:\", \"github.com/\"):",
+  "new": "    for marker in (\"github.com/\",):",
+  "filter": "",
+  "pkg": "scripts/repo_triage.py",
+  "runner": "python"
+ }
+]

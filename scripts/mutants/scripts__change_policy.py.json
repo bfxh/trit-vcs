@@ -1,0 +1,101 @@
+[
+ {
+  "name": "change-policy: 没匹配到任何档时免检（保守落 L1 被改掉）",
+  "file": "scripts/change_policy.py",
+  "old": "    return \"L1\"",
+  "new": "    return \"L0\"",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ },
+ {
+  "name": "change-policy: 最高档不取最严（L3 被降级）",
+  "file": "scripts/change_policy.py",
+  "old": "    if ranks.get(current, 99) < ranks.get(worst, 99):",
+  "new": "    if False:",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ },
+ {
+  "name": "change-policy: 策略形状不对也放行（没规则=允许一切）",
+  "file": "scripts/change_policy.py",
+  "old": "    if not isinstance(data.get(\"tiers\"), list) or not data.get(\"frozen_markers\"):",
+  "new": "    if False:",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ },
+ {
+  "name": "change-policy: 空改动也走一遍判定（噪声把真问题挤掉）",
+  "file": "scripts/change_policy.py",
+  "old": "    if not files:\n        notes.append(\"",
+  "new": "    if False:\n        notes.append(\"",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ },
+ {
+  "name": "change-policy: 人批不再算数（有标签也判红）",
+  "file": "scripts/change_policy.py",
+  "old": "        if approve in labels:",
+  "new": "        if False:",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ },
+ {
+  "name": "change-policy: 新增 #[test] 不算测试证据（逼人去动 tests/）",
+  "file": "scripts/change_policy.py",
+  "old": "        has_new_test = any(\"#[test]\" in line or \"#[tokio::test]\" in line for line in added)",
+  "new": "        has_new_test = False",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ },
+ {
+  "name": "change-policy: 改产品代码不带测试不再拦（L2 证据门失效）",
+  "file": "scripts/change_policy.py",
+  "old": "        if not (has_test_file or has_new_test or escape in body):",
+  "new": "        if False:",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ },
+ {
+  "name": "change-policy: L2 文件数上限不生效",
+  "file": "scripts/change_policy.py",
+  "old": "    if max_files and len(l2) > max_files and big_ok not in labels:",
+  "new": "    if False:",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ },
+ {
+  "name": "change-policy: 新增行数上限不生效",
+  "file": "scripts/change_policy.py",
+  "old": "    if max_lines and len(added) > max_lines and big_ok not in labels:",
+  "new": "    if False:",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ },
+ {
+  "name": "change-policy: 冻结行没了也不说（契约门变哑）",
+  "file": "scripts/change_policy.py",
+  "old": "            if marker not in text:",
+  "new": "            if False:",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ },
+ {
+  "name": "change-policy: 台账 JSON 坏了就数 0 条（看不见删除）",
+  "file": "scripts/change_policy.py",
+  "old": "    return text.count('\"name\":')",
+  "new": "    return 0",
+  "filter": "",
+  "pkg": "scripts/change_policy.py",
+  "runner": "python"
+ }
+]
