@@ -6,6 +6,14 @@
 ## [Unreleased]
 
 ### Added
+- `intent.accept` 变成可机器验证的判据，**默认关**：`preflight` / `admit --verify-accept --claims FILE`
+  才执行；执行前必须 `gate::check` 判 `Allowed`（只跑在效认领范围内的改动）。
+  命令按 argv 切分，含 shell 元字符（管道、重定向、`$`、`;`、`&`、反引号、括号）直接拒 ——
+  `sh -c` 会把提交内容变成任意脚本；
+  单条超时默认 60 s，超时杀进程（Windows `taskkill /T`）且算**没通过**；输出留 2 KB 摘要并给常见 token 前缀打码；
+  跑之前后各开一次新句柄体检，仓库被写坏（对象/事件/HEAD 变了）⇒ `accept_mutated_repo`。
+  `src/accept.rs` 6 条单测 + `tests/accept_cli.rs` 3 条端到端（含"没给认领表 / 认领没覆盖 / 含元字符 ⇒
+  一次都没执行"的 canary 证明，用会落盘的 `init --repo` 当探针而不是读文案）；登记 7 条变异，本机 7/7 全抓。
 - CLI 层自己的失败也带上档位与下一步：`cli_usage` / `cli_local_io` / `cli_claims_unreadable` /
   `cli_path_missing` / `cli_path_outside_repo` / `cli_index_bad_tree` / `cli_techmap_unreadable` 七档；
   库层错误由 `CliFail::Repo` **原样透传**（档位与下一步仍归 `src/remediation` 那一份决定，CLI 不重讲规则）。

@@ -16,6 +16,7 @@
 //!
 //! 合并、Git 兼容桥在 M4–M6；没做的维度不在这里宣称。
 
+pub mod accept;
 pub mod bundle;
 pub mod central;
 pub mod chunk;

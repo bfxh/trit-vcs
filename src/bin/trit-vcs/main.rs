@@ -14,6 +14,7 @@ use trit_vcs::repo::Repo;
 use trit_vcs::witness::{RunOutput, Witness};
 use trit_vcs::worktree;
 
+mod accept_cli;
 mod bridge;
 mod central_sync;
 mod cli_args;
@@ -39,9 +40,9 @@ fn usage() -> ExitCode {
          trit-vcs add <文件>... [--repo PATH]\n  \
          trit-vcs commit -m <说明> --owner <宿主:会话id> [--claims FILE] [--evidence 文本]... \n                   \
          [--tag 标签]... [--witness FILE] [--goal 目标] [--accept 判据]... [--allow-unclaimed] [--dry-run] [--json] [--repo PATH]\n  \
-         trit-vcs preflight -m <说明> --owner <宿主:会话id> [同 commit 的参数] [--budget N] [--json] [--repo PATH]\n  \
+         trit-vcs preflight -m <说明> --owner <宿主:会话id> [同 commit 的参数] [--budget N] [--json] [--repo PATH]\n   [--verify-accept --claims FILE [--accept-timeout 秒]]\
          trit-vcs witness [--out FILE] [--repo PATH] -- <命令>...\n  \
-         trit-vcs admit <提交id> --witness FILE [--repo PATH]\n  \
+         trit-vcs admit <提交id> --witness FILE [--repo PATH]\n   [--verify-accept --claims FILE]\
          trit-vcs export <树id> --out FILE [--prefix DIR] [--dest REPO] [--repo SRC]\n  \
          trit-vcs import <包文件> [--repo DEST]\n  \
          trit-vcs publish <ref> --central PATH [--commit ID] [--force] [--repo SRC]\n  \
@@ -306,6 +307,20 @@ fn main() -> ExitCode {
                 Ok(bytes) => bytes,
                 Err(err) => return fail(format!("{path}: {err}")),
             };
+            let commit = match repo.commit_at(&id) {
+                Ok(commit) => commit,
+                Err(err) => return fail_err(&err, &root, "", &args),
+            };
+            if let Err(err) = accept_cli::verify(
+                &repo,
+                commit.intent.as_ref(),
+                &commit.tree,
+                commit.parents.first(),
+                &commit.session,
+                &args,
+            ) {
+                return fail_err(&err, &root, &commit.session, &args);
+            }
             match repo.admit(&id, &bytes) {
                 Ok(witness) => {
                     println!(
@@ -335,6 +350,20 @@ fn main() -> ExitCode {
                 Ok(repo) => repo,
                 Err(err) => return fail_repo(&err, &root, "", &args),
             };
+            let (tree, base) = match current_tree(&repo) {
+                Ok(pair) => pair,
+                Err(err) => return fail_err(&err, &root, "", &args),
+            };
+            if let Err(err) = accept_cli::verify(
+                &repo,
+                request.intent.as_ref(),
+                &tree,
+                base.as_ref(),
+                &request.session,
+                &args,
+            ) {
+                return fail_err(&err, &root, &request.session, &args);
+            }
             verdict::preflight_run(&repo, &request, &args)
         }
         "publish" => central_sync::publish_cmd(&args),
