@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::Value;
-use trit_vcs::remediation::{self, Context};
+use trit_vcs::remediation::{self, Context, Remediable};
 use trit_vcs::repo::{CommitRequest, Repo, RepoError};
 use trit_vcs::tokens;
 
@@ -41,9 +41,17 @@ pub(crate) fn print_json(value: Value, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// 判决类失败：除了 `FAIL <原因>`，还把可直接执行的下一步编号打出来。
-/// `--json` 时 stdout 是一个对象（`kind` 可分支），stderr 仍带 FAIL 前缀。
-pub(crate) fn fail_repo(err: &RepoError, dir: &Path, session: &str, args: &[String]) -> ExitCode {
+/// 判决类失败的通用出口：适用于对象库 / 包 / 工作树 / 中央仓这四张面（不止 RepoError）。
+///
+/// 输出形状与 `fail_repo` 完全一致：stderr 是 `FAIL <原判据>（kind）` + 编号的下一步，
+/// `--json` 时 stdout 是一个对象（`kind` 可分支）。以前这些面只能 `fail(err.to_string())`，
+/// 智能体读到的是一句话 —— 那句话在四张面上各有不同的解锁动作，等于没给。
+pub(crate) fn fail_err<E: Remediable + std::fmt::Display>(
+    err: &E,
+    dir: &Path,
+    session: &str,
+    args: &[String],
+) -> ExitCode {
     let ctx = Context {
         dir,
         session: if session.is_empty() {
@@ -55,16 +63,22 @@ pub(crate) fn fail_repo(err: &RepoError, dir: &Path, session: &str, args: &[Stri
     if has(args, "--json") {
         println!(
             "{}",
-            serde_json::to_string_pretty(&remediation::explain_json(err, ctx))
+            serde_json::to_string_pretty(&remediation::explain_json_any(err, ctx))
                 .unwrap_or_else(|_| "{}".to_string())
         );
     }
-    let mut line = format!("FAIL {}", err);
-    for (index, command) in remediation::commands(err, ctx).iter().enumerate() {
+    let mut line = format!("FAIL {err}（{}）", err.kind());
+    for (index, command) in err.commands(ctx).iter().enumerate() {
         line.push_str(&format!("\n  下一步 {}. {}", index + 1, command));
     }
     eprintln!("{line}");
     ExitCode::FAILURE
+}
+
+/// 判决类失败：除了 `FAIL <原因>`，还把可直接执行的下一步编号打出来。
+/// `--json` 时 stdout 是一个对象（`kind` 可分支），stderr 仍带 FAIL 前缀。
+pub(crate) fn fail_repo(err: &RepoError, dir: &Path, session: &str, args: &[String]) -> ExitCode {
+    fail_err(err, dir, session, args)
 }
 
 /// `preflight` 与 `commit --dry-run` 的公共实现：跑 `Repo::preflight`（与提交同一条判决）。

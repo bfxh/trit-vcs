@@ -7,13 +7,14 @@ use serde_json::json;
 use trit_vcs::mcp::Mcp;
 use trit_vcs::repo::Repo;
 
+use super::verdict::fail_repo;
 use super::{fail, repo_path};
 
 pub(crate) fn serve_cmd(args: &[String]) -> ExitCode {
     let root = repo_path(args);
     let repo = match Repo::open(&root) {
         Ok(repo) => repo,
-        Err(err) => return fail(err.to_string()),
+        Err(err) => return fail_repo(&err, &root, "", args),
     };
     let mut server = Mcp::new(repo);
     let stdin = std::io::stdin();

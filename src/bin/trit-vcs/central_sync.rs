@@ -5,11 +5,16 @@ use std::process::ExitCode;
 use trit_vcs::central;
 use trit_vcs::repo::Repo;
 
+use super::verdict::{fail_err, fail_repo};
 use super::{fail, flag, has, positionals, repo_path};
 
 /// 两侧都允许"目录还不存在"：`init` 对已有仓是幂等的，等于 open-or-create。
-fn repo_at(path: impl Into<std::path::PathBuf>) -> Result<Repo, ExitCode> {
-    Repo::init(path).map_err(|err| fail(err.to_string()))
+///
+/// 失败要带上上下文目录与 `args`：这条路径是"指错仓"最常见的落点，只回一句 `io: ...`
+/// 等于让智能体再猜一次参数（哪个目录不是仓？加 `--repo` 还是路径打错了？）。
+fn repo_at(path: impl Into<std::path::PathBuf>, args: &[String]) -> Result<Repo, ExitCode> {
+    let dir = path.into();
+    Repo::init(&dir).map_err(|err| fail_repo(&err, &dir, "", args))
 }
 
 pub(crate) fn publish_cmd(args: &[String]) -> ExitCode {
@@ -22,11 +27,11 @@ pub(crate) fn publish_cmd(args: &[String]) -> ExitCode {
         eprintln!("publish 需要 --central PATH");
         return ExitCode::from(2);
     };
-    let client = match repo_at(repo_path(args)) {
+    let client = match repo_at(repo_path(args), args) {
         Ok(repo) => repo,
         Err(code) => return code,
     };
-    let mut central_repo = match repo_at(central_path) {
+    let mut central_repo = match repo_at(central_path, args) {
         Ok(repo) => repo,
         Err(code) => return code,
     };
@@ -55,7 +60,7 @@ pub(crate) fn publish_cmd(args: &[String]) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        Err(err) => fail(err.to_string()),
+        Err(err) => fail_err(&err, client.root(), "", args),
     }
 }
 
@@ -69,13 +74,13 @@ pub(crate) fn pull_cmd(args: &[String]) -> ExitCode {
         eprintln!("pull 需要 --central PATH");
         return ExitCode::from(2);
     };
-    let mut client = match repo_at(repo_path(args)) {
+    let mut client = match repo_at(repo_path(args), args) {
         Ok(repo) => repo,
         Err(code) => return code,
     };
     let central_repo = match Repo::open(central_path) {
         Ok(repo) => repo,
-        Err(err) => return fail(err.to_string()),
+        Err(err) => return fail_repo(&err, std::path::Path::new(central_path), "", args),
     };
     let prefix = flag(args, "--prefix");
     match central::pull(
@@ -100,6 +105,6 @@ pub(crate) fn pull_cmd(args: &[String]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(err) => fail(err.to_string()),
+        Err(err) => fail_err(&err, client.root(), "", args),
     }
 }
