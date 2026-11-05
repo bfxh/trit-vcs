@@ -8,15 +8,30 @@ use std::process::ExitCode;
 use trit_vcs::repo::Repo;
 use trit_vcs::techmap::{Techmap, test_command};
 
-use super::verdict::fail_repo;
+use super::cli_fail::CliFail;
+use super::verdict::{fail_err, fail_repo};
 use super::{fail, flag, has, positionals, repo_path, verdict};
 
-pub(crate) fn load_techmap(args: &[String]) -> Result<Techmap, String> {
+pub(crate) fn load_techmap(args: &[String]) -> Result<Techmap, CliFail> {
     let path = flag(args, "--techmap")
         .map(|value| value.to_string())
         .or_else(|| std::env::var("TRIT_TECHMAP").ok())
-        .ok_or_else(|| "需要 --techmap FILE（或环境变量 TRIT_TECHMAP）".to_string())?;
-    Techmap::load(&path).map_err(|err| format!("{path}: {err}"))
+        .ok_or_else(|| {
+            CliFail::usage(
+                "需要 --techmap FILE（或环境变量 TRIT_TECHMAP）",
+                ["trit-vcs where <路径/测试/标签> --techmap TECHMAP.json".to_string()],
+            )
+        })?;
+    Techmap::load(&path).map_err(|err| {
+        CliFail::new(
+            "cli_techmap_unreadable",
+            format!("{path}: {err}"),
+            [
+                "确认这个索引文件是 techmap 导出的 JSON（不是仓库自己的对象库）".to_string(),
+                "索引重建后逐条核对：`trit-vcs explain <提交id> --techmap <FILE>` 只看一条，别整表读".to_string(),
+            ],
+        )
+    })
 }
 
 pub(crate) fn where_cmd(args: &[String]) -> ExitCode {
@@ -27,7 +42,7 @@ pub(crate) fn where_cmd(args: &[String]) -> ExitCode {
     };
     let map = match load_techmap(args) {
         Ok(map) => map,
-        Err(err) => return fail(err),
+        Err(err) => return fail_err(&err, &repo_path(args), "", args),
     };
     let hits = map.where_entries(needle);
     if hits.is_empty() {
@@ -58,7 +73,7 @@ pub(crate) fn tests_cmd(args: &[String]) -> ExitCode {
     };
     let map = match load_techmap(args) {
         Ok(map) => map,
-        Err(err) => return fail(err),
+        Err(err) => return fail_err(&err, &repo_path(args), "", args),
     };
     let mut seen = BTreeSet::new();
     for entry in map.where_entries(needle) {
@@ -96,7 +111,7 @@ pub(crate) fn explain_cmd(args: &[String]) -> ExitCode {
     let map = if flag(args, "--techmap").is_some() || std::env::var("TRIT_TECHMAP").is_ok() {
         match load_techmap(args) {
             Ok(map) => Some(map),
-            Err(err) => return fail(err),
+            Err(err) => return fail_err(&err, &root, "", args),
         }
     } else {
         None

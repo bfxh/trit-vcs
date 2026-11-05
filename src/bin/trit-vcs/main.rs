@@ -3,25 +3,26 @@
 //! 默认行为就是产品立场：**没有在效认领覆盖的提交会被拒绝**；要放行必须显式
 //! `--allow-unclaimed`，并会被记进哈希链（不是静默）。
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use trit_vcs::gate::{ClaimSpec, Verdict, load_claims};
+use trit_vcs::gate::Verdict;
 use trit_vcs::merge;
-use trit_vcs::model::Intent;
 use trit_vcs::repo::CommitFilter;
-use trit_vcs::repo::{CommitRequest, Repo};
+use trit_vcs::repo::Repo;
 use trit_vcs::witness::{RunOutput, Witness};
 use trit_vcs::worktree;
 
 mod bridge;
 mod central_sync;
+mod cli_args;
+mod cli_fail;
 mod mcp_serve;
 mod query;
 mod transport;
 mod verdict;
+use cli_args::{collect, commit_request, current_tree};
 use verdict::{fail_err, fail_repo};
 
 fn now_secs() -> u64 {
@@ -108,106 +109,6 @@ fn positionals(args: &[String], flags_with_value: &[&str]) -> Vec<String> {
     out
 }
 
-/// 从参数造提交请求：`commit` 与 `preflight` 共用，保证预检看的和真提交要的是同一份输入。
-fn commit_request(args: &[String]) -> Result<CommitRequest, String> {
-    let message = flag(args, "-m")
-        .or_else(|| flag(args, "--message"))
-        .ok_or("commit/preflight 需要 -m <说明>")?;
-    let owner = flag(args, "--owner").ok_or("commit/preflight 需要 --owner <宿主:会话id>")?;
-    let claims: Vec<ClaimSpec> = match flag(args, "--claims") {
-        Some(path) => load_claims(Path::new(path))?,
-        None => Vec::new(),
-    };
-    let witness = match flag(args, "--witness") {
-        Some(path) => Some(std::fs::read(path).map_err(|err| format!("{path}: {err}"))?),
-        None => None,
-    };
-    let accept = flags(args, "--accept");
-    let intent = match flag(args, "--goal") {
-        Some(goal) => Some(Intent::new(goal, accept)),
-        None if !accept.is_empty() => {
-            return Err("--accept 需要同时给 --goal".to_string());
-        }
-        None => None,
-    };
-    Ok(CommitRequest {
-        message: message.to_string(),
-        session: owner.to_string(),
-        claims,
-        evidence: flags(args, "--evidence"),
-        tags: flags(args, "--tag"),
-        allow_unclaimed: has(args, "--allow-unclaimed"),
-        witness,
-        intent,
-        parent_override: None,
-        now_secs: now_secs(),
-    })
-}
-
-/// 见证对象：优先暂存区（尚未提交的树），否则 HEAD 的树。
-fn current_tree(repo: &Repo) -> Result<(trit_vcs::Hash, Option<trit_vcs::Hash>), String> {
-    let base = repo.head().map_err(|e| e.to_string())?;
-    let base_tree = match base {
-        Some(id) => Some(repo.commit_at(&id).map_err(|e| e.to_string())?.tree),
-        None => None,
-    };
-    let tree = match repo.index().map_err(|e| e.to_string())? {
-        Some(index) => trit_vcs::Hash::from_hex(&index.tree)
-            .ok_or_else(|| format!("index 里的树 id 非法：{}", index.tree))?,
-        None => base_tree.ok_or("仓库里既没有暂存区也没有提交；先 add 或 commit")?,
-    };
-    Ok((tree, base_tree))
-}
-
-/// 收集要暂存的文件：路径相对仓库根，目录会递归展开（跳过 `.tritvcs` 与 `.git`）。
-fn collect(root: &Path, targets: &[String]) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    let mut out = BTreeMap::new();
-    let mut push = |path: &Path| -> Result<(), String> {
-        let rel = path
-            .strip_prefix(root)
-            .map_err(|_| format!("不在仓库内：{}", path.display()))?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        out.insert(rel, bytes);
-        Ok(())
-    };
-    for target in targets {
-        let path = root.join(target);
-        if path.is_dir() {
-            for entry in walk(&path).map_err(|e| e.to_string())? {
-                push(&entry)?;
-            }
-        } else if path.is_file() {
-            push(&path)?;
-        } else {
-            return Err(format!("找不到：{}", path.display()));
-        }
-    }
-    Ok(out)
-}
-
-fn walk(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        for entry in std::fs::read_dir(current)? {
-            let path = entry?.path();
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == ".tritvcs" || name == ".git" {
-                continue;
-            }
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first().cloned() else {
@@ -253,7 +154,7 @@ fn main() -> ExitCode {
             }
             let files = match collect(&root, &targets) {
                 Ok(files) => files,
-                Err(err) => return fail(err),
+                Err(err) => return fail_err(&err, &root, "", &args),
             };
             match repo.stage(&files, now_secs()) {
                 Ok((tree, put)) => {
@@ -274,7 +175,7 @@ fn main() -> ExitCode {
             let root = repo_path(&args);
             let request = match commit_request(&args) {
                 Ok(request) => request,
-                Err(err) => return fail(err),
+                Err(err) => return fail_err(&err, &root, "", &args),
             };
             let witness_digest = request
                 .witness
@@ -329,7 +230,7 @@ fn main() -> ExitCode {
             }
             let (tree, base) = match current_tree(&repo) {
                 Ok(pair) => pair,
-                Err(err) => return fail(err),
+                Err(err) => return fail_err(&err, repo.root(), "", &args),
             };
             let started_ms = now_secs() * 1000;
             let start = std::time::Instant::now();
@@ -428,7 +329,7 @@ fn main() -> ExitCode {
             let root = repo_path(&args);
             let request = match commit_request(&args) {
                 Ok(request) => request,
-                Err(err) => return fail(err),
+                Err(err) => return fail_err(&err, &root, "", &args),
             };
             let repo = match Repo::open(&root) {
                 Ok(repo) => repo,

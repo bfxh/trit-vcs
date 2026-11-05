@@ -1016,5 +1016,77 @@
   "filter": "publish_then_sparse_pull",
   "pkg": "trit-vcs",
   "runner": "cargo"
+ },
+ {
+  "name": "vcs: CLI 透传库层错误时改掉档位（两份规则分叉）",
+  "file": "src/bin/trit-vcs/cli_fail.rs",
+  "old": "            Self::Repo(err) => err.kind(),",
+  "new": "            Self::Repo(_) => \"cli_usage\",",
+  "filter": "every_cli_failure_names_its_kind_and_next_step",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: CLI 透传库层错误时丢掉下一步",
+  "file": "src/bin/trit-vcs/cli_fail.rs",
+  "old": "            Self::Repo(err) => err.commands(ctx),",
+  "new": "            Self::Repo(_) => Vec::new(),",
+  "filter": "every_cli_failure_names_its_kind_and_next_step",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: cli_usage 这一档不给下一步（等于让智能体去猜参数）",
+  "file": "src/bin/trit-vcs/cli_fail.rs",
+  "old": "        Self::new(\"cli_usage\", message, next)",
+  "new": "        Self::new(\"cli_usage\", message, std::iter::empty::<String>())",
+  "filter": "every_cli_failure_names_its_kind_and_next_step",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: cli_local_io 的档位写成别的（按档分支会分错）",
+  "file": "src/bin/trit-vcs/cli_fail.rs",
+  "old": "        Self::new(\"cli_local_io\", format!(\"{path}: {reason}\"), next)",
+  "new": "        Self::new(\"cli_claims_unreadable\", format!(\"{path}: {reason}\"), next)",
+  "filter": "every_cli_failure_names_its_kind_and_next_step",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 路径不存在与不在仓库内混成一档",
+  "file": "src/bin/trit-vcs/cli_args.rs",
+  "old": "                \"cli_path_missing\",",
+  "new": "                \"cli_path_outside_repo\",",
+  "filter": "every_cli_failure_names_its_kind_and_next_step",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 坏 index 的树 id 不再单列（和没暂存分不开）",
+  "file": "src/bin/trit-vcs/cli_args.rs",
+  "old": "                \"cli_index_bad_tree\",",
+  "new": "                \"cli_usage\",",
+  "filter": "every_cli_failure_names_its_kind_and_next_step",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: 认领表读不到不再单列（当成普通 IO，解锁动作就丢了）",
+  "file": "src/bin/trit-vcs/cli_args.rs",
+  "old": "                \"cli_claims_unreadable\",",
+  "new": "                \"cli_local_io\",",
+  "filter": "every_cli_failure_names_its_kind_and_next_step",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
+ },
+ {
+  "name": "vcs: techmap 读不到不再单列",
+  "file": "src/bin/trit-vcs/query.rs",
+  "old": "            \"cli_techmap_unreadable\",",
+  "new": "            \"cli_local_io\",",
+  "filter": "every_cli_failure_names_its_kind_and_next_step",
+  "pkg": "trit-vcs",
+  "runner": "cargo"
  }
 ]

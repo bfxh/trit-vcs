@@ -6,6 +6,11 @@
 ## [Unreleased]
 
 ### Added
+- CLI 层自己的失败也带上档位与下一步：`cli_usage` / `cli_local_io` / `cli_claims_unreadable` /
+  `cli_path_missing` / `cli_path_outside_repo` / `cli_index_bad_tree` / `cli_techmap_unreadable` 七档；
+  库层错误由 `CliFail::Repo` **原样透传**（档位与下一步仍归 `src/remediation` 那一份决定，CLI 不重讲规则）。
+  新测试 `tests/cli_fail_kinds.rs` 钉的是形状而不是条数：FAIL 行必须以 `（档位）` 收尾、且至少一条 `下一步 1.`；
+  登记 8 条变异（本机复跑 8/8 全抓、存活 0）。
 - 旧仓的四道门搬进本仓并改成认"一 crate 在根"的布局：`module_budget.py`（800 行上帝模块棘轮）、
   `test_surface.py`（自测面防空转）、`docs_hygiene.py`（CHANGELOG 形状 + 盘符路径棘轮）、
   `ci_integrity.py`（workflow ↔ `required-checks.txt` ↔ GitHub 保护规则三方对账）。
