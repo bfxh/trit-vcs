@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 20 * * *"
 
 permissions:
   contents: read
@@ -46,20 +48,65 @@ jobs:
 
   mutation:
     name: mutation gate (changed crates)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Collect changed targets
+        id: crates
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          base="${BASE_SHA:-origin/main}"
+          diff=$(git diff --name-only "$base"...HEAD || true)
+          # 单 crate 仓：src/、tests/、examples/、Cargo.toml 任一动过就是库面的目标。
+          pkgs=$(printf '%s\n' "$diff" | grep -E '^(src|tests|examples)/|^Cargo\.toml$' >/dev/null && echo trit-vcs || true)
+          # 门脚本面：只有带 --self-test 的脚本才算可选目标（删掉的脚本自然选不中，因为要 grep 内容）。
+          scripts=$(printf '%s\n' "$diff" | grep -E '^scripts/[A-Za-z0-9_.-]+\.py$' \
+            | while read -r f; do grep -q -- '--self-test' "$f" 2>/dev/null && echo "$f"; done || true)
+          # 登记表按目标拆文件 ⇒ 改 json 就是改那个目标的登记，要把文件名映射回目标本身。
+          jsons=$(printf '%s\n' "$diff" | grep -E '^scripts/mutants/.*\.json$' \
+            | sed -E 's#^scripts/mutants/(.*)\.json$#\1#; s#__#/#g' || true)
+          targets=$(printf '%s\n%s\n%s\n' "$pkgs" "$scripts" "$jsons" | sed '/^$/d' | sort -u)
+          # 靶子消失了不算「0 条变异」：删除型改动仍会被 diff 选中，而门对"选中但没登记"是
+          # fail-closed 判红 —— 那是根本没东西可跑的靶子，不是漏登记（新加的目标仍会判红）。
+          targets=$(for t in $targets; do
+                      if [ -e "$t" ] || [ -e "crates/$t" ] || { [ "$t" = "trit-vcs" ] && [ -d src ]; }; then
+                        printf '%s\n' "$t"
+                      fi
+                    done | sort -u)
+          args=""
+          for t in $targets; do args="$args --pkg $t"; done
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+          echo "selected targets: ${targets:-none}"
+      - name: gate self-test
+        run: python scripts/mutation_check.py --self-test
+      - name: mutation
+        if: steps.crates.outputs.args != ''
+        run: python scripts/mutation_check.py ${{ steps.crates.outputs.args }}
+
+  mutation-nightly:
+    name: mutation gate (full)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # 全量跑：库面 96 条 + 门自身 16 条 + 认领账本 39 条（登记表在 scripts/mutants/）。
-      # 判红口径：存活、编译红假杀、超时、无输出都算红；声明了 hang_secs 的死循环单列不计入抓住。
-      - name: gate self-test
-        run: python scripts/mutation_check.py --self-test
-      - name: mutation
-        run: python scripts/mutation_check.py --pkg trit-vcs --pkg scripts/mutation_check.py --pkg scripts/agent_claims.py
+      # 全量：库面 96 条 + 门自身 16 条 + 认领账本 39 条 = 151 条。
+      # 判红口径：存活、编译红假杀、超时、无输出都算红；声明 hang_secs 的死循环单列、不计入抓住。
+      - run: python scripts/mutation_check.py
 
   claims:
     name: claims self-test
