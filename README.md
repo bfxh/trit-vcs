@@ -40,8 +40,8 @@
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test -p trit-vcs                                             # 12 个测试二进制 / 141 条（2026-11-05 实测）
-python scripts/mutation_check.py --pkg trit-vcs                    # 96 条：95 断言抓住 + 1 条声明的死循环
+cargo test                                                     # 12 个测试二进制 / 155 条（2026-11-06 实测）
+python scripts/mutation_check.py --pkg trit-vcs                    # 113 条登记（含六张判决面）
 ```
 
 最后一条在本仓就能跑（`scripts/mutation_check.py` + `scripts/mutants/` 已随拆分一起搬过来，
