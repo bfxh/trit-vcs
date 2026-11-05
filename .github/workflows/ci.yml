@@ -4,20 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "17 20 * * *"
 
 permissions:
   contents: read
 
-# 同一分支上再推一笔就取消上一轮的跑：旧 run 的结果没人看，留着只是占并发额度 + 让人以为"还在跑"。
+# 同一分支再推一笔就取消上一轮：旧 run 的结果没人看，留着只占并发额度，还让人误判"还在跑"。
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  # 内部依赖（trit-core / trit-orch）是 bfxh/trit 的 git pin：actions 的默认 runner 直连 GitHub，
+  # 内部依赖（trit-core / trit-orch）是 bfxh/trit 的 git pin：默认 runner 直连 GitHub，
   # 不需要本机那套 insteadOf/代理口径。
   TMPDIR: /tmp
 
@@ -33,17 +31,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: self-test
-        run: python scripts/change_policy.py --self-test
-      - name: triage self-test
-        run: python scripts/repo_triage.py --self-test
-      - name: grade this change
+      - run: python scripts/change_policy.py --self-test
+      - run: python scripts/repo_triage.py --self-test
+      - name: grade this change (PR)
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          python scripts/change_policy.py --base "$BASE_SHA" --event "$GITHUB_EVENT_PATH"
-      - name: grade main push
+        run: python scripts/change_policy.py --base "$BASE_SHA" --event "$GITHUB_EVENT_PATH"
+      - name: grade this change (push)
         if: github.event_name == 'push'
         run: python scripts/change_policy.py --base "${{ github.event.before }}"
 
@@ -60,12 +55,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: fmt
-        run: cargo fmt --all -- --check
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: test
-        run: cargo test --workspace --locked
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --locked
 
   msrv:
     name: MSRV (1.88)
@@ -76,11 +68,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88.0
       - run: cargo test --workspace --locked
 
-  # 变异门按面拆开并行：整包一起跑要 18 分钟以上，分成"库面"与"门脚本"两条后各 ~15 分钟，
-  # 而且一条红不会挡住另一条的读数。
+  gates:
+    name: gates (module budget + test surface + docs + integrity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: gate self-tests
+        run: |
+          set -euo pipefail
+          for script in module_budget test_surface docs_hygiene ci_integrity change_policy repo_triage mutation_check; do
+            python "scripts/$script.py" --self-test
+          done
+      - name: 上帝模块门（800 行；基线只许变短）
+        run: python scripts/module_budget.py
+      - name: 测试面棘轮（每条测试都要真判东西）
+        run: python scripts/test_surface.py
+      - name: 文档卫生（CHANGELOG 形状 + 盘符路径只许变少）
+        run: python scripts/docs_hygiene.py
+      - name: 保护规则 ↔ workflow 对账（清单与 job 名双向；GitHub 侧真值靠 --remote 本地/巡检核对，Actions 的 token 读不到保护 API）
+        run: python scripts/ci_integrity.py
+
+  # 变异门按面拆两条并行：整包一起跑要 18 分钟以上，拆开一条红不挡另一条的读数。
+  # 全量口径在 .github/workflows/nightly.yml（schedule + dispatch），不设必需检查。
   mutation:
     name: mutation gate (${{ matrix.target }})
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -92,8 +107,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -102,12 +115,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           FACE: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          bash scripts/mutation_targets.sh "${FACE}" "${BASE_SHA:-origin/main}" >> "$GITHUB_OUTPUT"
-      - name: gate self-test
-        if: matrix.target == 'gates'
-        run: python scripts/mutation_check.py --self-test
+        run: bash scripts/mutation_targets.sh "$FACE" "${BASE_SHA:-origin/main}" >> "$GITHUB_OUTPUT"
       - name: 采集器不许静默空跑
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -116,31 +124,15 @@ jobs:
         run: |
           set -euo pipefail
           base="${BASE_SHA:-origin/main}"
-          if git diff --name-only "$base"...HEAD | grep -qE '^(src|tests|examples)/|^Cargo\.toml$' \
-             && [ "$FACE_STATUS" = "library" ] && [ -z "$ARGS" ]; then
-            echo "FAIL 改了库面却一个变异目标都没选出来 ⇒ 采集器静默失效（空 args = 这条门整条不跑）"
+          if [ "$FACE_STATUS" = "library" ] \
+             && git diff --name-only "$base"...HEAD | grep -qE '^(src|tests|examples)/|^Cargo\.toml$' \
+             && [ -z "$ARGS" ]; then
+            echo "FAIL 改了库面却一个变异目标都没选出来 ⇒ 采集器静默失效（空 args = 这道门整条不跑）"
             exit 1
           fi
-        continue-on-error: false
-        id: anti_noop
       - name: mutation
         if: steps.crates.outputs.args != ''
         run: python scripts/mutation_check.py ${{ steps.crates.outputs.args }}
-
-  mutation-nightly:
-    name: mutation gate (full)
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      # 全量：库面 + 门自身 + 认领账本 + 两道新治理门（登记表在 scripts/mutants/）。
-      # 判红口径：存活、编译红假杀、超时、无输出都算红；声明 hang_secs 的死循环单列、不计入抓住。
-      - run: python scripts/mutation_check.py
 
   claims:
     name: claims self-test
