@@ -38,11 +38,13 @@ def load_policy_gate():
 
 def repo_from_url(url: str) -> str:
     """从 origin 地址认仓库名。scp 样式（`git@github.com:o/r.git`，本机 origin 就是这个）与
-    https 样式都要认 —— 只按 `github.com/` 切会把 scp 样式整条漏掉，等于工具在自己机器上不可用。"""
+    https 样式都要认 —— 只按 `github.com/` 切会把 scp 样式整条漏掉，等于工具在自己机器上不可用。
+
+    段首/段尾斜杠只由末尾那一次 `strip("/")` 兜（`git@github.com:/o/r` 这种变体也归它）：
+    写两道兜底会让其中一道变成杀不死的等价变异。"""
     for marker in ("github.com:", "github.com/"):
         if marker in url:
             tail = url.split(marker, 1)[1]
-            tail = tail[1:] if tail.startswith("/") else tail
             return tail.removesuffix(".git").strip("/")
     return ""
 
@@ -336,6 +338,9 @@ def self_test() -> int:
     # 五、origin 样式：本机 origin 是 scp 写法，认不出就等于工具在自己机器上不能用
     check("scp 样式认得出", repo_from_url("git@github.com:bfxh/trit-vcs.git"), "bfxh/trit-vcs")
     check("https 样式认得出", repo_from_url("https://github.com/bfxh/trit-vcs.git"), "bfxh/trit-vcs")
+    check("冒号后接斜杠的 scp 变体要切掉段首斜杠", repo_from_url("git@github.com:/bfxh/trit-vcs.git"), "bfxh/trit-vcs")
+    check("ssh:// 样式认得出", repo_from_url("ssh://git@github.com/bfxh/trit-vcs.git"), "bfxh/trit-vcs")
+    check("结尾多一个斜杠也要切掉", repo_from_url("https://github.com/bfxh/trit-vcs/"), "bfxh/trit-vcs")
     check("非 github 地址不硬猜", repo_from_url("file:///E:/KF/trit-parity"), "")
 
     # 六、分级表不许串仓用（拿 A 仓的规则判 B 仓 = 一眼看不出的假判定）

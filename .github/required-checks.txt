@@ -1,0 +1,13 @@
+# main 分支的必需检查（与 GitHub 分支保护保持一致；scripts/ci_integrity.py 会双向核对）
+# 规则：每行必须能匹配到某个 workflow job 的 name（矩阵模板按通配匹配）。
+# 不放 nightly 专属的 job（`mutation gate (full)` 只在 schedule 上跑，设了会把所有 PR 永久卡住）。
+# macOS 不设必需：它是非必需面，runner 常自己 cancel（旧仓同口径）。
+
+change policy (tier & contract)
+fmt + clippy + test (ubuntu-latest)
+fmt + clippy + test (windows-latest)
+MSRV (1.88)
+mutation gate (library)
+mutation gate (gates)
+claims self-test
+gates (module budget + test surface + docs + integrity)

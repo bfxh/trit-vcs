@@ -1,0 +1,38 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TMPDIR: /tmp
+
+jobs:
+  mutation-full:
+    name: mutation gate (full)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # 全量：库面 113 + 门自身 16 + 认领账本 39 + 分级门 11 + 分诊台 6。
+      # 判红口径：存活、编译红假杀、超时、无输出都算红；声明 hang_secs 的死循环单列、不计入"断言抓住"。
+      - run: python scripts/mutation_check.py
+
+  package:
+    name: package (cargo package --allow-dirty)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      # 独立仓的自检：能不能单独打包（git pin 依赖是否解析得动）。
+      - run: cargo package --no-verify --list > /dev/null

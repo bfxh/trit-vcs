@@ -52,5 +52,23 @@
   "filter": "",
   "pkg": "scripts/repo_triage.py",
   "runner": "python"
+ },
+ {
+  "name": "repo-triage: 斜杠兜底整条摘掉（scp 变体多前导杠、结尾多一个杠）",
+  "file": "scripts/repo_triage.py",
+  "old": "            return tail.removesuffix(\".git\").strip(\"/\")",
+  "new": "            return tail.removesuffix(\".git\")",
+  "pkg": "scripts/repo_triage.py",
+  "filter": "",
+  "runner": "python"
+ },
+ {
+  "name": "repo-triage: .git 后缀没摘掉（仓名带尾巴对不上）",
+  "file": "scripts/repo_triage.py",
+  "old": "            return tail.removesuffix(\".git\").strip(\"/\")",
+  "new": "            return tail.strip(\"/\")",
+  "pkg": "scripts/repo_triage.py",
+  "filter": "",
+  "runner": "python"
  }
 ]

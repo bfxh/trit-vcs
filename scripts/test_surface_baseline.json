@@ -1,0 +1,13 @@
+{
+ "crate/trit-vcs": 155,
+ "script/agent_claims.py": 1,
+ "script/change_policy.py": 1,
+ "script/ci_integrity.py": 1,
+ "script/docs_hygiene.py": 1,
+ "script/module_budget.py": 1,
+ "script/mutation_check.py": 1,
+ "script/mutation_targets.sh": 0,
+ "script/nightly_mirror.sh": 0,
+ "script/repo_triage.py": 1,
+ "script/test_surface.py": 1
+}

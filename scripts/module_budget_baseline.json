@@ -1,0 +1,5 @@
+{
+  "limit": 800,
+  "note": "只允许变短：拆掉一个文件后跑 --update 把它移除；--update 拒绝任何增长。",
+  "over_budget": []
+}
