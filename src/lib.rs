@@ -24,6 +24,7 @@ pub mod delta;
 pub mod gate;
 pub mod git_bridge;
 pub mod handoff;
+pub mod handoff_bundle;
 pub mod hash;
 pub mod journal;
 pub mod mcp;

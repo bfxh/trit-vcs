@@ -278,3 +278,131 @@ fn handoff_root_commit_has_no_parents() {
     let out = verify(&root, &package);
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+fn handoff_file(root: &Path, commit: &str, name: &str) -> PathBuf {
+    let file = temp(name).join("package.tvhp");
+    let out = run(
+        root,
+        &[
+            "handoff",
+            commit,
+            "--out",
+            file.to_str().unwrap(),
+            "--bundle",
+            "--repo",
+            root.to_str().unwrap(),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(file.is_file(), "单文件包应当是一个文件，不是目录");
+    file
+}
+
+#[test]
+fn handoff_single_file_round_trip_and_same_package_id() {
+    let root = temp("sf-roundtrip");
+    let head = seed(&root);
+    let dir = handoff(&root, &head, "sf-dir");
+    let file = handoff_file(&root, &head, "sf-file");
+
+    // 单文件头是 TVHP，与传输包 TVBD 区分。
+    assert_eq!(&fs::read(&file).unwrap()[0..4], b"TVHP");
+
+    let ok = verify(&root, &file);
+    assert!(ok.status.success(), "{}", stderr(&ok));
+
+    // 同一提交两种形态：包 id / commit / 部件数逐字相同。
+    let dir_report = trit_vcs::handoff::verify(&dir, None).unwrap();
+    let file_report = trit_vcs::handoff::verify(&file, None).unwrap();
+    assert_eq!(dir_report.package_id, file_report.package_id);
+    assert_eq!(dir_report.commit, file_report.commit);
+    assert_eq!(dir_report.components, file_report.components);
+}
+
+#[test]
+fn handoff_single_file_tampered_payload_is_red() {
+    let root = temp("sf-tamper");
+    let head = seed(&root);
+    let file = handoff_file(&root, &head, "sf-tamper-f");
+    let mut bytes = fs::read(&file).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xFF;
+    fs::write(&file, bytes).unwrap();
+    let out = verify(&root, &file);
+    let text = stderr(&out);
+    assert!(!out.status.success(), "篡改单文件后仍绿：{text}");
+    assert!(text.contains("（handoff_hash）"), "{text}");
+}
+
+#[test]
+fn handoff_single_file_truncated_is_red() {
+    let root = temp("sf-trunc");
+    let head = seed(&root);
+    let file = handoff_file(&root, &head, "sf-trunc-f");
+    let mut bytes = fs::read(&file).unwrap();
+    bytes.truncate(bytes.len() / 2);
+    fs::write(&file, bytes).unwrap();
+    let out = verify(&root, &file);
+    let text = stderr(&out);
+    assert!(!out.status.success(), "截断单文件后仍绿：{text}");
+    assert!(text.contains("（handoff_missing）"), "{text}");
+}
+
+#[test]
+fn handoff_single_file_bad_magic_is_red() {
+    let root = temp("sf-magic");
+    let head = seed(&root);
+    let file = handoff_file(&root, &head, "sf-magic-f");
+    let mut bytes = fs::read(&file).unwrap();
+    bytes[0] ^= 0xFF;
+    fs::write(&file, bytes).unwrap();
+    let out = verify(&root, &file);
+    let text = stderr(&out);
+    assert!(!out.status.success(), "坏 magic 后仍绿：{text}");
+    assert!(text.contains("（handoff_manifest）"), "{text}");
+}
+
+#[test]
+fn handoff_verify_rejects_transport_tvbd() {
+    let root = temp("sf-cross-tvbd");
+    seed(&root);
+    let repo = Repo::open(&root).unwrap();
+    let head_id = repo.head().unwrap().unwrap();
+    let tree = repo.commit_at(&head_id).unwrap().tree;
+    let tvbd = temp("sf-tvbd").join("transport.tvbd");
+    let out = run(
+        &root,
+        &[
+            "export",
+            &tree.to_hex(),
+            "--out",
+            tvbd.to_str().unwrap(),
+            "--repo",
+            root.to_str().unwrap(),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = verify(&root, &tvbd);
+    let text = stderr(&out);
+    assert!(!out.status.success(), "传输包被当成交接包收：{text}");
+    assert!(text.contains("（handoff_manifest）"), "{text}");
+}
+
+#[test]
+fn import_rejects_handoff_tvhp() {
+    let root = temp("sf-cross-tvhp");
+    let head = seed(&root);
+    let file = handoff_file(&root, &head, "sf-cross-f");
+    let out = run(
+        &root,
+        &[
+            "import",
+            file.to_str().unwrap(),
+            "--repo",
+            root.to_str().unwrap(),
+        ],
+    );
+    let text = stderr(&out);
+    assert!(!out.status.success(), "交接包被传输 import 收：{text}");
+    assert!(text.contains("magic"), "{text}");
+}

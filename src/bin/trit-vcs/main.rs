@@ -52,8 +52,8 @@ fn usage() -> ExitCode {
          trit-vcs mcp [--repo PATH]\n  \
          trit-vcs git-import <git目录> [--map FILE] [--repo PATH]\n  \
          trit-vcs merge <ours提交> <theirs提交> [--base <提交>] [--json] [--repo PATH]\n  \
-         trit-vcs handoff <提交id> --out <包目录> [--repo PATH]\n  \
-         trit-vcs handoff-verify <包目录> [--repo PATH]\n  \
+         trit-vcs handoff <提交id> --out <包目录|FILE.tvhp> [--bundle] [--repo PATH]\n  \
+         trit-vcs handoff-verify <包目录|FILE.tvhp> [--repo PATH]\n  \
          trit-vcs status [--prefix DIR] [--json] [--budget N] [--repo PATH]\n  \
          trit-vcs checkout <提交id> [--prefix DIR] [--force] [--repo PATH]\n  \
          trit-vcs log [--json] [--budget N] [--tag T] [--evidence 文本] [--session S] [--grep 文本] [--repo PATH]\n  \

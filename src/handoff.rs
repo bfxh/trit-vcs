@@ -1,4 +1,8 @@
-//! 交接包：把一个提交的上下文打成可审计的目录，`verify` 逐项复核。
+//! 交接包：把一个提交的上下文打成可审计的包，`verify` 逐项复核。
+//!
+//! 两种形态共用同一套部件与判据：
+//! - **目录包**（`handoff --out DIR`）：`manifest.json` + 各部件文件，便于人读/逐件抽查；
+//! - **单文件包**（`handoff --out FILE.tvhp --bundle`）：`TVHP` 容器，便于一条命令搬运（见 `handoff_bundle`）。
 //!
 //! 包里有：commit / tree / parents、intent、claims、冲突面、diff、改动文件的文件映射与内容。
 //! `manifest.json` 记每个部件的对象 id、相对路径、字节数与来源。
@@ -11,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::handoff_bundle;
 use crate::hash::Hash;
 use crate::model::{Commit, Intent};
 use crate::remediation::{Context, Remediable};
@@ -71,21 +76,22 @@ impl Remediable for HandoffError {
         if let Self::Usage(_) = self {
             return vec![
                 format!(
-                    "trit-vcs handoff <提交id> --out <包目录> --repo {}",
+                    "trit-vcs handoff <提交id> --out <包目录|FILE.tvhp> [--bundle] --repo {}",
                     ctx.dir.display()
                 ),
                 format!(
-                    "trit-vcs handoff-verify <包目录> --repo {}",
+                    "trit-vcs handoff-verify <包目录|FILE.tvhp> --repo {}",
                     ctx.dir.display()
                 ),
             ];
         }
         vec![
             format!(
-                "trit-vcs handoff-verify <包目录> --repo {}",
+                "trit-vcs handoff-verify <包目录|FILE.tvhp> --repo {}",
                 ctx.dir.display()
             ),
-            "包是派生物，不要手改；重做：`trit-vcs handoff <提交id> --out <包目录>`".to_string(),
+            "包是派生物，不要手改；重做：`trit-vcs handoff <提交id> --out <包目录|FILE.tvhp>`"
+                .to_string(),
         ]
     }
 }
@@ -159,6 +165,34 @@ pub struct VerifyReport {
     pub objects: usize,
 }
 
+/// 装配好的包：清单 + 各部件字节 + 包 id。目录包与单文件包都从这里写出，判据只有一份。
+struct Package {
+    manifest: Manifest,
+    pieces: Vec<(Component, Vec<u8>)>,
+    package_id: Hash,
+}
+
+/// 部件内容的来源：目录（逐件读盘）或单文件包（已在内存里解出的 rel→bytes）。
+/// `verify` 的语义判据对两种来源逐字相同——单文件不是"另一套校验"。
+enum PackageFiles {
+    Dir(PathBuf),
+    Bundle(BTreeMap<String, Vec<u8>>),
+}
+
+impl PackageFiles {
+    fn read(&self, rel: &str) -> Result<Vec<u8>, HandoffError> {
+        let cleaned = safe_rel(rel)?;
+        match self {
+            Self::Dir(root) => fs::read(root.join(cleaned))
+                .map_err(|err| HandoffError::Missing(format!("{rel}: {err}"))),
+            Self::Bundle(map) => map
+                .get(rel)
+                .cloned()
+                .ok_or_else(|| HandoffError::Missing(rel.to_string())),
+        }
+    }
+}
+
 fn safe_rel(rel: &str) -> Result<PathBuf, HandoffError> {
     let cleaned = rel.replace('\\', "/");
     if cleaned.is_empty()
@@ -190,21 +224,18 @@ struct Piece<'a> {
     source: String,
 }
 
-fn push_component(
-    package: &Path,
-    components: &mut Vec<Component>,
-    piece: Piece<'_>,
-) -> Result<(), HandoffError> {
-    write_bytes(package, &piece.rel, piece.bytes)?;
-    components.push(Component {
-        name: piece.name,
-        kind: piece.kind.to_string(),
-        object: piece.object.to_hex(),
-        path: piece.rel,
-        bytes: piece.bytes.len() as u64,
-        source: piece.source,
-    });
-    Ok(())
+fn collect_component(pieces: &mut Vec<(Component, Vec<u8>)>, piece: Piece<'_>) {
+    pieces.push((
+        Component {
+            name: piece.name,
+            kind: piece.kind.to_string(),
+            object: piece.object.to_hex(),
+            path: piece.rel,
+            bytes: piece.bytes.len() as u64,
+            source: piece.source,
+        },
+        piece.bytes.to_vec(),
+    ));
 }
 
 fn decode_tree(bytes: &[u8], label: &str) -> Result<BTreeMap<String, Hash>, HandoffError> {
@@ -284,15 +315,17 @@ fn find_named<'a>(manifest: &'a Manifest, name: &str) -> Result<&'a Component, H
         .ok_or_else(|| HandoffError::Manifest(format!("缺少部件 {name}")))
 }
 
-fn read_component(package: &Path, component: &Component) -> Result<Vec<u8>, HandoffError> {
-    let path = package.join(safe_rel(&component.path)?);
-    fs::read(&path).map_err(|err| {
-        HandoffError::Missing(format!("{}（{}）: {err}", component.name, component.path))
+fn read_component(files: &PackageFiles, component: &Component) -> Result<Vec<u8>, HandoffError> {
+    files.read(&component.path).map_err(|err| match err {
+        HandoffError::Missing(_) => {
+            HandoffError::Missing(format!("{}（{}）", component.name, component.path))
+        }
+        other => other,
     })
 }
 
-/// 建包：写出所有部件与 `manifest.json`。
-pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, HandoffError> {
+/// 装配：从对象库读出所有部件与清单（不写盘）。目录包与单文件包共用这一份。
+fn assemble(repo: &Repo, commit_id: &Hash) -> Result<Package, HandoffError> {
     let commit = repo.commit_at(commit_id)?;
     let commit_bytes = commit.encode()?;
     let actual_commit = Hash::of(&commit_bytes);
@@ -303,13 +336,11 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
             commit_id.short()
         )));
     }
-    fs::create_dir_all(out.join("objects"))?;
-    let mut components = Vec::new();
+    let mut pieces: Vec<(Component, Vec<u8>)> = Vec::new();
 
     // commit + tree
-    push_component(
-        out,
-        &mut components,
+    collect_component(
+        &mut pieces,
         Piece {
             name: "commit".to_string(),
             kind: "commit",
@@ -318,12 +349,11 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
             bytes: &commit_bytes,
             source: "commit 对象".to_string(),
         },
-    )?;
+    );
     let tree_bytes = repo.store().get_chunk(&commit.tree)?;
     let tree_entries = decode_tree(&tree_bytes, "tree 对象")?;
-    push_component(
-        out,
-        &mut components,
+    collect_component(
+        &mut pieces,
         Piece {
             name: "tree".to_string(),
             kind: "tree",
@@ -332,7 +362,7 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
             bytes: &tree_bytes,
             source: "commit.tree 对象".to_string(),
         },
-    )?;
+    );
 
     // parents：commit + tree 都进包，verify 不依赖对象库也能重算 diff/冲突面。
     let mut parent_trees: Vec<BTreeMap<String, Hash>> = Vec::new();
@@ -346,9 +376,8 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
                 "父提交 {index} 内容 hash 与 id 不一致"
             )));
         }
-        push_component(
-            out,
-            &mut components,
+        collect_component(
+            &mut pieces,
             Piece {
                 name: format!("parent-commit:{index}"),
                 kind: "parent-commit",
@@ -357,13 +386,12 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
                 bytes: &parent_bytes,
                 source: format!("父提交 {index}"),
             },
-        )?;
+        );
         let parent_tree_bytes = repo.store().get_chunk(&parent_commit.tree)?;
         let parent_entries = decode_tree(&parent_tree_bytes, &format!("父提交 {index} 的树"))?;
         parent_tree_ids.push(parent_commit.tree);
-        push_component(
-            out,
-            &mut components,
+        collect_component(
+            &mut pieces,
             Piece {
                 name: format!("parent-tree:{index}"),
                 kind: "parent-tree",
@@ -372,16 +400,15 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
                 bytes: &parent_tree_bytes,
                 source: format!("父提交 {index} 的树"),
             },
-        )?;
+        );
         parent_trees.push(parent_entries);
     }
 
     // intent / claims
     let intent_bytes = serde_json::to_vec(&commit.intent)?;
     let intent_id = Hash::of(&intent_bytes);
-    push_component(
-        out,
-        &mut components,
+    collect_component(
+        &mut pieces,
         Piece {
             name: "intent".to_string(),
             kind: "intent",
@@ -390,12 +417,11 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
             bytes: &intent_bytes,
             source: "commit.intent".to_string(),
         },
-    )?;
+    );
     let claims_bytes = serde_json::to_vec(&commit.claims)?;
     let claims_id = Hash::of(&claims_bytes);
-    push_component(
-        out,
-        &mut components,
+    collect_component(
+        &mut pieces,
         Piece {
             name: "claims".to_string(),
             kind: "claims",
@@ -404,16 +430,15 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
             bytes: &claims_bytes,
             source: "commit.claims".to_string(),
         },
-    )?;
+    );
 
     // diff / conflicts
     let left = parent_trees.first().cloned().unwrap_or_default();
     let changes = diff_trees(&left, &tree_entries);
     let diff_bytes = serde_json::to_vec(&changes)?;
     let diff_id = Hash::of(&diff_bytes);
-    push_component(
-        out,
-        &mut components,
+    collect_component(
+        &mut pieces,
         Piece {
             name: "diff".to_string(),
             kind: "diff",
@@ -422,13 +447,12 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
             bytes: &diff_bytes,
             source: "commit 相对第一个父的路径级 diff".to_string(),
         },
-    )?;
+    );
     let conflicts = conflicts_of(&commit, &parent_trees, &tree_entries);
     let conflicts_bytes = serde_json::to_vec(&conflicts)?;
     let conflicts_id = Hash::of(&conflicts_bytes);
-    push_component(
-        out,
-        &mut components,
+    collect_component(
+        &mut pieces,
         Piece {
             name: "conflicts".to_string(),
             kind: "conflicts",
@@ -437,7 +461,7 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
             bytes: &conflicts_bytes,
             source: "多父改动交集 + 认领".to_string(),
         },
-    )?;
+    );
 
     // 改动文件：文件映射（树里那个 id）+ 内容各一份。
     // 文件映射 id 是树引用；内容 hash 是人读/复核用的派生物。
@@ -455,9 +479,8 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
         } else {
             "file-map"
         };
-        push_component(
-            out,
-            &mut components,
+        collect_component(
+            &mut pieces,
             Piece {
                 name: format!("{prefix}:{}", change.path),
                 kind: "file-map",
@@ -466,7 +489,7 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
                 bytes: &map_bytes,
                 source: format!("{source} {} 的文件映射", change.path),
             },
-        )?;
+        );
         let content = repo.store().get_file(id)?;
         let content_id = Hash::of(&content);
         let prefix = if change.kind == Kind::Deleted {
@@ -474,9 +497,8 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
         } else {
             "file"
         };
-        push_component(
-            out,
-            &mut components,
+        collect_component(
+            &mut pieces,
             Piece {
                 name: format!("{prefix}:{}", change.path),
                 kind: "file",
@@ -485,13 +507,14 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
                 bytes: &content,
                 source: format!("{source} {} 的内容（文件映射 {}）", change.path, id.short()),
             },
-        )?;
+        );
     }
 
     let schema = SCHEMA;
     let commit_hex = commit_id.to_hex();
     let tree_hex = commit.tree.to_hex();
     let parents: Vec<String> = commit.parents.iter().map(|id| id.to_hex()).collect();
+    let components: Vec<Component> = pieces.iter().map(|(c, _)| c.clone()).collect();
     let body = ManifestBody {
         schema,
         commit: &commit_hex,
@@ -508,28 +531,60 @@ pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, H
         parents,
         components,
     };
+    Ok(Package {
+        manifest,
+        pieces,
+        package_id,
+    })
+}
+
+/// 建目录包：写出所有部件与 `manifest.json`。
+pub fn build(repo: &Repo, commit_id: &Hash, out: &Path) -> Result<BuildReport, HandoffError> {
+    let package = assemble(repo, commit_id)?;
+    fs::create_dir_all(out.join("objects"))?;
+    for (component, bytes) in &package.pieces {
+        write_bytes(out, &component.path, bytes)?;
+    }
     fs::write(
         out.join("manifest.json"),
-        serde_json::to_vec_pretty(&manifest)?,
+        serde_json::to_vec_pretty(&package.manifest)?,
     )?;
     Ok(BuildReport {
-        package_id,
+        package_id: package.package_id,
         commit: *commit_id,
-        components: manifest.components.len(),
+        components: package.manifest.components.len(),
         out: out.to_path_buf(),
     })
 }
 
-/// 复核：包内自洽 + （可选）对象库引用都在。
+/// 建单文件包（`TVHP`）：与目录包同一份装配，只是写成一个文件。
+pub fn build_bundle(
+    repo: &Repo,
+    commit_id: &Hash,
+    out: &Path,
+) -> Result<BuildReport, HandoffError> {
+    let package = assemble(repo, commit_id)?;
+    handoff_bundle::write_file(out, &package.manifest, &package.pieces)?;
+    Ok(BuildReport {
+        package_id: package.package_id,
+        commit: *commit_id,
+        components: package.manifest.components.len(),
+        out: out.to_path_buf(),
+    })
+}
+
+/// 复核：包内自洽 + （可选）对象库引用都在。目录与单文件自动识别，判据同一套。
 pub fn verify(package: &Path, repo: Option<&Repo>) -> Result<VerifyReport, HandoffError> {
-    let manifest_path = package.join("manifest.json");
-    let manifest_bytes = fs::read(&manifest_path).map_err(|err| {
-        if err.kind() == std::io::ErrorKind::NotFound {
-            HandoffError::Missing("manifest.json".to_string())
-        } else {
-            HandoffError::Io(err)
-        }
-    })?;
+    let files = if package.is_dir() {
+        PackageFiles::Dir(package.to_path_buf())
+    } else {
+        PackageFiles::Bundle(handoff_bundle::read_file(package)?)
+    };
+    verify_files(&files, repo)
+}
+
+fn verify_files(files: &PackageFiles, repo: Option<&Repo>) -> Result<VerifyReport, HandoffError> {
+    let manifest_bytes = files.read("manifest.json")?;
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|err| HandoffError::Manifest(format!("manifest.json: {err}")))?;
     if manifest.schema != SCHEMA {
@@ -549,14 +604,7 @@ pub fn verify(package: &Path, repo: Option<&Repo>) -> Result<VerifyReport, Hando
 
     let mut objects: BTreeMap<String, &Component> = BTreeMap::new();
     for component in &manifest.components {
-        let path = package.join(safe_rel(&component.path)?);
-        if !path.is_file() {
-            return Err(HandoffError::Missing(format!(
-                "{}（{}）",
-                component.name, component.path
-            )));
-        }
-        let bytes = fs::read(&path)?;
+        let bytes = read_component(files, component)?;
         if bytes.len() as u64 != component.bytes {
             return Err(HandoffError::HashMismatch(format!(
                 "{}: 字节数 {} != {}",
@@ -576,7 +624,7 @@ pub fn verify(package: &Path, repo: Option<&Repo>) -> Result<VerifyReport, Hando
     }
 
     let commit_component = find_one(&manifest, "commit")?;
-    let commit_bytes = read_component(package, commit_component)?;
+    let commit_bytes = read_component(files, commit_component)?;
     let commit = Commit::decode(&commit_bytes)
         .map_err(|err| HandoffError::Commit(format!("commit 对象: {err}")))?;
     let commit_id = Hash::of(&commit_bytes);
@@ -602,14 +650,14 @@ pub fn verify(package: &Path, repo: Option<&Repo>) -> Result<VerifyReport, Hando
     }
 
     let tree_component = find_one(&manifest, "tree")?;
-    let tree_bytes = read_component(package, tree_component)?;
+    let tree_bytes = read_component(files, tree_component)?;
     let tree_entries = decode_tree(&tree_bytes, "tree 对象")?;
 
     let mut parent_trees: Vec<BTreeMap<String, Hash>> = Vec::new();
     let mut parent_tree_ids: Vec<Hash> = Vec::new();
     for (index, parent) in commit.parents.iter().enumerate() {
         let parent_component = find_named(&manifest, &format!("parent-commit:{index}"))?;
-        let parent_bytes = read_component(package, parent_component)?;
+        let parent_bytes = read_component(files, parent_component)?;
         let parent_commit = Commit::decode(&parent_bytes)
             .map_err(|err| HandoffError::Commit(format!("父提交 {index}: {err}")))?;
         let actual = Hash::of(&parent_bytes);
@@ -621,7 +669,7 @@ pub fn verify(package: &Path, repo: Option<&Repo>) -> Result<VerifyReport, Hando
             )));
         }
         let parent_tree_component = find_named(&manifest, &format!("parent-tree:{index}"))?;
-        let parent_tree_bytes = read_component(package, parent_tree_component)?;
+        let parent_tree_bytes = read_component(files, parent_tree_component)?;
         let actual_tree = Hash::of(&parent_tree_bytes);
         if actual_tree != parent_commit.tree {
             return Err(HandoffError::Commit(format!("父提交 {index} 的树 id 不符")));
@@ -632,16 +680,15 @@ pub fn verify(package: &Path, repo: Option<&Repo>) -> Result<VerifyReport, Hando
     }
 
     let intent_component = find_one(&manifest, "intent")?;
-    let intent: Option<Intent> =
-        serde_json::from_slice(&read_component(package, intent_component)?)
-            .map_err(|err| HandoffError::Manifest(format!("intent: {err}")))?;
+    let intent: Option<Intent> = serde_json::from_slice(&read_component(files, intent_component)?)
+        .map_err(|err| HandoffError::Manifest(format!("intent: {err}")))?;
     if intent != commit.intent {
         return Err(HandoffError::Manifest(
             "intent 与 commit.intent 不一致".to_string(),
         ));
     }
     let claims_component = find_one(&manifest, "claims")?;
-    let claims: Vec<String> = serde_json::from_slice(&read_component(package, claims_component)?)
+    let claims: Vec<String> = serde_json::from_slice(&read_component(files, claims_component)?)
         .map_err(|err| HandoffError::Manifest(format!("claims: {err}")))?;
     if claims != commit.claims {
         return Err(HandoffError::Manifest(
@@ -650,7 +697,7 @@ pub fn verify(package: &Path, repo: Option<&Repo>) -> Result<VerifyReport, Hando
     }
 
     let diff_component = find_one(&manifest, "diff")?;
-    let changes: Vec<Change> = serde_json::from_slice(&read_component(package, diff_component)?)
+    let changes: Vec<Change> = serde_json::from_slice(&read_component(files, diff_component)?)
         .map_err(|err| HandoffError::Manifest(format!("diff: {err}")))?;
     let left = parent_trees.first().cloned().unwrap_or_default();
     let expected_changes = diff_trees(&left, &tree_entries);
@@ -660,9 +707,8 @@ pub fn verify(package: &Path, repo: Option<&Repo>) -> Result<VerifyReport, Hando
         ));
     }
     let conflicts_component = find_one(&manifest, "conflicts")?;
-    let conflicts: Conflicts =
-        serde_json::from_slice(&read_component(package, conflicts_component)?)
-            .map_err(|err| HandoffError::Manifest(format!("conflicts: {err}")))?;
+    let conflicts: Conflicts = serde_json::from_slice(&read_component(files, conflicts_component)?)
+        .map_err(|err| HandoffError::Manifest(format!("conflicts: {err}")))?;
     let expected_conflicts = conflicts_of(&commit, &parent_trees, &tree_entries);
     if conflicts != expected_conflicts {
         return Err(HandoffError::Manifest(
