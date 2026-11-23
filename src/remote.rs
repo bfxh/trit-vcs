@@ -419,6 +419,8 @@ pub fn ensure_tree_present(store: &Store, tree: &Hash) -> Result<(), RemoteError
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
     use std::time::Duration;
 
     use super::*;
@@ -459,6 +461,62 @@ mod tests {
         config.read_timeout = Duration::from_secs(20);
         config.max_body = 64 * 1024 * 1024;
         Server::start(config).unwrap()
+    }
+
+    fn raw_publish(addr: std::net::SocketAddr, target: &str, tip: Option<&str>) -> String {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let mut head = format!(
+            "POST {target} HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer {TOKEN}\r\n\
+             content-length: 0\r\nconnection: close\r\n"
+        );
+        if let Some(tip) = tip {
+            head.push_str(&format!("x-trit-tip: {tip}\r\n"));
+        }
+        head.push_str("\r\n");
+        stream.write_all(head.as_bytes()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn publish_shape_rejections_are_denied_and_audited() {
+        let root = temp("publish-shape");
+        let mut src = Repo::init(root.join("src")).unwrap();
+        let files = BTreeMap::from([("a.txt".to_string(), b"a\n".to_vec())]);
+        commit_all(&mut src, &files, 1_000);
+        let tip = src.head().unwrap().unwrap().to_hex();
+        let server = start(&root);
+        raw_publish(server.addr(), "/v1/publish", None);
+        raw_publish(server.addr(), "/v1/publish?ref=main", None);
+        raw_publish(server.addr(), "/v1/publish?ref=main", Some("not-a-hash"));
+        raw_publish(server.addr(), "/v1/publish?ref=main", Some(tip.as_str()));
+
+        let central = Repo::open(root.join("central")).unwrap();
+        let denies: Vec<_> = central
+            .journal()
+            .events()
+            .iter()
+            .filter(|event| event.kind == "deny")
+            .collect();
+        assert_eq!(denies.len(), 4, "四个形状错误都要有 deny");
+        for (deny, reason) in
+            denies
+                .iter()
+                .zip(["missing_ref", "missing_tip", "bad_tip", "bad_body_size"])
+        {
+            assert_eq!(deny.payload["action"], "publish");
+            assert_eq!(deny.payload["reason"], reason);
+            assert_eq!(
+                deny.payload["state_before"], deny.payload["state_after"],
+                "请求形状拒绝不改仓库状态"
+            );
+        }
+        server.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

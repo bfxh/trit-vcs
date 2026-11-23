@@ -1506,5 +1506,15 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "lib"
+},
+{
+ "name": "vcs: publish 请求形状拒绝不落 deny 事件（400 无账）",
+ "file": "src/net/deny.rs",
+ "old": "        \"publish\",",
+ "new": "        \"publish_changed\",",
+ "filter": "publish_shape_rejections_are_denied_and_audited",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
 }
 ]

@@ -25,6 +25,10 @@ use crate::wire;
 pub use crate::wire::Limits;
 
 mod auth;
+mod deny;
+mod reject;
+
+use self::reject::{drain_body, reject_json};
 
 const MAX_HEAD_BYTES: usize = 8 * 1024;
 const MAX_HEADERS: usize = 24;
@@ -377,6 +381,15 @@ fn publish(
     state: &Arc<State>,
 ) -> Result<(), NetError> {
     let Some(name) = request.query.get("ref") else {
+        deny::record_publish_rejected(
+            state,
+            request,
+            None,
+            None,
+            400,
+            "missing_ref",
+            "publish 需要 ?ref=NAME",
+        );
         return reject_json(
             reader,
             request,
@@ -387,6 +400,15 @@ fn publish(
         );
     };
     let Some(tip_hex) = request.headers.get("x-trit-tip") else {
+        deny::record_publish_rejected(
+            state,
+            request,
+            Some(name),
+            None,
+            400,
+            "missing_tip",
+            "publish 需要 X-Trit-Tip",
+        );
         return reject_json(
             reader,
             request,
@@ -397,6 +419,15 @@ fn publish(
         );
     };
     let Some(tip) = crate::hash::Hash::from_hex(tip_hex) else {
+        deny::record_publish_rejected(
+            state,
+            request,
+            Some(name),
+            None,
+            400,
+            "bad_tip",
+            "X-Trit-Tip 不是合法提交 id",
+        );
         return reject_json(
             reader,
             request,
@@ -407,6 +438,15 @@ fn publish(
         );
     };
     if request.length == 0 || request.length > state.max_body {
+        deny::record_publish_rejected(
+            state,
+            request,
+            Some(name),
+            Some(tip_hex),
+            413,
+            "bad_body_size",
+            "请求体为空或超过上限",
+        );
         return reject_json(
             reader,
             request,
@@ -459,32 +499,6 @@ fn publish(
             respond_remote(reader.get_mut(), &err)
         }
     }
-}
-
-/// 提前拒绝时最多排空多少请求体。超过就直关闭：宁可让客户端看到 RST，
-/// 也不为了回一条 JSON 把 256 MiB body 读进内存/带宽。
-const DRAIN_LIMIT: u64 = 1024 * 1024;
-
-/// 读掉一小段请求体，避免"服务端没读完就关连接"在 Windows 上变成 RST（连回执一起丢）。
-fn drain_body<R: Read>(reader: R, length: u64) {
-    if length == 0 || length > DRAIN_LIMIT {
-        return;
-    }
-    let mut limited = reader.take(length);
-    let _ = std::io::copy(&mut limited, &mut std::io::sink());
-}
-
-/// 提前拒绝的统一出口：先排空（有上限），再回 JSON。
-fn reject_json(
-    reader: &mut BufReader<TcpStream>,
-    request: &Request,
-    status: u16,
-    kind: &str,
-    message: &str,
-    extra: &[(&str, &str)],
-) -> Result<(), NetError> {
-    drain_body(&mut *reader, request.length);
-    respond_json(reader.get_mut(), status, kind, message, extra)
 }
 
 /// 读一段 `Content-Length` 限定的对象流并逐块入库，返回收到的对象数。
