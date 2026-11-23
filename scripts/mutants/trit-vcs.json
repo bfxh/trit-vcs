@@ -1436,5 +1436,15 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "lib"
+},
+{
+ "name": "vcs: policy 变更不落 policy 事件（策略改动无账）",
+ "file": "src/policy.rs",
+ "old": "                \"policy\",",
+ "new": "                \"policy_changed\",",
+ "filter": "policy_set_is_audited_and_manual_edit_is_red",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "test:policy_cli"
 }
 ]

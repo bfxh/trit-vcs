@@ -17,13 +17,15 @@
   摘要；`accept` 执行落 `AcceptReceipt` 对象 + `accept` 事件，记录每条判据 exit/超时/输出摘要；
   `publish/pull` 也进链（publish 记 previous/forced）。`Repo::open_for_audit` 让坏 journal 也能先出结构化
   `journal_broken` 报告，而不是在打开仓库时只剩一句 IO 错误。关键状态变更改为写前协议：
-  `Repo::begin_operation` 在 `stage/commit/set_ref/adopt/claim_*` 动手前落 `op_begin`（含 `state_before`），
+  `Repo::begin_operation` 在 `stage/commit/set_ref/adopt/claim_*/policy` 动手前落 `op_begin`（含 `state_before`），
   `finish_operation` 落 `op_result`（含 `status`/`state_after`）；崩在中间会留下 `op_open` 或
   `op_state_gap`。提交门拒绝也落 `gate` 事件（action/decision/reason/session/state_before/state_after），拒绝不再无账。
-  测试：`src/audit.rs` / `src/audit/extra_tests.rs` 11 条、`tests/audit_cli.rs` 5 条（干净仓 L2、删日志 L0、坏 JSON 仍可审计、手改
-  ref/HEAD 判红、accept 回执进链、开放操作/拒绝事件/失败操作改状态）；新增 5 条变异（op_begin 缺 state_before /
-  op_result 缺 state_after / gate 拒绝写成 allowed / 不检查 op_begin 接续 / 失败操作改状态不判红），本机 5/5 全抓；
-  早先 3 条审计/锁变异仍全抓。尚未做：merge/policy/key/auth 失败事件与 deny 事件、Ed25519/Merkle/仓外锚。
+  `trit-vcs policy [--json]` 查看策略，`policy set --owner ... [--require-witness] [--require-intent]` 整份替换并落
+  `policy` 事件（session/开关/policy_hash/state_before/state_after）；手工改 `policy.json` 仍会被
+  `state_drift` 或下一次 `op_state_gap` 抓出来。
+  测试：`src/audit.rs` / `src/audit/extra_tests.rs` 11 条、`tests/audit_cli.rs` 5 条、`tests/policy_cli.rs` 1 条（干净仓 L2、删日志 L0、坏 JSON 仍可审计、手改
+  ref/HEAD 判红、accept 回执进链、开放操作/拒绝事件/失败操作改状态、策略变更进链与手改策略判红）；新增 1 条策略变异（policy 事件不落链），本机 1/1 全抓；
+  上一批 5 条写前/gate/失败状态变异仍保持 5/5，早先 3 条审计/锁变异仍全抓。尚未做：merge/key/auth 失败事件与 deny 事件、Ed25519/Merkle/仓外锚。
 - 跨机传输与鉴权（网络 v0）：`trit-vcs serve --dir <中央仓> --bind 127.0.0.1:7878 --token-file <文件>`，
   客户端 `publish/pull --remote http://host:port --token-file <文件>`。协议是自写的 HTTP/1.1 子集
   （`GET`/`POST`、`Content-Length`、一请求一连接、拒 `chunked`），只用 `std`；对象流 `TVOB`
