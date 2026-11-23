@@ -22,10 +22,12 @@
   `op_state_gap`。提交门拒绝也落 `gate` 事件（action/decision/reason/session/state_before/state_after），拒绝不再无账。
   `trit-vcs policy [--json]` 查看策略，`policy set --owner ... [--require-witness] [--require-intent]` 整份替换并落
   `policy` 事件（session/开关/policy_hash/state_before/state_after）；手工改 `policy.json` 仍会被
-  `state_drift` 或下一次 `op_state_gap` 抓出来。
-  测试：`src/audit.rs` / `src/audit/extra_tests.rs` 11 条、`tests/audit_cli.rs` 5 条、`tests/policy_cli.rs` 1 条（干净仓 L2、删日志 L0、坏 JSON 仍可审计、手改
-  ref/HEAD 判红、accept 回执进链、开放操作/拒绝事件/失败操作改状态、策略变更进链与手改策略判红）；新增 1 条策略变异（policy 事件不落链），本机 1/1 全抓；
-  上一批 5 条写前/gate/失败状态变异仍保持 5/5，早先 3 条审计/锁变异仍全抓。尚未做：merge/key/auth 失败事件与 deny 事件、Ed25519/Merkle/仓外锚。
+  `state_drift` 或下一次 `op_state_gap` 抓出来。`merge` CLI 与 MCP 改走 `merge_audited`：合并只写对象库、
+  不改状态，但同样落 `op_begin` + `merge`（输入、树、冲突数、state_after）+ `op_result`；有冲突是完成结果，
+  不是错误，审计不因此判红。
+  测试：`src/audit.rs` / `src/audit/extra_tests.rs` 11 条、`tests/audit_cli.rs` 5 条、`tests/policy_cli.rs` 1 条、`tests/merge_cli.rs` 2 条（干净仓 L2、删日志 L0、坏 JSON 仍可审计、手改
+  ref/HEAD 判红、accept 回执进链、开放操作/拒绝事件/失败操作改状态、策略变更进链与手改策略判红、合并事件与冲突后审计）；新增 2 条变异（policy 事件不落链 / merge 事件不落链），本机 2/2 全抓；
+  上一批 5 条写前/gate/失败状态变异仍保持 5/5，早先 3 条审计/锁变异仍全抓。尚未做：key/auth 失败事件与 deny 事件、Ed25519/Merkle/仓外锚。
 - 跨机传输与鉴权（网络 v0）：`trit-vcs serve --dir <中央仓> --bind 127.0.0.1:7878 --token-file <文件>`，
   客户端 `publish/pull --remote http://host:port --token-file <文件>`。协议是自写的 HTTP/1.1 子集
   （`GET`/`POST`、`Content-Length`、一请求一连接、拒 `chunked`），只用 `std`；对象流 `TVOB`

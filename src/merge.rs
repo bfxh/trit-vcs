@@ -9,10 +9,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::hash::Hash;
 use crate::repo::{Repo, RepoError};
 use crate::store::StoreError;
+
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum MergeError {
@@ -343,6 +351,67 @@ fn file_size(repo: &Repo, id: Option<Hash>) -> Result<u64, MergeError> {
 
 fn object_hex(id: Option<Hash>) -> Option<String> {
     id.map(|hash| hash.to_hex())
+}
+
+/// 受审计的合并入口：先落 `op_begin`，再执行纯合并，最后落 `op_result`。
+///
+/// 合并只写对象库，不改 HEAD/refs/index，所以 `state_before == state_after`；
+/// 但“谁在什么时候拿哪两个提交合并、出来有没有冲突”仍然是审计要回答的问题。
+pub fn merge_audited(
+    repo: &mut Repo,
+    ours: &Hash,
+    theirs: &Hash,
+    base: Option<&Hash>,
+) -> Result<MergeOutcome, MergeError> {
+    let at_ms = wall_ms();
+    let args = json!({
+        "ours": ours.to_hex(),
+        "theirs": theirs.to_hex(),
+        "base": base.map(|id| id.to_hex()),
+    });
+    let begin = repo
+        .begin_operation("merge", args, at_ms)
+        .map_err(MergeError::Repo)?;
+    match merge(repo, ours, theirs, base) {
+        Ok(outcome) => {
+            let result = json!({
+                "tree": outcome.tree.map(|tree| tree.to_hex()),
+                "conflicts": outcome.conflicts.len(),
+                "merged_files": outcome.merged_files,
+                "removed_files": outcome.removed_files,
+            });
+            let state_after = repo.state_digest()?.to_hex();
+            repo.journal_mut()
+                .append(
+                    "merge",
+                    json!({
+                        "ours": ours.to_hex(),
+                        "theirs": theirs.to_hex(),
+                        "base": base.map(|id| id.to_hex()),
+                        "tree": outcome.tree.map(|tree| tree.to_hex()),
+                        "conflicts": outcome.conflicts.len(),
+                        "merged_files": outcome.merged_files,
+                        "removed_files": outcome.removed_files,
+                        "state_after": state_after,
+                    }),
+                    at_ms,
+                )
+                .map_err(|err| MergeError::Repo(RepoError::Journal(err)))?;
+            repo.finish_operation(&begin, "merge", "ok", result, at_ms)
+                .map_err(MergeError::Repo)?;
+            Ok(outcome)
+        }
+        Err(err) => {
+            let _ = repo.finish_operation(
+                &begin,
+                "merge",
+                "failed",
+                json!({"error": err.to_string()}),
+                at_ms,
+            );
+            Err(err)
+        }
+    }
 }
 
 /// 三方合并两个提交（`base` 为 `None` 时自动找第一父链的公共祖先）。

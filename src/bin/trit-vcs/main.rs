@@ -397,7 +397,7 @@ fn main() -> ExitCode {
         "mcp" => mcp_serve::serve_cmd(&args),
         "merge" => {
             let root = repo_path(&args);
-            let repo = match Repo::open(&root) {
+            let mut repo = match Repo::open(&root) {
                 Ok(repo) => repo,
                 Err(err) => return fail_repo(&err, &root, "", &args),
             };
@@ -419,7 +419,7 @@ fn main() -> ExitCode {
                 },
                 None => None,
             };
-            match merge::merge(&repo, &ours, &theirs, base.as_ref()) {
+            match merge::merge_audited(&mut repo, &ours, &theirs, base.as_ref()) {
                 Ok(outcome) => {
                     if has(&args, "--json") {
                         let conflicts: Vec<serde_json::Value> = outcome

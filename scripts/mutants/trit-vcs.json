@@ -1446,5 +1446,15 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "test:policy_cli"
+},
+{
+ "name": "vcs: 合并不落 merge 事件（合并没有账）",
+ "file": "src/merge.rs",
+ "old": "                    \"merge\",",
+ "new": "                    \"merge_changed\",",
+ "filter": "non_overlapping_edits_merge_clean_via_cli",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "test:merge_cli"
 }
 ]
