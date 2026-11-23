@@ -1,9 +1,9 @@
 # trit-vcs 审计强度路线图
 
-> 状态：设计稿，未实现  
+> 状态：P0 首批已落地（L2 对账、认领快照、判据回执）；签名 / Merkle / 仓外锚尚未实现
 > 日期：2026-11-24  
 > 目标：审计面做到“第三方可以离线复算”，不是“再加一条日志”  
-> 一句话：现在有一条**链**，但没有**锚**；有**见证**，但没有**签名**；有**认领**，但没有**授权快照**；有 `verify`，但没有**对账**。
+> 一句话：现在有**链**、有**对账**，但还没有**签名锚**；有**认领**、有**授权快照**；有 `verify`、也有 `audit`。下一步不是把日志写长，而是把剩余操作补全、把链签死。
 
 ## 0. 先给结论
 
@@ -14,12 +14,12 @@
 | 级别 | 定义 | 当前 |
 |---|---|---|
 | L0 | 有日志，能看发生过什么 | 有 |
-| L1 | 链内改一条会被发现 | 有，但只能防中间改写；删尾巴、换整条链发现不了 |
-| L2 | 日志能重放成当前状态，漏账/假账会被抓 | **没有** |
+| L1 | 链内改一条会被发现 | 有，但只能防中间改写；删尾巴、换整条链仍要靠检查点/锚 |
+| L2 | 日志能重放成当前状态，漏账/假账会被抓 | **已实现首批**：`audit status/verify/reconcile` 对账 HEAD/refs/对象/claim_set/回执/state_digest；尚未覆盖所有会改状态的操作 |
 | L3 | 每条关键事件能证明到签名检查点，检查点有仓外锚 | **没有** |
 | L4 | 跨机同一视图，服务端回滚/分裂视图能被抓 | **没有** |
 
-所以现在不能对外说“审计最强”。最多能说“有审计面”。真正要补的不是把日志写得更长，而是让它满足四个字：**可对账、可证明**。
+所以现在能说“有可对账的审计面”，还不能说“审计最强”。L2 的骨架已经能跑：删整本日志、手改 ref、状态漂移、回执/认领快照缺失都会红；但“所有操作都记账”和“链被整段替换”仍分别是 P0/P1 的未完成项。
 
 ### 0.2 顺序不能反
 
@@ -34,6 +34,22 @@
 > 在同一份版本库对象图里，同时给出**谁做的、被谁授权、证据由谁产生、日志没有被截断、当前状态能由日志重放、跨机没有第二个版本**，而且第三方可以离线复算。
 
 Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同一个 VCS 对象图里，也不能用一份离线包全部复核。这个组合是 trit-vcs 真正能建立差异化的地方。
+
+### 0.4 本轮已经落地的（可复算，不是 PPT）
+
+| 能力 | 入口 | 事实 |
+|---|---|---|
+| 日志对账 | `audit status` / `audit verify` / `audit reconcile` | 比对日志文件是否存在/可读、HEAD、refs、对象闭包、`claim_set`、`accept` 回执、最新 `state_after` |
+| 状态摘要 | `Repo::state_digest` | HEAD + refs + index + policy 原始字节 + claims 原始字节，canonical JSON 后 BLAKE3；不把 journal 算进去，避免循环自证 |
+| 单写者链 | `Journal::append` | `journal.lock` 跨进程锁；拿锁后按文件长度决定是否重读，避免两个进程拿同一个 `seq` |
+| 授权快照 | `ClaimSet` 对象 + `Commit.claim_set` | 提交时按 path 覆盖集合生成不可变快照；`verify`/`audit` 校验对象存在且摘要对得上 |
+| 判据回执 | `AcceptReceipt` 对象 + `accept` 事件 | 记录树、基线、session、认领 id、每条判据的 exit/超时/输出摘要/是否截断；回执摘要进链 |
+| 操作事件 | `stage` / `commit` / `ref` / `adopt` / `claim_*` / `publish` / `pull` / `accept` | 带 `state_after` 的事件能被状态摘要校验；`publish` 记 `previous`/`forced`，`pull` 记 prefix/force |
+| 查询面 | `audit log` / `audit show` / `--json` | 审计员不必用眼睛翻 JSONL；`audit status --json` 可直接分支 |
+| 坏日志容错 | `Repo::open_for_audit` | journal 是坏 JSON 时仍能打开审计入口，输出 `journal_broken`，而不是在 `Repo::open` 阶段只丢一句 IO 错 |
+| 失败即非零 | `audit status` | 有 issue 时退出码 1；`--json` 仍输出结构化报告，便于 CI 消费 |
+
+尚未完成、不能假装完成的：`op_begin/op_result` 写前协议、gate 拒绝事件、merge/策略/密钥/鉴权失败事件、Ed25519 签名、Merkle 检查点、仓外锚、跨机 journal 互链。**这些没做完之前，L3 不能宣称。**
 
 ---
 
@@ -77,29 +93,32 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 
 | 编号 | 缺口 | 现状事实 | 会导致什么 | 优先级 |
 |---|---|---|---|---|
-| G1 | 日志不能解释状态 | `Repo::verify` 只统计事件数、跑对象 fsck、走第一父链；不比对 journal 与 refs/HEAD/claims/policy | 删掉整本 journal 仍可能“绿”；手改 ref、漏记 commit 也绿 | P0 |
-| G2 | 链可截断、可换整条 | 没有检查点、没有 Merkle 根、没有仓外锚；`verify` 只验当前文件 | 删最后 N 条并重算，或整链替换，都验不出 | P0 |
-| G3 | 身份不可验证 | `session` 是自由字符串；提交/认领/见证都没有签名 | 谁都能自称 `qoder:s1`，伪造“谁做的” | P0 |
-| G4 | 操作覆盖不全 | 只有 `stage`/`commit`/`ref`/`adopt`/`claim_add`/`claim_release` 六类事件 | 拒绝的 gate、accept 执行、merge、publish/pull、鉴权失败、策略/密钥变更都没有账 | P0 |
-| G5 | 并发与崩溃会撕裂日志 | `Journal::append` 没有跨进程锁；`set_ref` 先写 ref 再记事件；commit 先记事件再写 HEAD | 两进程拿到同一个 `seq` 会弄坏链；崩在中间会出现“状态变了、账没记” | P0 |
-| G6 | 授权不可事后复核 | commit 只存 claim id；claim 事件只记 `paths.len()`，不记路径和账本摘要；账本 TTL 过后原条目会消失 | 事后无法证明“这个提交当时确实被这条认领覆盖” | P0 |
-| G7 | 证据不可验证 | witness 不签名；`accept` 结果只打印到 stderr，不落对象/事件；handoff 不携带 witness/accept | 谁都能造一份“通过”的见证；CI 结论离开机器就散 | P1 |
-| G8 | 跨机没有同一视图 | 客户端 journal 与中央仓 journal 是两本账；publish/pull 不互链；单 token 无 actor 身份；ref 是普通文件 | 服务端可回滚/改写 ref 和账本；客户端没有 pin，发现不了第二个历史 | P1 |
-| G9 | 时间与策略变更不可信 | HLC 只给本地全序；ref/stage 用墙钟毫秒；`policy.json` 可直接改，无事件、无签名 | 可回填时间；策略被改过也看不出来 | P1 |
-| G10 | 没有审计查询/证明入口 | 没有 `audit` CLI；`verify` 只有一行摘要；`log` 只走第一父链 | 审计员只能用眼睛翻 JSONL；无法给第三方 inclusion proof | P2 |
+| G1 | 日志不能解释状态 | `Repo::verify` 仍只统计事件数、跑对象 fsck、走第一父链；但 `audit status` 已比对 journal 与 refs/HEAD/claims/policy/state_digest | `verify` 单独跑仍可能绿；用 `audit` 才会抓删日志/手改 ref/漏记 commit | P0，**部分关闭** |
+| G2 | 链可截断、可换整条 | 没有检查点、没有 Merkle 根、没有仓外锚；`verify` 只验当前文件 | 删最后 N 条并重算，或整链替换，仍验不出 | P0，未关闭 |
+| G3 | 身份不可验证 | `session` 是自由字符串；提交/认领/见证都没有签名 | 谁都能自称 `qoder:s1`，伪造“谁做的” | P0，未关闭 |
+| G4 | 操作覆盖不全 | 已扩到 `stage`/`commit`/`ref`/`adopt`/`claim_add`/`claim_release`/`publish`/`pull`/`accept`；仍缺 gate 拒绝、merge、策略/密钥/鉴权失败、deny | 拒绝的 gate、鉴权失败、策略变更仍可能不留账 | P0，**部分关闭** |
+| G5 | 并发与崩溃会撕裂日志 | `Journal::append` 已有 `journal.lock` 单写者锁；`set_ref` 仍先写 ref 再记账，commit 写 HEAD 后记账 | 锁住并发写；崩在中间会留下“状态变了、账没记”，由 `audit` 抓 | P0，**部分关闭** |
+| G6 | 授权不可事后复核 | 已落 `ClaimSet` 不可变快照，claim 事件补 `path_list`；账本 TTL 过后原条目仍会消失 | 快照能证明当时授权；账本原始条目仍需归档策略 | P0，**部分关闭** |
+| G7 | 证据不可验证 | witness 不签名；`accept` 结果已落 `AcceptReceipt` 对象/事件；handoff 仍不携带 witness/accept | 回执可复核“跑了什么”，但回执本身没签名，仍可被替换 | P1，**部分关闭** |
+| G8 | 跨机没有同一视图 | 客户端 journal 与中央仓 journal 是两本账；`publish`/`pull` 已有事件但两本账不互链；单 token 无 actor 身份；ref 是普通文件 | 服务端可回滚/改写 ref 和账本；客户端没有 pin，发现不了第二个历史 | P1，未关闭 |
+| G9 | 时间与策略变更不可信 | HLC 只给本地全序；ref/stage 用墙钟毫秒；`policy.json` 可直接改，无事件、无签名 | 可回填时间；策略被改过也看不出来 | P1，未关闭 |
+| G10 | 没有审计查询/证明入口 | `audit status/log/show/verify/reconcile` 已可用；仍没有 inclusion proof / bundle | 审计员能查账，但还不能给第三方数学证明 | P2，**部分关闭** |
 | G11 | Git 桥会丢审计信息 | import 只走 `--first-parent`，丢掉 merge 图、作者签名；session 被合成；export 只加尾注 | Git 侧的信任无法映射到 trit；审计链在桥接处断掉 | P2 |
 | G12 | 规模与隐私没有预算 | `Journal::open` 每次全量读；无增量校验/归档/脱敏/保留策略 | 事件上百万后打开变慢；日志可能把密钥/客户数据带出去 | P2 |
 
-### 2.3 最刺眼的三个具体事实
+### 2.3 最刺眼的三个具体事实（以及现在的边界）
 
 1. **删掉 `.tritvcs/journal.jsonl`，`trit-vcs verify` 仍可能报绿。**  
    它验的是对象库和 HEAD 可达提交，不是“日志是否完整记录了这些状态变化”。
+   **现在**：`trit-vcs audit status` 会报 `journal_missing` / `head_unlogged` 并退出非零；但审计员必须知道要跑 `audit`，不能只看 `verify` 的一行绿。
 
-2. **`set_ref` 先 `fs::write` 再 `journal.append`。**  
+2. **`set_ref` 先 `fs::write` 再 `journal.append`。**
    两次系统调用之间崩溃，ref 已经动了，账上却没有这一笔。审计日志不是写前日志（WAL）。
+   **现在**：`audit` 用 `state_digest` 对账，能抓“状态变了、账没记”；但抓到不等于阻止，`op_begin/op_result` 仍未实现。
 
-3. **认领事件只记 `paths.len()`。**  
-   审计员看到“某个 owner 认领了 3 条路径”，但看不到是哪 3 条，也看不到当时的账本摘要。TTL 到期后，连原始条目都可能被清掉。
+3. **认领事件只记 `paths.len()`。**
+   旧事件里审计员只看到“某个 owner 认领了 3 条路径”，看不到是哪 3 条，也看不到当时的账本摘要；TTL 到期后，原始条目可能被清掉。
+   **现在**：新 `claim_add` 事件已补 `path_list`，提交落 `ClaimSet` 对象；旧事件仍只能按语义对账，不能补出路径。
 
 ---
 
@@ -361,6 +380,10 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 - claim set 快照进提交；
 - accept receipt 落对象 + 事件；
 - `audit status/log/show/verify --json`。
+
+**本轮已落地**：仓级 `journal.lock` 单写者锁；`state_digest` + `audit status/verify/reconcile`；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`。
+
+**仍未落地**：`AuditEvent v2` 类型化、`op_begin/op_result` 写前协议、gate 拒绝 / merge / policy / key / auth 失败 / deny 事件。这也是为什么现在只能算 L2 首批，不能算 P0 完成。
 
 **完成定义**
 

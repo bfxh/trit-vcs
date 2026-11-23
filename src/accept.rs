@@ -16,11 +16,15 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
+use crate::hash::Hash;
+
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_OUTPUT_CAP: usize = 2048;
 
 /// 一条判据的执行结果。`exit=None` 表示没跑起来（spawn 失败）或被超时杀掉。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcceptOutcome {
     pub command: String,
     pub exit: Option<i32>,
@@ -50,6 +54,38 @@ impl AcceptReport {
 
     pub fn failed(&self) -> impl Iterator<Item = &AcceptOutcome> {
         self.outcomes.iter().filter(|outcome| !outcome.passed())
+    }
+}
+
+/// 判据执行的不可变回执：证明"这台机器、这个树、这批认领下，到底跑了什么、结果如何"。
+///
+/// 只打印结果不够——打印完就没了，事后审计只能信口述。回执进对象库（内容寻址），
+/// 摘要进哈希链（`accept` 事件），于是"跑过"这件事本身可复核、可反驳。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptReceipt {
+    pub schema: u32,
+    pub tree: Hash,
+    pub base: Option<Hash>,
+    pub session: String,
+    pub claim_ids: Vec<String>,
+    pub outcomes: Vec<AcceptOutcome>,
+    pub passed: bool,
+    pub at_secs: u64,
+}
+
+impl AcceptReceipt {
+    pub const SCHEMA: u32 = 1;
+
+    pub fn encode(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+
+    pub fn id(&self) -> Result<Hash, serde_json::Error> {
+        Ok(Hash::of(&self.encode()?))
     }
 }
 

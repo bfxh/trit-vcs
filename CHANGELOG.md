@@ -6,6 +6,20 @@
 ## [Unreleased]
 
 ### Added
+- 审计 L2 首批（`docs/AUDIT-STRENGTH.md`）：`trit-vcs audit status/verify/reconcile` 把哈希链日志对账到
+  当前 `HEAD`/refs/索引/策略/认领账本/对象闭包，`audit log/show` 可按事件类型与序号查；
+  `--json` 输出 `ok/level/chain_ok/events/issues`，有 issue 时退出码非零。新增 `Repo::state_digest`
+  （HEAD + refs + index + policy 原始字节 + claims 原始字节，canonical JSON 后 BLAKE3，不把 journal
+  算进去避免循环自证）；`stage/ref/adopt/commit/claim_*` 事件带 `state_after`，`adopt/claim` 补
+  `path_list`。`Journal::append` 加 `journal.lock` 单写者锁，拿锁后按文件长度重读，8 线程 × 20 条
+  并发测试不丢事件/不重 seq；Windows 上锁文件和日志的瞬时 `PermissionDenied` 走退避重试，不把
+  杀毒扫描误判成日志损坏。提交落 `ClaimSet` 不可变快照（`Commit.claim_set`），`verify` 校验对象
+  摘要；`accept` 执行落 `AcceptReceipt` 对象 + `accept` 事件，记录每条判据 exit/超时/输出摘要；
+  `publish/pull` 也进链（publish 记 previous/forced）。`Repo::open_for_audit` 让坏 journal 也能先出结构化
+  `journal_broken` 报告，而不是在打开仓库时只剩一句 IO 错误。测试：`src/audit.rs` 6 条、`tests/audit_cli.rs`
+  5 条（干净仓 L2、删日志 L0、坏 JSON 仍可审计、手改 ref/HEAD 判红、accept 回执进链）；登记 3 条变异（锁超时放弃 /
+  不比对 HEAD / 不比对 `state_after`），本机 3/3 全抓。尚未做：`op_begin/op_result` 写前协议、
+  gate 拒绝/merge/policy/key/auth 事件、Ed25519/Merkle/仓外锚。
 - 跨机传输与鉴权（网络 v0）：`trit-vcs serve --dir <中央仓> --bind 127.0.0.1:7878 --token-file <文件>`，
   客户端 `publish/pull --remote http://host:port --token-file <文件>`。协议是自写的 HTTP/1.1 子集
   （`GET`/`POST`、`Content-Length`、一请求一连接、拒 `chunked`），只用 `std`；对象流 `TVOB`

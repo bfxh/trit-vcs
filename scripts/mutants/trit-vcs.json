@@ -1356,5 +1356,35 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "lib"
+},
+{
+ "name": "vcs: 日志锁超时立刻放弃（并发追加开始丢事件）",
+ "file": "src/journal.rs",
+ "old": "    started.elapsed() >= LOCK_TIMEOUT",
+ "new": "    true",
+ "filter": "concurrent_appends_keep_one_chain",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: 不比对 HEAD 与日志最后提交（手改 HEAD 仍绿）",
+ "file": "src/audit.rs",
+ "old": "        (Some(actual), Some(expected)) if actual != expected => push_issue(",
+ "new": "        (Some(actual), Some(expected)) if false => push_issue(",
+ "filter": "manual_head_write_without_event_is_caught",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: 不比对最新 state_after（状态漂移仍绿）",
+ "file": "src/audit.rs",
+ "old": "        if expected != digest.to_hex() {",
+ "new": "        if false {",
+ "filter": "manual_head_write_without_event_is_caught",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
 }
 ]

@@ -228,6 +228,25 @@ impl Repo {
         })
     }
 
+    /// 审计入口：日志坏了不能在这里就放弃，否则 `audit` 永远只能报“io 错”。
+    /// 空壳日志会让 `audit status` 的 `journal_broken` 分支接手；普通命令仍走 `open`。
+    pub fn open_for_audit(root: impl Into<PathBuf>) -> Result<Self, RepoError> {
+        let root = root.into();
+        if !Self::dir(&root).is_dir() {
+            return Err(RepoError::NotInitialized(
+                Self::dir(&root).display().to_string(),
+            ));
+        }
+        let store = Store::open(Self::dir(&root))?;
+        let path = Self::dir(&root).join("journal.jsonl");
+        let journal = Journal::open(&path).unwrap_or_else(|_| Journal::empty(path));
+        Ok(Self {
+            root,
+            store,
+            journal,
+        })
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -243,6 +262,60 @@ impl Repo {
     /// 追加审计事件用（认领账本等跨仓动作要进中央仓的哈希链）。
     pub fn journal_mut(&mut self) -> &mut Journal {
         &mut self.journal
+    }
+
+    /// 把判据回执落成对象并把摘要写进链；回执本身不改仓库状态。
+    pub fn record_accept(
+        &mut self,
+        receipt: &crate::accept::AcceptReceipt,
+    ) -> Result<Hash, RepoError> {
+        let bytes = receipt
+            .encode()
+            .map_err(|err| RepoError::BadHead(format!("回执编码失败：{err}")))?;
+        let (digest, _) = self.store.put_chunk(&bytes)?;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.journal.append(
+            "accept",
+            json!({
+                "receipt": digest.to_hex(),
+                "tree": receipt.tree.to_hex(),
+                "base": receipt.base.map(|base| base.to_hex()),
+                "session": receipt.session,
+                "claim_ids": receipt.claim_ids,
+                "passed": receipt.passed,
+                "at_secs": receipt.at_secs,
+            }),
+            now_ms,
+        )?;
+        Ok(digest)
+    }
+
+    /// 当前状态的可复算摘要：HEAD + refs + index + policy 字节 + claims 字节。
+    ///
+    /// 不把 journal 自己算进去——审计要问的是"日志是否解释了这份状态"，不能循环自证。
+    /// 文件用原始字节哈希而不是解析后的结构：格式/空白变化也算状态变化，审计宁可多报。
+    pub fn state_digest(&self) -> Result<Hash, RepoError> {
+        let head = self.head()?.map(|id| id.to_hex());
+        let refs: BTreeMap<String, String> = self
+            .list_refs()?
+            .into_iter()
+            .map(|(name, id)| (name, id.to_hex()))
+            .collect();
+        let index = self.index()?;
+        let policy = file_digest(&Self::dir(&self.root).join("policy.json"))?;
+        let claims = file_digest(&Self::dir(&self.root).join("claims.json"))?;
+        let state = json!({
+            "head": head,
+            "refs": refs,
+            "index": index,
+            "policy": policy,
+            "claims": claims,
+        });
+        let bytes = serde_json::to_vec(&state).map_err(|e| RepoError::BadHead(e.to_string()))?;
+        Ok(Hash::of(&bytes))
     }
 
     pub fn head(&self) -> Result<Option<Hash>, RepoError> {
@@ -295,9 +368,10 @@ impl Repo {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
+        let state_after = self.state_digest()?.to_hex();
         self.journal.append(
             "ref",
-            json!({"name": name, "commit": commit.to_hex()}),
+            json!({"name": name, "commit": commit.to_hex(), "state_after": state_after}),
             now_ms,
         )?;
         Ok(())
@@ -326,12 +400,15 @@ impl Repo {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
+        let state_after = self.state_digest()?.to_hex();
         self.journal.append(
             "adopt",
             json!({
                 "commit": commit.to_hex(),
                 "tree": tree.to_hex(),
                 "paths": paths.len(),
+                "path_list": paths,
+                "state_after": state_after,
             }),
             now_ms,
         )?;
@@ -445,9 +522,10 @@ impl Repo {
             Self::dir(&self.root).join("index.json"),
             serde_json::to_vec_pretty(&index).map_err(|e| RepoError::BadHead(e.to_string()))?,
         )?;
+        let state_after = self.state_digest()?.to_hex();
         self.journal.append(
             "stage",
-            json!({"tree": tree.to_hex(), "paths": index.paths}),
+            json!({"tree": tree.to_hex(), "paths": index.paths, "state_after": state_after}),
             now_secs * 1000,
         )?;
         Ok((tree, put))
@@ -465,11 +543,26 @@ impl Repo {
             self.store.put_chunk(bytes)?;
         }
         let witness = decision.witness;
+        // 授权快照也落成不可变对象：账本之后怎么变，都能复核"当时授权了哪些路径"。
+        let claim_set = if req.claims.is_empty() {
+            None
+        } else {
+            let set = crate::claims::ClaimSet::from_claims(&req.claims, req.now_secs)
+                .map_err(|e| RepoError::BadHead(e.to_string()))?;
+            let bytes = set
+                .encode()
+                .map_err(|e| RepoError::BadHead(e.to_string()))?;
+            let (id, _) = self.store.put_chunk(&bytes)?;
+            Some((id, set))
+        };
         let last_ms = self.journal.events().last().map(|e| e.at_ms).unwrap_or(0);
         let hlc = Hlc::zero().tick((req.now_secs * 1000).max(last_ms));
         let mut commit = Commit::new(tree, req.session.clone(), req.message.clone(), hlc);
         if let Some((digest, _)) = &witness {
             commit = commit.with_witness(*digest);
+        }
+        if let Some((digest, _)) = &claim_set {
+            commit = commit.with_claim_set(*digest);
         }
         if let Some(intent) = &intent {
             commit = commit.with_intent(intent.clone());
@@ -490,6 +583,10 @@ impl Repo {
             .encode()
             .map_err(|e| RepoError::BadHead(e.to_string()))?;
         let (id, _) = self.store.put_chunk(&encoded)?;
+        // 先落 HEAD 再记账：崩在中间会留下"状态变了、账没记"，由 audit 对账抓出来；
+        // 反过来先记账再写 HEAD 会留下"账说变了、状态没变"，同样要抓。两种顺序都不能静默。
+        self.write_head(&id)?;
+        let state_after = self.state_digest()?.to_hex();
         self.journal.append(
             "commit",
             json!({
@@ -501,16 +598,17 @@ impl Repo {
                 "tags": commit.tags,
                 "verdict": verdict.label(),
                 "witness": witness.as_ref().map(|(digest, _)| digest.to_hex()),
+                "claim_set": claim_set.as_ref().map(|(digest, _)| digest.to_hex()),
                 "intent": intent.as_ref().map(|intent| json!({
                     "goal": intent.goal,
                     "accept": intent.accept.len(),
                     "base": intent.base.map(|base| base.to_hex()),
                 })),
                 "message": commit.message,
+                "state_after": state_after,
             }),
             hlc.wall_ms,
         )?;
-        self.write_head(&id)?;
         Ok(CommitOutcome {
             id,
             verdict,
@@ -592,7 +690,25 @@ impl Repo {
         })?;
         let commits = self.log()?;
         let mut witnessed = 0usize;
+        let mut claim_sets = 0usize;
+        let mut receipts = 0usize;
         for (id, commit) in &commits {
+            if let Some(digest) = commit.claim_set {
+                claim_sets += 1;
+                let bytes = self.store.get_chunk(&digest)?;
+                let set = crate::claims::ClaimSet::decode(&bytes).map_err(|e| {
+                    RepoError::BadHead(format!("提交 {} 的 claim_set 不成立：{e}", id.short()))
+                })?;
+                let actual = set
+                    .id()
+                    .map_err(|e| RepoError::BadHead(format!("claim_set 编码失败：{e}")))?;
+                if actual != digest {
+                    return Err(RepoError::BadHead(format!(
+                        "提交 {} 的 claim_set 摘要对不上：记录 {digest}，实际 {actual}",
+                        id.short()
+                    )));
+                }
+            }
             let Some(digest) = commit.witness else {
                 continue;
             };
@@ -605,11 +721,43 @@ impl Repo {
                 RepoError::BadHead(format!("提交 {} 的 witness 不可用：{e}", id.short()))
             })?;
         }
+        for event in self.journal.events() {
+            if event.kind != "accept" {
+                continue;
+            }
+            let Some(digest) = event
+                .payload
+                .get("receipt")
+                .and_then(|value| value.as_str())
+                .and_then(Hash::from_hex)
+            else {
+                return Err(RepoError::BadHead(format!(
+                    "第 {} 条 accept 事件缺 receipt 摘要",
+                    event.seq
+                )));
+            };
+            receipts += 1;
+            let bytes = self.store.get_chunk(&digest)?;
+            let receipt = crate::accept::AcceptReceipt::decode(&bytes).map_err(|e| {
+                RepoError::BadHead(format!("第 {} 条 accept 回执解不开：{e}", event.seq))
+            })?;
+            let actual = receipt
+                .id()
+                .map_err(|e| RepoError::BadHead(format!("accept 回执编码失败：{e}")))?;
+            if actual != digest {
+                return Err(RepoError::BadHead(format!(
+                    "第 {} 条 accept 回执摘要对不上：记录 {digest}，实际 {actual}",
+                    event.seq
+                )));
+            }
+        }
         Ok(VerifyReport {
             events,
             objects: checked,
             commits: commits.len(),
             witnessed,
+            claim_sets,
+            receipts,
             head: commits.first().map(|(id, _)| id.to_hex()),
         })
     }
@@ -621,7 +769,17 @@ pub struct VerifyReport {
     pub objects: usize,
     pub commits: usize,
     pub witnessed: usize,
+    pub claim_sets: usize,
+    pub receipts: usize,
     pub head: Option<String>,
+}
+
+fn file_digest(path: &Path) -> Result<Option<String>, RepoError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(Hash::of(&bytes).to_hex())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(RepoError::Io(err)),
+    }
 }
 
 #[cfg(test)]

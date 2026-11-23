@@ -8,6 +8,13 @@ use crate::hash::Hash;
 use crate::repo::{Repo, RepoError};
 use crate::worktree::{self, WorktreeError};
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CentralError {
     #[error("仓库: {0}")]
@@ -61,18 +68,36 @@ pub fn publish(
         ANCESTOR_CAP,
     )?);
     let transfer = bundle::transfer(client.store(), central.store(), &objects)?;
-    if let Some(current) = central.ref_commit(name)? {
+    let previous = central.ref_commit(name)?;
+    let mut forced = false;
+    if let Some(current) = previous {
         let descendant =
             current == resolved || central.merge_base(&resolved, &current)? == Some(current);
-        if !descendant && !force {
-            return Err(CentralError::Repo(RepoError::NonFastForward {
-                name: name.to_string(),
-                current: current.short(),
-                incoming: resolved.short(),
-            }));
+        if !descendant {
+            if !force {
+                return Err(CentralError::Repo(RepoError::NonFastForward {
+                    name: name.to_string(),
+                    current: current.short(),
+                    incoming: resolved.short(),
+                }));
+            }
+            forced = true;
         }
     }
     central.set_ref(name, &resolved)?;
+    central
+        .journal_mut()
+        .append(
+            "publish",
+            serde_json::json!({
+                "name": name,
+                "commit": resolved.to_hex(),
+                "previous": previous.map(|id| id.to_hex()),
+                "forced": forced,
+            }),
+            now_ms(),
+        )
+        .map_err(|err| CentralError::Repo(RepoError::Journal(err)))?;
     Ok(PublishStats {
         commit: resolved,
         transfer,
@@ -133,6 +158,21 @@ pub fn pull(
             index.save(client.root()).map_err(WorktreeError::Sparse)?;
         }
     }
+    client
+        .journal_mut()
+        .append(
+            "pull",
+            serde_json::json!({
+                "name": name,
+                "commit": commit.to_hex(),
+                "prefix": prefix,
+                "forced": force,
+                "written": stats.written,
+                "skipped": stats.skipped,
+            }),
+            now_ms(),
+        )
+        .map_err(|err| CentralError::Repo(RepoError::Journal(err)))?;
     Ok(PullStats {
         commit,
         transfer,

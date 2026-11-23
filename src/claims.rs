@@ -11,6 +11,7 @@
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::gate::ClaimSpec;
@@ -22,6 +23,50 @@ pub const FILE: &str = "claims.json";
 pub const LOCK: &str = "claims.lock";
 pub const MIN_TTL_SECS: u64 = 1;
 pub const MAX_TTL_SECS: u64 = 86_400;
+
+/// 一次提交当时解析出来的认领快照（不可变对象，随提交进对象库）。
+///
+/// 账本本身会变、TTL 会过期；只存 claim id 的旧做法事后没法复核"当时到底授权了哪些路径"。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimSet {
+    pub schema: u32,
+    pub ledger_digest: String,
+    pub resolved_at: u64,
+    pub claims: Vec<ClaimSpec>,
+}
+
+impl ClaimSet {
+    pub const SCHEMA: u32 = 1;
+
+    /// 按 id 排序后取账本摘要；同一组认领无论账本 JSON 顺序如何，快照一致。
+    pub fn from_claims(claims: &[ClaimSpec], resolved_at: u64) -> Result<Self, serde_json::Error> {
+        let mut sorted = claims.to_vec();
+        sorted.sort_by(|a, b| a.id.cmp(&b.id));
+        let ledger_digest = Hash::of(&serde_json::to_vec(&sorted)?).to_hex();
+        Ok(Self {
+            schema: Self::SCHEMA,
+            ledger_digest,
+            resolved_at,
+            claims: sorted,
+        })
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+
+    pub fn id(&self) -> Result<Hash, serde_json::Error> {
+        Ok(Hash::of(&self.encode()?))
+    }
+
+    pub fn find(&self, id: &str) -> Option<&ClaimSpec> {
+        self.claims.iter().find(|claim| claim.id == id)
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClaimsError {
@@ -305,13 +350,16 @@ fn audit(central: &Path, kind: &str, spec: &ClaimSpec, now: u64) -> Result<(), C
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
+    let state_after = repo.state_digest()?.to_hex();
     repo.journal_mut().append(
         kind,
         json!({
             "id": spec.id,
             "owner": spec.owner,
             "paths": spec.paths.len(),
+            "path_list": spec.paths,
             "expires_at": spec.expires_at,
+            "state_after": state_after,
         }),
         at_ms.max(now.saturating_mul(1000)),
     )?;

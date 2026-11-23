@@ -15,6 +15,7 @@ use trit_vcs::witness::{RunOutput, Witness};
 use trit_vcs::worktree;
 
 mod accept_cli;
+mod audit_cli;
 mod bridge;
 mod central_sync;
 mod claims_cli;
@@ -73,6 +74,9 @@ fn usage() -> ExitCode {
          trit-vcs tests <路径/测试/标签> --techmap FILE\n  \
          trit-vcs explain <提交id> [--techmap FILE] [--json] [--repo PATH]\n  \
          trit-vcs verify [--repo PATH]\n  \
+         trit-vcs audit [status|verify|reconcile] [--json] [--repo PATH]\n  \
+         trit-vcs audit log [事件类型] [--from N] [--to N] [--json] [--repo PATH]\n  \
+         trit-vcs audit show <序号> [--json] [--repo PATH]\n  \
          trit-vcs stats [--repo PATH]"
     );
     ExitCode::from(2)
@@ -303,7 +307,7 @@ fn main() -> ExitCode {
         }
         "admit" => {
             let root = repo_path(&args);
-            let repo = match Repo::open(&root) {
+            let mut repo = match Repo::open(&root) {
                 Ok(repo) => repo,
                 Err(err) => return fail_repo(&err, &root, "", &args),
             };
@@ -328,7 +332,7 @@ fn main() -> ExitCode {
                 Err(err) => return fail_err(&err, &root, "", &args),
             };
             if let Err(err) = accept_cli::verify(
-                &repo,
+                &mut repo,
                 commit.intent.as_ref(),
                 &commit.tree,
                 commit.parents.first(),
@@ -362,7 +366,7 @@ fn main() -> ExitCode {
                 Ok(request) => request,
                 Err(err) => return fail_err(&err, &root, "", &args),
             };
-            let repo = match Repo::open(&root) {
+            let mut repo = match Repo::open(&root) {
                 Ok(repo) => repo,
                 Err(err) => return fail_repo(&err, &root, "", &args),
             };
@@ -371,7 +375,7 @@ fn main() -> ExitCode {
                 Err(err) => return fail_err(&err, &root, "", &args),
             };
             if let Err(err) = accept_cli::verify(
-                &repo,
+                &mut repo,
                 request.intent.as_ref(),
                 &tree,
                 base.as_ref(),
@@ -505,6 +509,7 @@ fn main() -> ExitCode {
                             "message": commit.message,
                             "hlc": [commit.hlc.wall_ms, commit.hlc.counter],
                             "witness": commit.witness.map(|w| w.to_hex()),
+                            "claim_set": commit.claim_set.map(|c| c.to_hex()),
                             "intent": commit.intent.as_ref().map(|intent| serde_json::json!({
                                 "goal": intent.goal,
                                 "accept": intent.accept,
@@ -664,11 +669,13 @@ fn main() -> ExitCode {
             match repo.verify() {
                 Ok(report) => {
                     println!(
-                        "绿：事件 {} 条，对象 {} 个，提交 {} 条（带见证 {} 条），HEAD {}",
+                        "绿：事件 {} 条，对象 {} 个，提交 {} 条（带见证 {} 条，带认领快照 {} 条，判据回执 {} 条），HEAD {}",
                         report.events,
                         report.objects,
                         report.commits,
                         report.witnessed,
+                        report.claim_sets,
+                        report.receipts,
                         report.head.unwrap_or_else(|| "-".to_string())
                     );
                     ExitCode::SUCCESS
@@ -676,6 +683,7 @@ fn main() -> ExitCode {
                 Err(err) => fail_err(&err, &root, "", &args),
             }
         }
+        "audit" => audit_cli::audit_cmd(&args),
         "stats" => {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {

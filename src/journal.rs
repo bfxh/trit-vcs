@@ -7,11 +7,19 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::hash::Hash;
+
+/// 追加时的单写者锁：锁文件是 `journal.lock`，与事件日志同目录。
+/// 抢不到就重试一小会儿，仍抢不到报 `Locked`；不静默并发写坏链。
+const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCK_RETRY: Duration = Duration::from_millis(5);
+const OPEN_RETRIES: u32 = 400;
+const OPEN_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -43,6 +51,8 @@ pub enum JournalError {
         expected: u64,
         actual: u64,
     },
+    #[error("事件日志被另一个写入者占着：{0}（确认没进程在写后再删锁文件）")]
+    Locked(PathBuf),
 }
 
 pub(crate) fn event_hash(
@@ -64,6 +74,8 @@ pub(crate) fn event_hash(
 pub struct Journal {
     path: PathBuf,
     events: Vec<Event>,
+    /// 上次读/写后的文件字节数：追加前用它判断别的进程有没有先写过。
+    last_len: u64,
 }
 
 impl Journal {
@@ -74,7 +86,22 @@ impl Journal {
             fs::create_dir_all(parent)?;
         }
         let events = Self::read(&path)?;
-        Ok(Self { path, events })
+        let last_len = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+        Ok(Self {
+            path,
+            events,
+            last_len,
+        })
+    }
+
+    /// 审计专用：文件坏了也要拿到一个空壳，让 audit 能把“坏在哪”报出来，
+    /// 而不是在打开仓库时就只剩一句 io 错误。
+    pub fn empty(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            events: Vec::new(),
+            last_len: 0,
+        }
     }
 
     fn read(path: &Path) -> Result<Vec<Event>, JournalError> {
@@ -137,6 +164,14 @@ impl Journal {
         payload: Value,
         at_ms: u64,
     ) -> Result<Event, JournalError> {
+        let _lock = JournalLock::acquire(&self.path)?;
+        // 拿到锁后先看文件有没有被别人追加/截断：有就把内存里的链换成盘上的链，
+        // 否则两个进程会拿着同一个 seq 各写一条，链当场分叉。
+        let len = fs::metadata(&self.path).map(|meta| meta.len()).unwrap_or(0);
+        if len != self.last_len {
+            self.events = Self::read(&self.path)?;
+            self.last_len = len;
+        }
         let seq = self.events.len() as u64;
         let prev = self.head();
         let hash = event_hash(seq, at_ms, kind, &payload, prev.as_ref());
@@ -152,12 +187,11 @@ impl Journal {
             line: seq as usize + 1,
             detail: e.to_string(),
         })?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        writeln!(file, "{line}")?;
-        file.sync_data()?;
+        let mut file = open_append_with_retry(&self.path)?;
+        writeln!(file, "{line}").map_err(JournalError::Io)?;
+        file.sync_data().map_err(JournalError::Io)?;
+        drop(file);
+        self.last_len = fs::metadata(&self.path).map(|meta| meta.len()).unwrap_or(0);
         self.events.push(event.clone());
         Ok(event)
     }
@@ -165,6 +199,66 @@ impl Journal {
     /// 只验不追加：返回事件条数。
     pub fn verify(path: impl AsRef<Path>) -> Result<usize, JournalError> {
         Ok(Self::read(path.as_ref())?.len())
+    }
+}
+
+struct JournalLock {
+    path: PathBuf,
+}
+
+/// Windows 上杀毒/索引器偶尔会短暂占住刚写的日志，`append` 打开时给 `AccessDenied`。
+/// 这不是锁冲突（锁只管 `journal.lock`），给几百毫秒退避，避免把并发写变成假失败。
+fn open_append_with_retry(path: &Path) -> Result<fs::File, JournalError> {
+    let mut attempts = 0;
+    loop {
+        match OpenOptions::new().create(true).append(true).open(path) {
+            Ok(file) => return Ok(file),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::PermissionDenied
+                    && attempts < OPEN_RETRIES =>
+            {
+                attempts += 1;
+                std::thread::sleep(OPEN_RETRY_DELAY);
+            }
+            Err(err) => return Err(JournalError::Io(err)),
+        }
+    }
+}
+
+impl JournalLock {
+    fn acquire(journal: &Path) -> Result<Self, JournalError> {
+        let path = journal.with_extension("lock");
+        let started = std::time::Instant::now();
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => return Ok(Self { path }),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if lock_timed_out(started) {
+                        return Err(JournalError::Locked(path));
+                    }
+                    std::thread::sleep(LOCK_RETRY);
+                }
+                // Windows 上锁文件的 create_new 也会被扫描器短暂拒绝；这不是"有人持锁"，
+                // 不能立刻判失败，否则并发追加会被杀毒软件打成假红。
+                Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                    if lock_timed_out(started) {
+                        return Err(JournalError::Io(err));
+                    }
+                    std::thread::sleep(LOCK_RETRY);
+                }
+                Err(err) => return Err(JournalError::Io(err)),
+            }
+        }
+    }
+}
+
+fn lock_timed_out(started: std::time::Instant) -> bool {
+    started.elapsed() >= LOCK_TIMEOUT
+}
+
+impl Drop for JournalLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -293,5 +387,40 @@ mod tests {
         assert_eq!(ea.hash, eb.hash, "同样的 payload 必须得到同一个 hash");
         let _ = fs::remove_dir_all(a.parent().unwrap());
         let _ = fs::remove_dir_all(b.parent().unwrap());
+    }
+
+    #[test]
+    fn concurrent_appends_keep_one_chain() {
+        use std::sync::{Arc, Barrier};
+
+        let path = temp("concurrent");
+        let threads = 8;
+        let per_thread = 20;
+        let barrier = Arc::new(Barrier::new(threads));
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let mut journal = Journal::open(&path).unwrap();
+                barrier.wait();
+                for i in 0..per_thread {
+                    match journal.append("concurrent", json!({"i": i}), 1_000 + i as u64) {
+                        Ok(_) => {}
+                        Err(err) => panic!("append failed: {err:?}"),
+                    }
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let events = Journal::verify(&path).unwrap();
+        assert_eq!(events, threads * per_thread, "并发追加不能丢事件");
+        let journal = Journal::open(&path).unwrap();
+        for (index, event) in journal.events().iter().enumerate() {
+            assert_eq!(event.seq, index as u64, "seq 必须唯一且连续");
+        }
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 }

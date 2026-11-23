@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use trit_vcs::Hash;
-use trit_vcs::accept;
+use trit_vcs::accept::{self, AcceptReceipt};
 use trit_vcs::gate::{self, load_claims};
 use trit_vcs::model::Intent;
 use trit_vcs::repo::Repo;
@@ -28,7 +28,7 @@ pub(crate) fn enabled(args: &[String]) -> bool {
 ///
 /// `tree` / `base` 是这次的树与它的基线树，用来算改动路径 ⇒ 判别认领覆盖。
 pub(crate) fn verify(
-    repo: &Repo,
+    repo: &mut Repo,
     intent: Option<&Intent>,
     tree: &Hash,
     base: Option<&Hash>,
@@ -155,7 +155,21 @@ pub(crate) fn verify(
         );
     }
 
-    if report.passed() {
+    let passed = report.passed();
+    let receipt = AcceptReceipt {
+        schema: AcceptReceipt::SCHEMA,
+        tree: *tree,
+        base: base.copied(),
+        session: session.to_string(),
+        claim_ids: claims.iter().map(|claim| claim.id.clone()).collect(),
+        outcomes: report.outcomes.clone(),
+        passed,
+        at_secs: now,
+    };
+    let receipt_id = repo.record_accept(&receipt).map_err(CliFail::from)?;
+    eprintln!("判据回执 {}（已进哈希链）", receipt_id.short());
+
+    if passed {
         eprintln!("判据 {} 条全过", report.outcomes.len());
         return Ok(());
     }
