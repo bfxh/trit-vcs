@@ -128,6 +128,7 @@ pub fn kind_worktree(err: &WorktreeError) -> &'static str {
         WorktreeError::Repo(inner) => kind(inner),
         WorktreeError::Store(inner) => kind_store(inner),
         WorktreeError::Dirty(..) => "worktree_dirty",
+        WorktreeError::Sparse(_) => "sparse_index",
     }
 }
 
@@ -152,6 +153,12 @@ pub fn commands_worktree(err: &WorktreeError, ctx: Context<'_>) -> Vec<String> {
                 ),
             ]
         }
+        WorktreeError::Sparse(_) => vec![
+            format!("{VCS} sparse --repo {repo}   # 看现在记的范围与基准树"),
+            format!(
+                "{VCS} sparse --clear --repo {repo}   # 索引坏了就清掉：只会退化成全量扫描，判定不变"
+            ),
+        ],
     }
 }
 

@@ -119,10 +119,19 @@ pub fn pull(
     let mut objects = vec![commit];
     objects.extend(bundle::entries_closure(central.store(), &list.entries)?);
     let transfer = bundle::transfer_scoped(central.store(), client.store(), &objects, &list)?;
-    let stats = worktree::materialize(client.store(), &list.id, client.root(), None, force)?;
-    if prefix.is_none() {
-        let paths: Vec<String> = list.entries.keys().cloned().collect();
-        client.adopt(&commit, &list.id, &paths)?;
+    let stats = worktree::materialize(client.store(), &list.id, client.root(), prefix, force)?;
+    match prefix {
+        None => {
+            let paths: Vec<String> = list.entries.keys().cloned().collect();
+            client.adopt(&commit, &list.id, &paths)?;
+        }
+        Some(prefix) => {
+            // 前缀 pull 不挪 HEAD，但要把"只检出了这个范围、基准是这棵树"记下来：
+            // 下一次 `status` 才有得比，范围外的文件也不会被算成新增/删除。
+            let index = crate::sparse::SparseIndex::new(prefix, list.id, Some(commit))
+                .map_err(WorktreeError::Sparse)?;
+            index.save(client.root()).map_err(WorktreeError::Sparse)?;
+        }
     }
     Ok(PullStats {
         commit,

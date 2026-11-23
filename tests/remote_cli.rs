@@ -228,6 +228,19 @@ fn serve_publish_pull_end_to_end() {
     assert!(partial.status.success(), "{}", stderr(&partial));
     assert!(sparse.join("gen/d00/a.txt").is_file());
     assert!(!sparse.join("gen/d01").exists(), "范围外不该落文件");
+    let view = run(&sparse, &["sparse", "--json"]);
+    let view_value: serde_json::Value = serde_json::from_str(&stdout(&view)).unwrap();
+    assert_eq!(
+        view_value["prefix"], "gen/d00",
+        "网络前缀 pull 也要记 sparse 索引"
+    );
+    let sparse_status = run(&sparse, &["status", "--json"]);
+    let sparse_value: serde_json::Value = serde_json::from_str(&stdout(&sparse_status)).unwrap();
+    assert_eq!(
+        sparse_value["changes"].as_array().map(Vec::len),
+        Some(0),
+        "前缀 pull 之后 status 不该把没检出的目录算成删除"
+    );
     let sparse_log = run(&sparse, &["log", "--json"]);
     let rows: serde_json::Value = serde_json::from_str(&stdout(&sparse_log)).unwrap();
     assert_eq!(

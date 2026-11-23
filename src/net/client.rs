@@ -102,13 +102,23 @@ impl Client {
             tip.to_hex()
         );
         stream.write_all(head.as_bytes())?;
-        body.write(store, &mut stream)
-            .map_err(|err| NetError::Wire(err.to_string()))?;
+        // 服务端在读完 body 之前就可能判 401/413 并关连接：Windows 上这时继续写会拿到
+        // 10054。写失败不等于没有回执——先试着读响应，能读到就以响应为准。
+        let write_error = body
+            .write(store, &mut stream)
+            .err()
+            .map(|err| NetError::Wire(err.to_string()));
         let mut reader = BufReader::new(stream);
-        let response = read_response_head(&mut reader)?;
+        let response = match read_response_head(&mut reader) {
+            Ok(response) => response,
+            Err(read_error) => return Err(write_error.unwrap_or(read_error)),
+        };
         let body = read_body(&mut reader, MAX_ERROR_BODY)?;
         if response.status != 200 {
             return Err(NetError::Status(response.status, error_message(&body)));
+        }
+        if let Some(err) = write_error {
+            return Err(err);
         }
         serde_json::from_slice(&body)
             .map_err(|err| NetError::Status(200, format!("响应不是 JSON：{err}")))

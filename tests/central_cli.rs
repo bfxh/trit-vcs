@@ -95,6 +95,16 @@ fn publish_then_sparse_pull() {
         stdout(&pulled)
     );
     assert!(client.join("gen/d00/f0.txt").is_file());
+    let sparse = run(&client, &["sparse", "--json"]);
+    let sparse_value: serde_json::Value = serde_json::from_str(&stdout(&sparse)).unwrap();
+    assert_eq!(sparse_value["prefix"], "gen/d00", "前缀 pull 要记下范围");
+    let clean = run(&client, &["status", "--json"]);
+    let clean_value: serde_json::Value = serde_json::from_str(&stdout(&clean)).unwrap();
+    assert_eq!(
+        clean_value["changes"].as_array().unwrap().len(),
+        0,
+        "前缀 pull 之后 status 不该把没检出的目录算成删除"
+    );
     assert!(
         !client.join("gen/d01").exists(),
         "范围外不该出现文件（稀疏物化没生效）"

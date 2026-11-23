@@ -81,8 +81,24 @@ fn sparse_checkout_materializes_one_directory_only() {
     let whole_value = serde_json::from_str::<serde_json::Value>(&stdout(&whole)).unwrap();
     assert_eq!(
         whole_value["changes"].as_array().unwrap().len(),
+        0,
+        "持久 sparse 索引：范围外没检出不该被算成删除"
+    );
+    let sparse_view = run(&root, &["sparse", "--json"]);
+    let sparse_value = serde_json::from_str::<serde_json::Value>(&stdout(&sparse_view)).unwrap();
+    assert_eq!(sparse_value["prefix"], "gen/d1");
+    assert!(
+        sparse_value["tree"].as_str().unwrap_or_default().len() == 64,
+        "索引要记住基准树：{sparse_value}"
+    );
+    let cleared = run(&root, &["sparse", "--clear"]);
+    assert!(cleared.status.success(), "{}", stderr(&cleared));
+    let reset = run(&root, &["status", "--json"]);
+    let reset_value = serde_json::from_str::<serde_json::Value>(&stdout(&reset)).unwrap();
+    assert_eq!(
+        reset_value["changes"].as_array().unwrap().len(),
         6,
-        "范围外缺失如实报告"
+        "清掉索引再按全量判，范围外缺失才如实报告"
     );
     let _ = fs::remove_dir_all(&root);
 }

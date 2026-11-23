@@ -1326,5 +1326,35 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
- }
+ },
+{
+ "name": "vcs: 认领不查相交（别人的在效认领照收）",
+ "file": "src/claims.rs",
+ "old": "    if !others.is_empty() {",
+ "new": "    if false {",
+ "filter": "shared_claim_ledger_gates_two_worktrees",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "test:claims_cli"
+},
+{
+ "name": "vcs: release 不核对 owner（谁都能释放别人的认领）",
+ "file": "src/claims.rs",
+ "old": "    if claims[index].owner != owner {",
+ "new": "    if false {",
+ "filter": "shared_claim_ledger_gates_two_worktrees",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "test:claims_cli"
+},
+{
+ "name": "vcs: status 不采用持久 sparse 范围（范围外全报删除）",
+ "file": "src/worktree.rs",
+ "old": "        .or_else(|| sparse.as_ref().map(|index| index.prefix.clone()));",
+ "new": "        .or_else(|| None);",
+ "filter": "sparse_checkout_writes_only_the_requested_prefix",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+}
 ]

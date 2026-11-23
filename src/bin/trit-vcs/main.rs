@@ -17,12 +17,14 @@ use trit_vcs::worktree;
 mod accept_cli;
 mod bridge;
 mod central_sync;
+mod claims_cli;
 mod cli_args;
 mod cli_fail;
 mod handoff_cli;
 mod mcp_serve;
 mod query;
 mod remote_cli;
+mod sparse_cli;
 mod transport;
 mod verdict;
 use cli_args::{collect, commit_request, current_tree};
@@ -59,6 +61,12 @@ fn usage() -> ExitCode {
          trit-vcs handoff <提交id> --out <包目录|FILE.tvhp> [--bundle] [--repo PATH]\n  \
          trit-vcs handoff-verify <包目录|FILE.tvhp> [--repo PATH]\n  \
          trit-vcs status [--prefix DIR] [--json] [--budget N] [--repo PATH]\n  \
+         trit-vcs sparse [--json] [--repo PATH]\n  \
+         trit-vcs sparse --clear [--repo PATH]\n  \
+         trit-vcs claims add --central PATH --id ID --owner <宿主:会话id> --path P... [--ttl 秒]\n  \
+         trit-vcs claims release --central PATH --id ID --owner <宿主:会话id>\n  \
+         trit-vcs claims list --central PATH [--all] [--json]\n  \
+         trit-vcs claims export --central PATH --out FILE\n  \
          trit-vcs checkout <提交id> [--prefix DIR] [--force] [--repo PATH]\n  \
          trit-vcs log [--json] [--budget N] [--tag T] [--evidence 文本] [--session S] [--grep 文本] [--repo PATH]\n  \
          trit-vcs where <路径/测试/标签> --techmap FILE [--json]\n  \
@@ -530,6 +538,8 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        "sparse" => sparse_cli::sparse_cmd(&args),
+        "claims" => claims_cli::claims_cmd(&args),
         "status" => {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {

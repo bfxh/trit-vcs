@@ -240,6 +240,11 @@ impl Repo {
         &self.journal
     }
 
+    /// 追加审计事件用（认领账本等跨仓动作要进中央仓的哈希链）。
+    pub fn journal_mut(&mut self) -> &mut Journal {
+        &mut self.journal
+    }
+
     pub fn head(&self) -> Result<Option<Hash>, RepoError> {
         let path = Self::dir(&self.root).join("HEAD");
         if !path.is_file() {
@@ -314,6 +319,9 @@ impl Repo {
             serde_json::to_vec_pretty(&index).map_err(|e| RepoError::BadHead(e.to_string()))?,
         )?;
         self.write_head(commit)?;
+        // 全量落 HEAD 之后，工作树就是完整检出：sparse 索引（如果之前有）不再成立。
+        crate::sparse::SparseIndex::clear(&self.root)
+            .map_err(|err| RepoError::Io(std::io::Error::other(err.to_string())))?;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)

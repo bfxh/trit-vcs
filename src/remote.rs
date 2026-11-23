@@ -330,6 +330,10 @@ fn apply_pull(
     if prefix.is_none() {
         let paths: Vec<String> = entries.keys().cloned().collect();
         repo.adopt(&reply.tip, &reply.manifest, &paths)?;
+    } else if let Some(prefix) = prefix {
+        let index = crate::sparse::SparseIndex::new(prefix, reply.manifest, Some(reply.tip))
+            .map_err(WorktreeError::Sparse)?;
+        index.save(repo.root()).map_err(WorktreeError::Sparse)?;
     }
     Ok(PullStats {
         commit: Some(reply.tip),

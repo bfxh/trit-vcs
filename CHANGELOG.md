@@ -18,6 +18,17 @@
   测试：`src/net` + `src/wire.rs` + `src/remote.rs` 单测 14 条、`tests/remote_cli.rs` 端到端 1 条
   （起 serve、发布、全量/前缀 pull、错 token 401、非快进 409、CLI 拒 force）；
   登记 4 条变异（token 比较恒真 / 对象流不看 magic / 收端不重算哈希 / 服务端不判快进），本机 4/4 全抓。
+  401 提前拒绝时先排空 ≤1 MiB 请求体再回，避免 Windows 上带未读数据关连接发 RST、客户端连回执都读不到；
+  客户端写 body 失败也先尝试读响应（401/413 以回执为准）。
+- 跨仓认领账本：认领写在中央仓 `.tritvcs/claims.json`，多个工作树共享；`claims add/release/list/export`
+  直接改它，`commit/preflight --claims <中央仓>/.tritvcs/claims.json` 即可用同一张表。
+  `add` 做路径归一与在效相交检查（`claims_conflict` 并点名）、同 id 换 owner 拒绝（`claims_id_taken`）、
+  `release` 只有 owner 本人能做（`claims_owner_mismatch`）；单写者 `claims.lock`；变更追加
+  `claim_add`/`claim_release` 进中央仓哈希链。测试 `src/claims.rs` 7 条 + `tests/claims_cli.rs` 1 条
+  （两个工作树共用账本、冲突阻断提交、导出快照可直接用于 `--claims`、审计链有记录）；登记 2 条变异（认领不查相交 / release 不核 owner），本机 2/2 全抓。
+- 持久 sparse 索引：`.tritvcs/sparse.json` 记住前缀与基准树，前缀 `pull`/`checkout` 自动写、全量自动清；
+  `status` 只扫该范围、只跟这棵树比，范围外没检出的文件不再被算成删除。新增 `sparse [--json]` /
+  `sparse --clear`。测试 `src/sparse.rs` 3 条 + worktree/CLI/网络前缀 pull 各一条断言；登记 1 条变异（不采用持久范围），本机 1/1 抓到。
 - `pull` 全量时把 HEAD 与索引一起落到被拉的提交（`Repo::adopt`），pull 完 `status` 立刻干净；
   拉之前先判快进与暂存区脏（`Repo::staged_paths`），不过就报 `NonFastForward` / `worktree_dirty`。
   带 `--prefix` 的 pull 仍不动 HEAD，避免范围外文件被算成删除。

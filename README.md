@@ -32,9 +32,10 @@
   鉴权只是"同一个 Bearer token"，没有多租户、没有按路径授权，也没有证书。
 - `pull` 全量时会把 HEAD 与索引落到被拉的提交；**带 `--prefix` 时不动 HEAD**（否则范围外会被算成删除），
   两种形态都不删本地多余文件。
-- 认领账本是**跨仓**的账，不由本 crate 持有；`--repo <owner/repo>` 在给出的命令里仍是占位符。
+- 认领账本放在**中央仓目录**里，多个工作树共享；但账本**没有走网络**：远程克隆仍要能读到同一个
+  `--central` 目录，或 `claims export` 后把快照传给 `--claims FILE`。
 - v0 的 witness **不签名** ⇒ 防篡改、防绑错树，不防有人自己造一份。
-- 大仓 status 只做了 stat 缓存这一层；没有 sparse-index 那种持久索引。
+- sparse 索引只记**一个前缀**（没有 git 的多前缀/cone 模式）；换范围就等于换一次前缀 checkout。
 - 三值逻辑只用在裁决处：全仓 `src` 实测三值 **4.5%**、二值 2.2%、中性 93.4%（`scripts/parity_scan.py`）。
 
 ## 网络 v0（跨机 + 鉴权）
@@ -59,15 +60,47 @@ trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt --prefi
   `--prefix` 只补范围内文件，不擅动 HEAD。
 - 上限：对象数 100 万、单对象 32 MiB、body 256 MiB（`--max-body-mb` 可调）、连接 8（`--max-conn`）、
   读写超时 30 s（`--read-timeout`），超限回 413/503 而不是把线程堆爆。
-- 已知边界：401 在读完 body 前就回，超大 body 可能被 RST；服务端 `shutdown` 只停 accept，不等处理线程。
+- 已知边界：401 会先排空 ≤1 MiB 的请求体再回（更大的 body 直接关，可能被 RST）；服务端 `shutdown`
+  只停 accept，不等处理线程。
+
+## 跨仓认领账本
+
+认领写在中央仓里（`.tritvcs/claims.json`），多个工作树共享同一张表；每次变更都追加进中央仓的
+哈希链（`claim_add` / `claim_release`），不是只改一个 JSON 文件。
+
+```sh
+trit-vcs claims add --central ./central --id c1 --owner qoder:s1 --path src --ttl 900
+trit-vcs claims list --central ./central --json
+trit-vcs claims release --central ./central --id c1 --owner qoder:s1
+trit-vcs claims export --central ./central --out claims.json
+trit-vcs commit -m "…" --owner qoder:s1 --claims ./central/.tritvcs/claims.json
+```
+
+- `add` 只写合法路径（相对、无 `..`，反斜杠归一成 `/`）；别的 owner 在效且相交 ⇒ `claims_conflict` 并点名。
+- 同一 id + 同一 owner 是续期；同一 id 换 owner ⇒ `claims_id_taken`；`release` 只有 owner 本人能做。
+- 单写者：`claims.lock`（`create_new`），抢不到报 `claims_locked`，不静默覆盖。
+
+## 持久 sparse 索引
+
+前缀 `pull` / `checkout` 会把范围与基准树写进 `.tritvcs/sparse.json`；下一次 `status` 只扫这个范围、
+只跟这棵树比，范围外没检出不算删除。
+
+```sh
+trit-vcs pull main --central ./central --prefix gen/d00
+trit-vcs status --json      # 干净：不会再报“范围外全被删了”
+trit-vcs sparse --json      # 看当前范围与基准树
+trit-vcs sparse --clear     # 清掉索引，退回全量判定
+```
+
+索引本身坏了/丢了只会退化成全量扫描，判定仍由对象库里的树保证；全量 `pull`/`checkout` 会自动清掉它。
 
 ## 复算
 
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test                                                     # 15 个测试二进制 / 201 条（2026-11-24 实测）
-python scripts/mutation_check.py --pkg trit-vcs                    # 147 条登记（含网络面的 4 条）
+cargo test                                                     # 16 个测试二进制 / 212 条（2026-11-24 实测）
+python scripts/mutation_check.py --pkg trit-vcs                    # 150 条登记（网络 4 / 认领 2 / sparse 1）
 ```
 
 最后一条在本仓就能跑（`scripts/mutation_check.py` + `scripts/mutants/` 已随拆分一起搬过来，
@@ -80,6 +113,7 @@ python scripts/mutation_check.py --pkg trit-vcs                    # 147 条登�
 |---|---|
 | `store` / `chunk` / `hash` | 内容寻址的对象库、CDC 分块、BLAKE3 id |
 | `bundle` | `TVBD` 包 + 过滤后的**树清单** + 范围内传输（export 与 pull 共用同一条路） |
+| `claims` | 中央仓里的跨仓认领账本（单写者锁、冲突点名、`add/release/list/export`，变更进哈希链） |
 | `central` | 命名 ref（`.tritvcs/refs/<name>`）、`publish`（闭包 + 父链 + 只准往前推）、`pull`（稀疏物化，脏则拒；全量落 HEAD+索引） |
 | `net` / `wire` / `remote` | 自写 HTTP/1.1 子集 + Bearer token（常量时间比较）、`TVOB` 对象流（收端重算 BLAKE3）、跨机 publish/pull 的快进与完整性闸门 |
 | `repo` / `journal` | 提交与查询、哈希链事件日志 |
@@ -88,6 +122,7 @@ python scripts/mutation_check.py --pkg trit-vcs                    # 147 条登�
 | `tokens` | 一把 token 尺，CLI 与 MCP 共用 |
 | `gate` / `witness` / `model` | 认领门（三态判决 + `ClaimSpec`）、提交见证（in-toto 形状，v0 不签名）、`Commit`/`HLC`/`Intent` |
 | `worktree` / `merge` / `delta` | 扫描与稀疏物化、行级三路合并、前后缀 delta |
+| `sparse` | 持久 sparse 索引：前缀 + 基准树；`status` 只扫范围内，全量检出自动清 |
 | `git_bridge` / `techmap` / `status_cache` / `mcp` | Git 双向桥、技术标签索引、status 缓存、13 个工具的 stdio JSON-RPC |
 
 ## 这仓是怎么来的 / 依赖边界
