@@ -1476,5 +1476,25 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "lib"
+},
+{
+ "name": "vcs: publish 被拒后不落 deny 事件（非快进无账）",
+ "file": "src/op.rs",
+ "old": "            \"deny\",",
+ "new": "            \"deny_changed\",",
+ "filter": "wrong_token_and_non_fast_forward_are_loud",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: deny 事件不看 reason（拒绝原因可缺）",
+ "file": "src/audit/deny_event.rs",
+ "old": "    if event\n        .payload\n        .get(\"reason\")\n        .and_then(Value::as_str)\n        .is_none_or(str::is_empty)\n    {",
+ "new": "    if false {",
+ "filter": "deny_event_without_reason_is_red",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
 }
 ]

@@ -423,6 +423,12 @@ fn publish(
     let received = match outcome {
         Ok(received) => received,
         Err(err) => {
+            repo.record_deny(
+                "publish",
+                err.kind(),
+                &err.to_string(),
+                serde_json::json!({"ref": name, "tip": tip.to_hex()}),
+            );
             drop(repo);
             return respond_remote(reader.get_mut(), &err);
         }
@@ -443,6 +449,12 @@ fn publish(
             )
         }
         Err(err) => {
+            repo.record_deny(
+                "publish",
+                err.kind(),
+                &err.to_string(),
+                serde_json::json!({"ref": name, "tip": tip.to_hex()}),
+            );
             drop(repo);
             respond_remote(reader.get_mut(), &err)
         }

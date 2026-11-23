@@ -21,6 +21,7 @@ use crate::journal::{Event, Journal, JournalError};
 use crate::repo::{Repo, RepoError};
 
 mod auth_event;
+mod deny_event;
 mod ops;
 mod policy_event;
 
@@ -370,6 +371,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
             }
             "policy" => policy_event::check_policy(event, &mut issues, &mut warnings),
             "auth" => auth_event::check_auth(event, &mut issues, &mut warnings),
+            "deny" => deny_event::check_deny(event, &mut issues, &mut warnings),
             "accept" => {
                 let Some(receipt) = parse_hash(event.payload.get("receipt")) else {
                     push_issue(

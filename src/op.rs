@@ -140,4 +140,23 @@ impl Repo {
             at_ms,
         );
     }
+
+    /// 服务端/远端入口的业务拒绝：鉴权已经通过，但这次写请求因为业务规则没被执行。
+    /// 记 `action`/`reason`/`message`/`detail`，不把请求头或 token 抄进账本。
+    pub(crate) fn record_deny(&mut self, action: &str, reason: &str, message: &str, detail: Value) {
+        let state = self.state_digest().ok().map(|digest| digest.to_hex());
+        let _ = self.journal_mut().append(
+            "deny",
+            json!({
+                "action": action,
+                "decision": "denied",
+                "reason": reason,
+                "message": message,
+                "detail": detail,
+                "state_before": state.clone(),
+                "state_after": state,
+            }),
+            wall_ms(),
+        );
+    }
 }

@@ -538,10 +538,23 @@ mod tests {
             ),
             "{err}"
         );
+        let central = Repo::open(root.join("central")).unwrap();
+        let deny = central
+            .journal()
+            .events()
+            .iter()
+            .find(|event| event.kind == "deny")
+            .expect("非快进 publish 必须留下 deny 事件");
+        assert_eq!(deny.payload["action"], "publish");
+        assert_eq!(deny.payload["decision"], "denied");
+        assert_eq!(deny.payload["reason"], "non_fast_forward");
+        assert_eq!(deny.payload["detail"]["ref"], "main");
         assert_eq!(
-            pull_plan(&Repo::open(root.join("central")).unwrap(), "main", None)
-                .unwrap()
-                .tip,
+            deny.payload["state_before"], deny.payload["state_after"],
+            "被拒的 publish 不改 ref 状态"
+        );
+        assert_eq!(
+            pull_plan(&central, "main", None).unwrap().tip,
             src.head().unwrap().unwrap(),
             "被拒的 publish 不该把 ref 挪走"
         );

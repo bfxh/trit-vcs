@@ -99,6 +99,62 @@ fn auth_event_with_request_shape_is_audited_green() {
 }
 
 #[test]
+fn deny_event_with_business_reason_is_audited_green() {
+    let root = temp("deny-ok");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.journal_mut()
+        .append(
+            "deny",
+            json!({
+                "action": "publish",
+                "decision": "denied",
+                "reason": "non_fast_forward",
+                "message": "不是快进",
+                "detail": {"ref": "main"},
+                "state_before": digest,
+                "state_after": digest,
+            }),
+            2_000,
+        )
+        .unwrap();
+    let report = status(&repo).unwrap();
+    assert!(report.ok, "{:?}", report.issues);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn deny_event_without_reason_is_red() {
+    let root = temp("deny-bad");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.journal_mut()
+        .append(
+            "deny",
+            json!({
+                "action": "publish",
+                "decision": "denied",
+                "message": "没写原因",
+                "state_after": digest,
+            }),
+            2_000,
+        )
+        .unwrap();
+    let report = status(&repo).unwrap();
+    assert!(!report.ok);
+    assert!(
+        report.issues.iter().any(|issue| issue.kind == "deny_bad"),
+        "{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn auth_event_without_401_is_red() {
     let root = temp("auth-bad");
     let _ = std::fs::remove_dir_all(&root);
