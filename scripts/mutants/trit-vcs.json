@@ -1456,5 +1456,25 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "test:merge_cli"
+},
+{
+ "name": "vcs: 鉴权失败不落 auth 事件（错 token 无账）",
+ "file": "src/net/auth.rs",
+ "old": "        \"auth\",",
+ "new": "        \"auth_changed\",",
+ "filter": "wrong_token_and_non_fast_forward_are_loud",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: auth 事件不看 401 状态（200 也当鉴权失败）",
+ "file": "src/audit/auth_event.rs",
+ "old": "    if event.payload.get(\"status\").and_then(Value::as_u64) != Some(401) {",
+ "new": "    if false {",
+ "filter": "auth_event_without_401_is_red",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
 }
 ]

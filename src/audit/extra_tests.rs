@@ -68,3 +68,64 @@ fn failed_operation_that_changed_state_is_red() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn auth_event_with_request_shape_is_audited_green() {
+    let root = temp("auth-ok");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.journal_mut()
+        .append(
+            "auth",
+            json!({
+                "action": "auth",
+                "decision": "denied",
+                "reason": "bad_token",
+                "method": "POST",
+                "path": "/v1/publish",
+                "status": 401,
+                "state_before": digest,
+                "state_after": digest,
+            }),
+            2_000,
+        )
+        .unwrap();
+    let report = status(&repo).unwrap();
+    assert!(report.ok, "{:?}", report.issues);
+    assert_eq!(report.open_ops, 0);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn auth_event_without_401_is_red() {
+    let root = temp("auth-bad");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.journal_mut()
+        .append(
+            "auth",
+            json!({
+                "action": "auth",
+                "decision": "denied",
+                "reason": "bad_token",
+                "method": "GET",
+                "path": "/v1/pull",
+                "status": 200,
+                "state_after": digest,
+            }),
+            2_000,
+        )
+        .unwrap();
+    let report = status(&repo).unwrap();
+    assert!(!report.ok);
+    assert!(
+        report.issues.iter().any(|issue| issue.kind == "auth_bad"),
+        "{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

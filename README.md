@@ -21,7 +21,7 @@
 | 写前准入 | Git 无对应面 | 未认领的提交默认拒；认领有 TTL、同名 id 判红；判决是三态（True/Unknown/False），"不知道"不等于"过" |
 | 被拒之后 | 更强 | 每条判决附**能直接跑的下一步命令**：`unclaimed` 负载 329→455 元（3 条命令）、`claim_conflict` 18→88 元、`witness_required` 26→73 元 |
 | 预检成本 | 有读数 | 60 文件 / 121 对象 / 9,400 字节的预检 **4.8 ms**，**写盘 0 个对象**（对象数、哈希链长度、HEAD 三样分别断言） |
-| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；提交可带 `evidence`/`tags` |
+| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权失败落 `auth`；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；提交可带 `evidence`/`tags` |
 | 时间 | 有面 | HLC（混合逻辑时钟）而非裸墙钟 |
 | 上下文预算 | 有面 | `--budget <元>` 对所有读数生效：只丢整行、从尾部丢，`truncation` 元数据自己算进预算；ASCII 4 字 = 1 元、非 ASCII 4 元 |
 | Git 生态 | 薄 | 双向桥只走第一父链：`git-export` / `git-import`（同步删除、防路径穿越、剥 `Trit-*` 尾注）；无 merge 图 / submodule / tag |
@@ -29,7 +29,8 @@
 ## 明确没做的（别当成已具备）
 
 - **网络只有 v0：明文 HTTP、无 TLS、单 token**。`serve` 只该绑回环；跨机请套 SSH 隧道或反代，
-  鉴权只是"同一个 Bearer token"，没有多租户、没有按路径授权，也没有证书。
+  鉴权只是"同一个 Bearer token"，没有多租户、没有按路径授权，也没有证书。鉴权失败会落 `auth`
+  事件（方法/路径/原因/401，不记 token）；裸健康探针不记账，避免扫描器刷爆日志。
 - `pull` 全量时会把 HEAD 与索引落到被拉的提交；**带 `--prefix` 时不动 HEAD**（否则范围外会被算成删除），
   两种形态都不删本地多余文件。
 - 认领账本放在**中央仓目录**里，多个工作树共享；但账本**没有走网络**：远程克隆仍要能读到同一个
@@ -129,7 +130,7 @@ python scripts/mutation_check.py --pkg trit-vcs                    # 150 条登�
 | `claims` | 中央仓里的跨仓认领账本（单写者锁、冲突点名、`add/release/list/export`，变更进哈希链） |
 | `policy` | `policy set` 整份写入门禁开关，`policy` 事件记 session/开关/摘要/前后状态（手工改文件仍会被审计漂移抓到） |
 | `central` | 命名 ref（`.tritvcs/refs/<name>`）、`publish`（闭包 + 父链 + 只准往前推）、`pull`（稀疏物化，脏则拒；全量落 HEAD+索引） |
-| `net` / `wire` / `remote` | 自写 HTTP/1.1 子集 + Bearer token（常量时间比较）、`TVOB` 对象流（收端重算 BLAKE3）、跨机 publish/pull 的快进与完整性闸门 |
+| `net` / `wire` / `remote` | 自写 HTTP/1.1 子集 + Bearer token（常量时间比较）、`TVOB` 对象流（收端重算 BLAKE3）、跨机 publish/pull 的快进与完整性闸门；鉴权失败落 `auth` 事件 |
 | `repo` / `journal` | 提交与查询、哈希链事件日志 |
 | `preflight` | `commit()` 与 `preflight()` **共用**的唯一判决处 ⇒ 预检不会和真提交分叉 |
 | `remediation` | 每条 `RepoError` → `kind` + 可执行命令（`--json` 下失败也是纯对象） |

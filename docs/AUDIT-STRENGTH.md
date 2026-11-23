@@ -46,12 +46,12 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 | 策略变更 | `trit-vcs policy set` / `Repo::set_policy` | 整份写入 `policy.json` 也走 `op_begin/op_result`；`policy` 事件记 `session`、两个开关、`policy_hash`、`state_before`/`state_after` |
 | 授权快照 | `ClaimSet` 对象 + `Commit.claim_set` | 提交时按 path 覆盖集合生成不可变快照；`verify`/`audit` 校验对象存在且摘要对得上 |
 | 判据回执 | `AcceptReceipt` 对象 + `accept` 事件 | 记录树、基线、session、认领 id、每条判据的 exit/超时/输出摘要/是否截断；回执摘要进链 |
-| 操作事件 | `stage` / `commit` / `ref` / `adopt` / `claim_*` / `publish` / `pull` / `accept` / `gate` / `policy` / `merge` | 带 `state_after` 的事件能被状态摘要校验；`publish` 记 `previous`/`forced`，`pull` 记 prefix/force，`gate` 记拒绝原因与 `state_before`/`state_after`，`policy` 记开关与策略摘要，`merge` 记两个输入/树/冲突数 |
+| 操作事件 | `stage` / `commit` / `ref` / `adopt` / `claim_*` / `publish` / `pull` / `accept` / `gate` / `policy` / `merge` / `auth` | 带 `state_after` 的事件能被状态摘要校验；`publish` 记 `previous`/`forced`，`pull` 记 prefix/force，`gate` 记拒绝原因与 `state_before`/`state_after`，`policy` 记开关与策略摘要，`merge` 记两个输入/树/冲突数，`auth` 记被拒方法/路径/原因（不记 token） |
 | 查询面 | `audit log` / `audit show` / `--json` | 审计员不必用眼睛翻 JSONL；`audit status --json` 可直接分支 |
 | 坏日志容错 | `Repo::open_for_audit` | journal 是坏 JSON 时仍能打开审计入口，输出 `journal_broken`，而不是在 `Repo::open` 阶段只丢一句 IO 错 |
 | 失败即非零 | `audit status` | 有 issue 时退出码 1；`--json` 仍输出结构化报告，便于 CI 消费 |
 
-尚未完成、不能假装完成的：密钥/鉴权失败事件、Ed25519 签名、Merkle 检查点、仓外锚、跨机 journal 互链。**这些没做完之前，L3 不能宣称。**
+尚未完成、不能假装完成的：密钥/deny 事件、Ed25519 签名、Merkle 检查点、仓外锚、跨机 journal 互链。**这些没做完之前，L3 不能宣称。**
 
 ---
 
@@ -98,7 +98,7 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 | G1 | 日志不能解释状态 | `Repo::verify` 仍只统计事件数、跑对象 fsck、走第一父链；但 `audit status` 已比对 journal 与 refs/HEAD/claims/policy/state_digest | `verify` 单独跑仍可能绿；用 `audit` 才会抓删日志/手改 ref/漏记 commit | P0，**部分关闭** |
 | G2 | 链可截断、可换整条 | 没有检查点、没有 Merkle 根、没有仓外锚；`verify` 只验当前文件 | 删最后 N 条并重算，或整链替换，仍验不出 | P0，未关闭 |
 | G3 | 身份不可验证 | `session` 是自由字符串；提交/认领/见证都没有签名 | 谁都能自称 `qoder:s1`，伪造“谁做的” | P0，未关闭 |
-| G4 | 操作覆盖不全 | 状态变更已走 `op_begin/op_result`（`stage`/`commit`/`ref`/`adopt`/`claim_*`），提交门拒绝落 `gate`，策略变更落 `policy`，合并落 `merge`；仍缺密钥/鉴权失败、deny 事件 | 被拒绝的鉴权失败仍可能不留账 | P0，**部分关闭** |
+| G4 | 操作覆盖不全 | 状态变更已走 `op_begin/op_result`（`stage`/`commit`/`ref`/`adopt`/`claim_*`），提交门拒绝落 `gate`，策略变更落 `policy`，合并落 `merge`，鉴权失败落 `auth`；仍缺密钥变更与 deny 事件 | 密钥轮换/吊销与显式 deny 仍可能不留账 | P0，**部分关闭** |
 | G5 | 并发与崩溃会撕裂日志 | `Journal::append` 已有 `journal.lock` 单写者锁；关键状态变更前有 `op_begin.state_before`、后有 `op_result.state_after`；崩在中间会留下 `op_open` 或 `op_state_gap` | 锁住并发写；写前协议让“操作开始”有账，但仍不能阻止进程死在中间，只能让审计抓到 | P0，**部分关闭** |
 | G6 | 授权不可事后复核 | 已落 `ClaimSet` 不可变快照，claim 事件补 `path_list`；账本 TTL 过后原条目仍会消失 | 快照能证明当时授权；账本原始条目仍需归档策略 | P0，**部分关闭** |
 | G7 | 证据不可验证 | witness 不签名；`accept` 结果已落 `AcceptReceipt` 对象/事件；handoff 仍不携带 witness/accept | 回执可复核“跑了什么”，但回执本身没签名，仍可被替换 | P1，**部分关闭** |
@@ -361,6 +361,8 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 - `op_result_unknown` / `op_result_mismatch` / `op_result_bad`
 - `op_failed_state_change`（操作标 failed，但 `state_after` 已经不等于动手前状态）
 - `gate_bad`
+- `auth_bad`（`auth` 事件不是 denied / 缺 reason、method、path / status 不是 401）
+- `auth_no_state`（warning：`auth` 事件缺 `state_after`）
 - `policy_bad`
 - `policy_no_state`（warning：`policy` 事件缺 `state_after`）
 - `claim_snapshot_missing`
@@ -393,14 +395,14 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 - accept receipt 落对象 + 事件；
 - `audit status/log/show/verify --json`。
 
-**本轮已落地**：仓级 `journal.lock` 单写者锁；`state_digest` + `audit status/verify/reconcile`；`op_begin/op_result` 写前协议（`stage`/`commit`/`set_ref`/`adopt`/`claim_*`/`policy`/`merge`）；提交门拒绝的 `gate` 事件；策略变更的 `policy` 事件；合并的 `merge` 事件；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`；`audit` 对 `op_open` / `op_state_gap` / `event_state_gap` 的检查。
+**本轮已落地**：仓级 `journal.lock` 单写者锁；`state_digest` + `audit status/verify/reconcile`；`op_begin/op_result` 写前协议（`stage`/`commit`/`set_ref`/`adopt`/`claim_*`/`policy`/`merge`）；提交门拒绝的 `gate` 事件；策略变更的 `policy` 事件；合并的 `merge` 事件；服务端鉴权失败的 `auth` 事件；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`；`audit` 对 `op_open` / `op_state_gap` / `event_state_gap` 的检查。
 
-**仍未落地**：`AuditEvent v2` 类型化、key / auth 失败 / deny 事件、签名与密钥审计。这也是为什么现在只能算 L2 首批，不能算 P0 完成。
+**仍未落地**：`AuditEvent v2` 类型化、key / deny 事件、签名与密钥审计。`auth` 事件目前有方法/路径/原因/401，但没有请求 id、来源地址和经过认证的 actor；这也是为什么现在只能算 L2 首批，不能算 P0 完成。
 
 **完成定义**
 
 - 删 journal、删尾、改中间、手改 ref、删对象、崩在两次写之间、10 进程并发写，7 类夹具全部按预期 kind 判红。
-- 每个改状态的本地 CLI 路径都有 `op_begin` 和 `op_result`；提交门拒绝路径有 `gate` 事件；auth 拒绝仍待补。
+- 每个改状态的本地 CLI 路径都有 `op_begin` 和 `op_result`；提交门拒绝路径有 `gate` 事件；鉴权失败路径有 `auth` 事件，但缺请求 id/来源与已认证 actor。
 - `audit reconcile` 在干净仓上零告警，在任意一类篡改上失败闭合。
 - 不引入签名依赖也能先交付。
 
@@ -484,7 +486,7 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 | R9 | 提交后改 claim 账本，缩小/删除原认领 | `claim_snapshot_mismatch` | P0 |
 | R10 | 服务端把 ref 回滚到旧提交 | `remote_rollback` | P3 |
 | R11 | 服务端对不同客户端返回不同历史 | `remote_equivocation` | P3 |
-| R12 | 鉴权失败但服务端不留痕 | `auth_event_missing` | P3 |
+| R12 | 鉴权失败但服务端不留痕 | 单测断言 `auth` 事件存在；`auth_event_missing` 尚未做成审计 kind | P3 |
 | R13 | 崩在 ref 写入与事件追加之间 | `dangling_state` | P0 |
 | R14 | 10 个进程同时 commit | 链完整、事件不丢、seq 不重 | P0 |
 | R15 | 10 万事件后验一个老事件 | inclusion proof 通过，旧锚仍成立 | P1 |
@@ -553,7 +555,7 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 
 1. **`Journal` 加锁 + `op_begin/op_result` 写前协议**，先把并发/崩溃撕裂堵住。
 2. **`audit reconcile` + 状态摘要**，让 `verify` 能回答“日志是否解释了当前状态”。
-3. **全操作事件覆盖 + 拒绝事件**，把 gate/accept/publish/pull/auth/policy/key/force 都记账。
+3. **全操作事件覆盖 + 拒绝事件**，把 gate/accept/publish/pull/auth/policy/key/force 都记账；`auth` 已落失败事件，key/deny 仍待补。
 4. **ClaimSet 快照 + accept receipt 落对象**，让授权和证据事后可复核。
 5. **`audit status/log/show/verify --json`**，把审计从内部 JSONL 变成可用的产品面。
 

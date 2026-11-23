@@ -507,6 +507,21 @@ mod tests {
             matches!(err, RemoteError::Net(NetError::Status(401, _))),
             "{err}"
         );
+        let central = Repo::open(root.join("central")).unwrap();
+        let auth = central
+            .journal()
+            .events()
+            .iter()
+            .find(|event| event.kind == "auth")
+            .expect("错的 token 必须留下 auth 事件");
+        assert_eq!(auth.payload["decision"], "denied");
+        assert_eq!(auth.payload["reason"], "bad_token");
+        assert_eq!(auth.payload["method"], "POST");
+        assert_eq!(auth.payload["path"], "/v1/publish");
+        assert_eq!(
+            auth.payload["state_before"], auth.payload["state_after"],
+            "鉴权失败不改仓库状态"
+        );
 
         // 另一个客户端从零起一条不相干的历史：不是 main 的后代 ⇒ 409。
         let other_dir = root.join("other");
