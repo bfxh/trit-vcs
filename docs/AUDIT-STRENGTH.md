@@ -524,6 +524,132 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 
 这五件做完，才轮到 Ed25519、Merkle、锚、跨机透明。
 
+---
+
+## 12. 第三方从 GitHub 来：默认路径不是读文档
+
+### 12.1 先承认现实
+
+第三方从 GitHub 认识你、从 GitHub 下载，默认会看：
+
+- README 首屏；
+- Releases 里的资产和 release note；
+- 代码树、commit 列表、CI 状态；
+- 安装/运行命令。
+
+他**不会**默认点进 `docs/AUDIT-STRENGTH.md`，也不会为了验一个下载先装 Rust 工具链。更关键的是：本仓 `.tritvcs/` 在 `.gitignore` 里，所以 GitHub 的 clone / source zip **天然没有 journal、检查点和审计包**。第三方从 GitHub 下到的只是源码 + Git 历史；不附 audit bundle，他就算想验也无从验。
+
+所以要把两个角色分开：
+
+> **GitHub 是分发层和社交层，不是信任根。**  
+> 它负责“让人找到你、下载你”，不负责“证明这份下载没被换过”。
+
+审计证明必须跟下载物一起走，不能藏在文档里。
+
+### 12.2 三类第三方，三种入口
+
+| 对象 | 他真正想要的 | 默认入口 | 证明强度 |
+|---|---|---|---|
+| 普通下载者 | 下到的不是被换过的恶意包 | Release 资产里的 checksum + 签名 + 一条验证命令 | 完整性、来源 |
+| 安全审计员 | 历史、授权、证据、状态都能复算 | `audit.tvab` 离线包 + `AUDIT.txt` + 深度文档 | 全链证明 |
+| 合作者 / 智能体 | 自动判断能不能接 | CLI/MCP 的 `audit verify`，失败给 kind | 可编程 |
+
+不要把三类人塞进同一份长文档。长文档给审计员；普通下载者只该看到**一行状态 + 一条命令 + 一个预期输出**。
+
+### 12.3 三层入口：10 秒、1 分钟、深度
+
+#### 10 秒：README 首屏
+
+README 第一屏放一个固定区块，不写原理，只写“是什么、怎么验、验完看到什么”。示例（数字和指纹在发布时填，不是现在写死）：
+
+```text
+审计状态：L3 · 检查点 #1234 · root blake3:...
+签名公钥指纹：ed25519:...
+本 Release 审计包：trit-vcs-0.12.0.audit.tvab
+验证（不需要 clone，不需要联网）：
+  trit-audit-verify trit-vcs-0.12.0.audit.tvab --trust trit-vcs-release.pub
+预期最后一行：
+  audit ok: 1 checkpoint, 1234 events, 0 warnings
+```
+
+要点：
+
+- 命令必须**可复制运行**，不能是“参见文档”；
+- 预期输出必须写死到可对照，不能只说“会通过”；
+- 验证器要能独立分发：一个静态二进制，或 `trit-vcs` 自带子命令；不能让第三方先装 Rust；
+- 首屏只放这一块，深度内容放后面链接。
+
+#### 1 分钟：Release 资产
+
+每个 GitHub Release 至少附：
+
+| 资产 | 作用 |
+|---|---|
+| `trit-vcs-<ver>-src.tar.zst` | 从 tagged commit 构建的自定义源码包，不是 GitHub 自动生成的 zip |
+| `trit-vcs-<ver>.audit.tvab` | 审计包：事件、检查点、inclusion/consistency proof、公钥、策略、必要对象、manifest |
+| `trit-vcs-<ver>.audit.tvab.sig` | 对审计包的分离签名 |
+| `SHA256SUMS` / `BLAKE3SUMS` | 所有资产的摘要 |
+| `SHA256SUMS.sig` | 对摘要清单的签名 |
+| `AUDIT.txt` | 一页纸：证明什么、不证明什么、怎么验、预期输出、密钥指纹 |
+| `trit-audit-verify` | 独立验证器（Windows/Linux/macOS），不依赖仓库和网络 |
+
+`AUDIT.txt` 不是 README 的复制品，它只回答四个问题：
+
+1. 这份包绑定了哪个 commit/tree；
+2. 哪个 key 签的，指纹是什么；
+3. 运行哪条命令，预期看到什么；
+4. 它**不**证明什么（例如：不证明构建机没被 root、不证明作者主观意图）。
+
+#### 深度：`docs/AUDIT-STRENGTH.md`
+
+这份文档是给审计员、贡献者和未来的自己看的，不是默认入口。它负责解释威胁模型、格式、阶段和验收，不负责让普通下载者“第一眼就信”。
+
+### 12.4 Release 发布流程：没有审计包就不发布
+
+把审计变成发布闸门，而不是发布后的说明：
+
+1. **打签名 tag**：tag 指向的 commit 必须有签名；CI 先验 tag 签名。
+2. **跑 `audit verify --deep`**：日志对账、对象闭包、claim 快照、witness/accept receipt、策略全部过。
+3. **生成 `audit.tvab`**：包含发布 commit 的 inclusion proof、最近检查点、旧→新 consistency proof、信任根、策略、必要对象。
+4. **签 bundle 和 checksums**：release key 只签“发布物摘要”，不签任意用户内容。
+5. **生成 `AUDIT.txt`**：填入 tree_size、root、key fingerprint、验证命令、预期输出、边界。
+6. **上传到 GitHub Release**：release body 里重复 10 秒区块；不要只把链接丢在 docs。
+7. **CI 反向验证**：下载刚上传的资产，按 README 里的命令原样跑一遍；不通过就不发布。README 的命令和资产必须由同一条流水线生成，防止文档腐烂。
+8. **可选外部锚**：如果平台有 immutable release / artifact attestation，打开它；再把检查点 root 发到 OpenTimestamps / Rekor / 专用 audit ref。外部锚是加分项，不是根。
+9. **记录失败**：发布验证失败也要留审计事件；不要“删掉这次发布假装没发生”。
+
+没有第 7 步，README 里的命令迟早会失效；没有第 2 步，Release 里的包只是“看起来有审计”。
+
+### 12.5 信任根不在 GitHub 账号
+
+第三方“从 GitHub 认识你”是**社交信任**，不是密码学信任。GitHub 账号被盗、repo 被改、release 资产被替换，都是现实威胁。
+
+因此：
+
+- 公钥指纹要出现在**至少两个独立通道**：README/Release、个人站点/域名、签名邮件、会议 slides、社交 profile。第三方只要从其中一个通道核对过指纹，后面的签名链就能接上。
+- 第一次下载只能 TOFU（首次使用即信任）：包里有 key，后续 release 必须由同一 key 或旧钥签名的 rotation statement 接续。TOFU 不能防“第一次就拿到假包”，只能防“之后被悄悄换”。
+- 密钥轮换必须是**旧钥签新钥**的明确 statement；吊销要能离线查。
+- GitHub 的 star/fork/verified badge 是平台信号，不是审计证明；不要在文案里混为一谈。
+
+一句话：
+
+> 账号是“认识你”的入口，指纹是“验证你”的根。  
+> 前者可以被盗，后者必须能离线核对。
+
+### 12.6 如果他仍然不验
+
+不能强制任何人验证。能做的是把“默认路径”改掉：
+
+- 安装脚本/包管理器在安装前校验 checksum + 签名；**不要**用 `curl | sh` 这种先执行后验证的形态；
+- Release body 第一行就是审计状态和验证命令；
+- CI 把 `audit verify` 做成可见的 check；失败时 release 不存在；
+- 下载页明确写“不验证也能跑，但等于只信任 GitHub 账号”；
+- 对高价值发布，提供**可复现构建**和独立验证器，让“不装 Rust”不再是借口。
+
+审计只对愿意验的人有用；产品设计要做的是把“愿意验”的成本降到一条命令，把“不验”的风险说清楚。剩下的，不能靠文档解决。
+
+---
+
 一句话收束：
 
 > 先把账记全、把账对上；再盖章、再放到别人手里。  
