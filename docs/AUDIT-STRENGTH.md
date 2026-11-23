@@ -397,7 +397,7 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 - accept receipt 落对象 + 事件；
 - `audit status/log/show/verify --json`。
 
-**本轮已落地**：仓级 `journal.lock` 单写者锁；`state_digest` + `audit status/verify/reconcile`；`op_begin/op_result` 写前协议（`stage`/`commit`/`set_ref`/`adopt`/`claim_*`/`policy`/`merge`）；提交门拒绝的 `gate` 事件；策略变更的 `policy` 事件；合并的 `merge` 事件；服务端鉴权失败的 `auth` 事件；publish 业务拒绝与本地 pull 业务拒绝的 `deny` 事件；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`；`audit` 对 `op_open` / `op_state_gap` / `event_state_gap` 的检查。
+**本轮已落地**：仓级 `journal.lock` 单写者锁；`state_digest` + `audit status/verify/reconcile`；`op_begin/op_result` 写前协议（`stage`/`commit`/`set_ref`/`adopt`/`claim_*`/`policy`/`merge`）；提交门拒绝的 `gate` 事件；策略变更的 `policy` 事件；合并的 `merge` 事件；服务端鉴权失败的 `auth` 事件；publish 业务拒绝与本地 pull 业务拒绝的 `deny` 事件；全量 pull 在请求前检查脏工作树；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`；`audit` 对 `op_open` / `op_state_gap` / `event_state_gap` 的检查。
 
 **仍未落地**：`AuditEvent v2` 类型化、key 事件、publish 请求形状/服务端 pull 拒绝的 deny、签名与密钥审计。`auth` 事件目前有方法/路径/原因/401，但没有请求 id、来源地址和经过认证的 actor；`deny` 目前覆盖服务端 publish 和客户端 pull 应用回执时的业务拒绝。这也是为什么现在只能算 L2 首批，不能算 P0 完成。
 

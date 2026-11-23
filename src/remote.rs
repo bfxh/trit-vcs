@@ -288,6 +288,22 @@ pub fn pull_from(
     prefix: Option<&str>,
     force: bool,
 ) -> Result<PullStats, RemoteError> {
+    // 全量 pull 会覆盖工作树；在发请求、收对象之前就把脏工作树挡住。
+    // 否则拒绝虽然会记账，但对象库里已经多出一批不可达对象，写前约束就漏了。
+    if prefix.is_none() && !force {
+        let changes = worktree::status(repo)?;
+        if !changes.is_empty() {
+            let paths: Vec<String> = changes.iter().map(|change| change.path.clone()).collect();
+            let err: RemoteError = WorktreeError::Dirty(paths.len(), paths).into();
+            repo.record_deny(
+                "pull",
+                "worktree_dirty",
+                &err.to_string(),
+                serde_json::json!({"ref": name, "prefix": prefix}),
+            );
+            return Err(err);
+        }
+    }
     let client = Client::new(remote, token)?;
     let reply = client.pull(name, prefix, repo.store(), Limits::default())?;
     let result = apply_pull(repo, &reply, prefix, force, name);
@@ -514,6 +530,7 @@ mod tests {
         let client_dir = root.join("client");
         std::fs::create_dir_all(&client_dir).unwrap();
         let mut client = Repo::init(&client_dir).unwrap();
+        std::fs::write(client_dir.join("dirty.txt"), b"local\n").unwrap();
         client
             .stage(
                 &BTreeMap::from([("dirty.txt".to_string(), b"local\n".to_vec())]),

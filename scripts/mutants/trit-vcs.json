@@ -1500,8 +1500,8 @@
 {
  "name": "vcs: 客户端 pull 被拒后不落 deny 事件（脏工作树无账）",
  "file": "src/remote.rs",
- "old": "            \"pull\",",
- "new": "            \"pull_changed\",",
+ "old": "                \"pull\",",
+ "new": "                \"pull_changed\",",
  "filter": "dirty_worktree_pull_is_denied_and_audited",
  "pkg": "trit-vcs",
  "runner": "cargo",
