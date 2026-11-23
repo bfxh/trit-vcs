@@ -1,0 +1,530 @@
+# trit-vcs 审计强度路线图
+
+> 状态：设计稿，未实现  
+> 日期：2026-11-24  
+> 目标：审计面做到“第三方可以离线复算”，不是“再加一条日志”  
+> 一句话：现在有一条**链**，但没有**锚**；有**见证**，但没有**签名**；有**认领**，但没有**授权快照**；有 `verify`，但没有**对账**。
+
+## 0. 先给结论
+
+### 0.1 当前真实水平：L1 局部，不是“审计强”
+
+按审计能力分五级：
+
+| 级别 | 定义 | 当前 |
+|---|---|---|
+| L0 | 有日志，能看发生过什么 | 有 |
+| L1 | 链内改一条会被发现 | 有，但只能防中间改写；删尾巴、换整条链发现不了 |
+| L2 | 日志能重放成当前状态，漏账/假账会被抓 | **没有** |
+| L3 | 每条关键事件能证明到签名检查点，检查点有仓外锚 | **没有** |
+| L4 | 跨机同一视图，服务端回滚/分裂视图能被抓 | **没有** |
+
+所以现在不能对外说“审计最强”。最多能说“有审计面”。真正要补的不是把日志写得更长，而是让它满足四个字：**可对账、可证明**。
+
+### 0.2 顺序不能反
+
+先做 L2（对账 + 全操作覆盖 + 授权/证据快照），再做 L3（签名 + Merkle + 锚），最后做 L4（跨机透明）。
+
+原因很直接：**给一份可能漏账的账本盖公章，只会让假账更可信。** 签名必须建立在“日志能解释状态”之上，否则只是把不完整的历史签死。
+
+### 0.3 做完之后能硬气的那句话
+
+不是“所有维度都第一”——那是营销，不可复算。可以硬气的是这一句：
+
+> 在同一份版本库对象图里，同时给出**谁做的、被谁授权、证据由谁产生、日志没有被截断、当前状态能由日志重放、跨机没有第二个版本**，而且第三方可以离线复算。
+
+Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同一个 VCS 对象图里，也不能用一份离线包全部复核。这个组合是 trit-vcs 真正能建立差异化的地方。
+
+---
+
+## 1. 审计到底要回答什么
+
+不要从“加什么功能”开始，从审计员的问题开始。一个审计员拿到仓库、中央仓和一份离线包，要能回答 7 个问题：
+
+| 编号 | 问题 | 需要的证明 |
+|---|---|---|
+| A1 | 谁，在什么时候，用什么身份，改了什么？ | 操作事件 + 身份签名 + 可信时间 |
+| A2 | 这次改动被授权了吗？授权范围是什么？ | 认领/策略的**当时快照**，不是现在的账本 |
+| A3 | “测试通过/构建成功”是谁说的？真的绑在这棵树上吗？ | 执行者签名的 attestation + 环境/材料摘要 |
+| A4 | 日志有没有被删尾、改写、换整条？ | Merkle 检查点 + 仓外锚 + 一致性证明 |
+| A5 | 当前 HEAD/refs/账本/策略，能不能由日志重放出来？ | 状态摘要 + `reconcile` |
+| A6 | 另一个机器看到的，是不是同一个历史？ | 客户端 pin + 服务端检查点 + 分裂视图检测 |
+| A7 | 不联网、不信任服务端，能验吗？ | 单文件 audit bundle + 离线 verifier |
+
+只要有一问答不了，“审计强”就只是形容词。
+
+---
+
+## 2. 现在的审计面：事实盘点
+
+### 2.1 已经成立的
+
+| 面 | 现在有什么 | 代码位置 |
+|---|---|---|
+| 事件链 | `Journal` 追加式 JSONL；校验 `seq`/`prev`/`hash`；坏链拒绝继续追加 | `src/journal.rs` |
+| 对象完整性 | `Repo::verify` 跑对象库 `fsck`，检查 HEAD 可达提交和 witness 绑定 | `src/repo.rs` |
+| 提交语义 | 提交里带 `session`/`claims`/`evidence`/`tags`/`witness`/`intent` | `src/model.rs` |
+| 认领 | 中央仓账本、单写者锁、冲突点名、`add/release` 进哈希链 | `src/claims.rs` |
+| 证据 | in-toto Statement 形状，绑定树摘要；`admit` 校验文件摘要/树/退出码 | `src/witness.rs` |
+| 跨机 | Bearer token、收端重算 BLAKE3、只准快进 | `src/net` / `src/remote.rs` |
+| 交接 | 包内 commit/tree/parents/intent/claims/diff/文件，逐项重算 | `src/handoff.rs` |
+
+这些不是白做的。问题在于它们是**七个分散的“面”**，还没有连成一条审计员能走的“链”。
+
+### 2.2 结构性缺口
+
+按优先级排，不按模块排。
+
+| 编号 | 缺口 | 现状事实 | 会导致什么 | 优先级 |
+|---|---|---|---|---|
+| G1 | 日志不能解释状态 | `Repo::verify` 只统计事件数、跑对象 fsck、走第一父链；不比对 journal 与 refs/HEAD/claims/policy | 删掉整本 journal 仍可能“绿”；手改 ref、漏记 commit 也绿 | P0 |
+| G2 | 链可截断、可换整条 | 没有检查点、没有 Merkle 根、没有仓外锚；`verify` 只验当前文件 | 删最后 N 条并重算，或整链替换，都验不出 | P0 |
+| G3 | 身份不可验证 | `session` 是自由字符串；提交/认领/见证都没有签名 | 谁都能自称 `qoder:s1`，伪造“谁做的” | P0 |
+| G4 | 操作覆盖不全 | 只有 `stage`/`commit`/`ref`/`adopt`/`claim_add`/`claim_release` 六类事件 | 拒绝的 gate、accept 执行、merge、publish/pull、鉴权失败、策略/密钥变更都没有账 | P0 |
+| G5 | 并发与崩溃会撕裂日志 | `Journal::append` 没有跨进程锁；`set_ref` 先写 ref 再记事件；commit 先记事件再写 HEAD | 两进程拿到同一个 `seq` 会弄坏链；崩在中间会出现“状态变了、账没记” | P0 |
+| G6 | 授权不可事后复核 | commit 只存 claim id；claim 事件只记 `paths.len()`，不记路径和账本摘要；账本 TTL 过后原条目会消失 | 事后无法证明“这个提交当时确实被这条认领覆盖” | P0 |
+| G7 | 证据不可验证 | witness 不签名；`accept` 结果只打印到 stderr，不落对象/事件；handoff 不携带 witness/accept | 谁都能造一份“通过”的见证；CI 结论离开机器就散 | P1 |
+| G8 | 跨机没有同一视图 | 客户端 journal 与中央仓 journal 是两本账；publish/pull 不互链；单 token 无 actor 身份；ref 是普通文件 | 服务端可回滚/改写 ref 和账本；客户端没有 pin，发现不了第二个历史 | P1 |
+| G9 | 时间与策略变更不可信 | HLC 只给本地全序；ref/stage 用墙钟毫秒；`policy.json` 可直接改，无事件、无签名 | 可回填时间；策略被改过也看不出来 | P1 |
+| G10 | 没有审计查询/证明入口 | 没有 `audit` CLI；`verify` 只有一行摘要；`log` 只走第一父链 | 审计员只能用眼睛翻 JSONL；无法给第三方 inclusion proof | P2 |
+| G11 | Git 桥会丢审计信息 | import 只走 `--first-parent`，丢掉 merge 图、作者签名；session 被合成；export 只加尾注 | Git 侧的信任无法映射到 trit；审计链在桥接处断掉 | P2 |
+| G12 | 规模与隐私没有预算 | `Journal::open` 每次全量读；无增量校验/归档/脱敏/保留策略 | 事件上百万后打开变慢；日志可能把密钥/客户数据带出去 | P2 |
+
+### 2.3 最刺眼的三个具体事实
+
+1. **删掉 `.tritvcs/journal.jsonl`，`trit-vcs verify` 仍可能报绿。**  
+   它验的是对象库和 HEAD 可达提交，不是“日志是否完整记录了这些状态变化”。
+
+2. **`set_ref` 先 `fs::write` 再 `journal.append`。**  
+   两次系统调用之间崩溃，ref 已经动了，账上却没有这一笔。审计日志不是写前日志（WAL）。
+
+3. **认领事件只记 `paths.len()`。**  
+   审计员看到“某个 owner 认领了 3 条路径”，但看不到是哪 3 条，也看不到当时的账本摘要。TTL 到期后，连原始条目都可能被清掉。
+
+---
+
+## 3. 目标：L4 审计闭环
+
+### 3.1 一张图
+
+```text
+写操作（commit / ref / claim / accept / publish / policy / key）
+        │
+        │  单写者锁 + op_id + before/after 状态摘要
+        ▼
+AuditEvent v2 ── hash chain ──► Merkle tree ──► signed checkpoint ──► anchors
+        │                              │
+        ├─ actor / key / role          ├─ inclusion proof（事件/提交）
+        ├─ action / subject            └─ consistency proof（旧→新）
+        ├─ before / after digest
+        ├─ policy digest
+        └─ result / evidence digest
+        │
+        ▼
+audit reconcile：用事件重放到 refs / HEAD / claims / policy
+        │
+        ├─ 一致 → 绿
+        └─ 不一致 → 具体 kind（漏账 / 假账 / 悬空状态）
+```
+
+### 3.2 一条事件链，两级检查点
+
+- **事件链**：每次状态变化一条，负责“发生了什么”。
+- **检查点**：每 N 条事件（或每次 publish）把事件哈希做成 Merkle 根，签名，负责“这段历史没被换”。
+- **锚**：把检查点放到仓库之外，负责“连检查点也没被换”。
+
+只有事件链，没有检查点，等于只有账本没有封条；只有检查点，没有对账，等于封条贴在一本可能缺页的账上。
+
+### 3.3 三类证明
+
+| 证明 | 回答 | 大小 |
+|---|---|---|
+| inclusion proof | 某个事件/提交确实在这棵 Merkle 树里 | O(log n) 个哈希 |
+| consistency proof | 新树是在旧树后面追加的，不是换了一棵 | O(log n) 个哈希 |
+| audit bundle | 第三方离线复核上述全部 | 事件 + 证明 + 公钥 + 策略 + 必要对象 |
+
+### 3.4 信任根
+
+- **身份**：Ed25519 密钥；`key_id` = 公钥摘要；principal 由 trust store 映射，不由 `session` 字符串自封。
+- **签名**：commit / claim 请求 / checkpoint / attestation 分开签；签名域分开，防止跨协议重放。
+- **信任**：TOFU 起步，`trust.json` 记录 principal、角色、有效期、吊销；密钥轮换由旧钥签新钥。
+- **策略**：`policy.json` 加 `audit` 段，整个文件签名；策略变更本身是一条事件。
+- **锚**：至少一个**不同管理域**的锚；同一个 `.tritvcs` 目录里的锚只算方便，不算安全。
+
+---
+
+## 4. 最小数据模型
+
+### 4.1 `AuditEvent v2`
+
+不再用自由 `payload: Value` 兜一切。每条事件至少要有：
+
+```json
+{
+  "schema": 2,
+  "seq": 42,
+  "op_id": "01J...",
+  "at": { "wall_ms": 1760000000000, "hlc": [1760000000000, 1], "source": "local" },
+  "actor": { "principal": "qoder:s1", "key_id": "ed25519:...", "role": "author" },
+  "action": "commit",
+  "subject": { "kind": "commit", "id": "blake3:..." },
+  "before": "blake3:...",
+  "after": "blake3:...",
+  "policy": "blake3:...",
+  "result": { "status": "allowed", "error_kind": null },
+  "evidence": ["blake3:..."],
+  "prev": "blake3:...",
+  "hash": "blake3:..."
+}
+```
+
+关键点：
+
+- `before`/`after` 是**状态摘要**，不是随便的对象 id。状态摘要至少覆盖：HEAD、refs 映射、index 树、claims 账本摘要、policy 摘要、keyset 摘要。
+- `op_id` 让“begin/result”两条事件、跨机 publish 与本地 commit 能对上。
+- `result.status` 必须能表达 `allowed` / `denied` / `failed` / `incomplete`；拒绝也要留账。
+- `hash` = BLAKE3(域分隔前缀 + 除 `hash` 外的 canonical JSON + prev)，域分隔避免和其它协议共用哈希输入。
+
+### 4.2 写前日志协议
+
+每个会改状态的操作：
+
+1. 拿仓库级单写者锁；
+2. 算 `before` 摘要，分配 `seq`/`op_id`；
+3. 追加 `op_begin` 并 `sync_data`；
+4. 执行状态变化；
+5. 追加 `op_result`（含 `after`、`result`）并 `sync_data`；
+6. 释放锁。
+
+崩溃在 3–4 之间：`reconcile` 看到悬空 begin，标 `incomplete`，不假装成功。  
+崩溃在 4–5 之间：状态已变、result 缺失，`reconcile` 标 `dangling_state`，要求人工/自动补齐，而不是静默续写。
+
+这比“先写状态再补日志”多一次 fsync，但审计买的就是这个顺序。
+
+### 4.3 提交里的授权快照
+
+`claims: Vec<String>` 保留，兼容旧提交；新增：
+
+```json
+{
+  "claim_set": "blake3:...",
+  "accept_receipt": "blake3:...",
+  "signatures": [ { "key_id": "ed25519:...", "sig": "..." } ]
+}
+```
+
+签名覆盖**除 `signatures` 外的全部字段**（避免“签名里包含签名”的循环），提交 id 覆盖包含签名的完整对象；
+老 v1 提交不加这个字段，序列化与 id 都不变。多签只是在同一份 body 上追加不同 key 的签名，不改变已验证的语义。
+
+`ClaimSet` 是不可变对象，至少含：
+
+```json
+{
+  "schema": 1,
+  "ledger_digest": "blake3:...",
+  "resolved_at": 1760000000000,
+  "claims": [
+    { "id": "c1", "owner": "qoder:s1", "paths": ["src/a.rs"], "acquired_at": 1760000000000, "expires_at": 1760000900000 }
+  ]
+}
+```
+
+这样账本之后怎么变、TTL 怎么过期，都不影响“提交当时被谁授权改哪些路径”的复核。
+
+### 4.4 证据回执
+
+`witness` 从“未签名 Statement”升级为“签名 attestation”：
+
+- 保留 in-toto Statement 的 `subject`/`predicate` 形状；
+- 外面包一层 DSSE 兼容 envelope，或新增 `signatures` 字段；签名覆盖 canonical payload；
+- predicate 增加：`tool`、`rustc`、`target`、`os`、`features`、`env_allowlist`、`materials`（依赖锁文件摘要）、`products`（构建产物摘要）；
+- `accept` 的每条命令结果落成 `AcceptReceipt` 对象：argv、exit、stdout/stderr 摘要、耗时、超时、截断、执行者 key、仓库状态前后摘要；
+- `admit` 在严格策略下必须验：签名 → 信任链 → 树绑定 → 退出码 → 环境/材料 → 策略。
+
+没有签名的 witness 只能叫“证据草稿”，不能叫“通过证明”。
+
+### 4.5 检查点与证明
+
+```json
+{
+  "schema": 2,
+  "tree_size": 1234,
+  "root": "blake3:...",
+  "prev_checkpoint": "blake3:...",
+  "created_at": 1760000000000,
+  "signatures": [
+    { "key_id": "ed25519:...", "alg": "ed25519", "sig": "..." }
+  ]
+}
+```
+
+- 叶子：`BLAKE3("trit/audit/leaf" || event.hash)`
+- 节点：`BLAKE3("trit/audit/node" || left || right)`
+- 空树根固定；奇数节点按 RFC 6962 方式上提。
+- inclusion/consistency proof 都带 `from_size`/`to_size`/`root`，验证器只信公钥和锚，不信服务端自报。
+
+### 4.6 策略
+
+不要另造配置语言。沿用 `.tritvcs/policy.json`，加 `audit` 段：
+
+```json
+{
+  "require_witness": true,
+  "require_intent": true,
+  "audit": {
+    "require_signed_commits": true,
+    "require_claim_snapshot": true,
+    "require_accept_receipt": true,
+    "checkpoint_interval_events": 256,
+    "anchor": "central",
+    "protected_refs": ["main"],
+    "required_cosigners": 1
+  }
+}
+```
+
+策略文件整体签名；每次变更产生 `policy_change` 事件，带旧/新摘要和签名者。默认全关的旧行为保留，逐项目 opt-in。
+
+---
+
+## 5. CLI / API 应该长什么样
+
+审计不是给库内部用的，必须有一条审计员能直接走的命令面：
+
+```sh
+# 总览：当前级别、检查点、锚、覆盖缺口
+trit-vcs audit status --json
+
+# 对账：日志能不能重放成当前状态
+trit-vcs audit reconcile --central ./central --json
+
+# 验链 + 验签名 + 验锚（默认 quick，--deep 才碰对象库全量）
+trit-vcs audit verify --deep --anchor ./anchors/latest.json --json
+
+# 查事件，不查 commit message
+trit-vcs audit log --kind denied --actor qoder:s1 --path src --from-seq 100 --json
+trit-vcs audit show 42 --json
+
+# 给第三方 proof
+trit-vcs audit prove --event 42 --out event-42.proof.json
+trit-vcs audit verify-proof event-42.proof.json --trust ./trust.json
+
+# 打检查点 / 放锚
+trit-vcs audit checkpoint --sign ~/.trit/keys/audit.ed25519 --out checkpoint.json
+trit-vcs audit anchor --checkpoint checkpoint.json --to central
+
+# 离线包：不依赖仓库、不依赖网络
+trit-vcs audit bundle --out repo.audit.tvab --trust ./trust.json
+trit-vcs audit verify-bundle repo.audit.tvab --offline
+
+# 身份
+trit-vcs key init --algorithm ed25519 --out ~/.trit/keys/audit.ed25519
+trit-vcs key trust --key ./audit.pub --principal qoder:s1 --role author
+trit-vcs key rotate --old ... --new ... --statement rotation.json
+trit-vcs key revoke --key ... --reason "..."
+```
+
+MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verify`、`audit_prove`；写操作仍走 CLI，避免智能体一上来就改审计账。
+
+命令的失败必须是机器可读的 `kind`，例如：
+
+- `journal_missing`
+- `journal_truncated`
+- `checkpoint_mismatch`
+- `anchor_missing`
+- `state_drift`
+- `unlogged_state`
+- `claim_snapshot_missing`
+- `claim_snapshot_mismatch`
+- `signature_invalid`
+- `signer_untrusted`
+- `signer_revoked`
+- `attestation_tree_mismatch`
+- `remote_rollback`
+- `remote_equivocation`
+- `audit_bundle_incomplete`
+
+每个 `kind` 都要有可执行的下一步，沿现有 `remediation` 风格，不要只报“验证失败”。
+
+---
+
+## 6. 分阶段落地
+
+### P0：审计地基（必须先做）
+
+**范围**
+
+- `AuditEvent v2` 类型化 + schema 版本；
+- 仓库级单写者锁 + `op_begin`/`op_result` 写前协议；
+- 全操作覆盖：commit/ref/adopt/stage/claim/accept/merge/publish/pull/auth/policy/key/force/deny；
+- `audit reconcile`：状态摘要 + 日志重放 + 不一致 kind；
+- claim set 快照进提交；
+- accept receipt 落对象 + 事件；
+- `audit status/log/show/verify --json`。
+
+**完成定义**
+
+- 删 journal、删尾、改中间、手改 ref、删对象、崩在两次写之间、10 进程并发写，7 类夹具全部按预期 kind 判红。
+- 每个改状态的 CLI 路径都有且只有一条 `op_result`；拒绝路径有 `denied` 事件。
+- `audit reconcile` 在干净仓上零告警，在任意一类篡改上失败闭合。
+- 不引入签名依赖也能先交付。
+
+**这一步的产出不是“更强的加密”，而是“账能对上”。**
+
+### P1：不可否认
+
+**范围**
+
+- Ed25519 key init/trust/rotate/revoke；
+- commit/claim/checkpoint/attestation 签名；
+- Merkle 检查点 + inclusion/consistency proof；
+- 仓外锚：central 锚 + 可选外部锚（文件/HTTP 时间戳/OpenTimestamps/RFC3161，做成插件，不做硬依赖）；
+- `audit prove/verify-proof/anchor`；
+- `audit verify --anchor` 支持旧检查点一致性。
+
+**完成定义**
+
+- 换提交内容、换 witness 退出码、换检查点、换签名者、吊销密钥、旧钥签新钥，逐项判红。
+- 旧锚在 10 万条新事件后仍能验；旧→新 consistency proof 通过；删尾被旧锚抓。
+- 签名域分离有测试；跨协议重放失败。
+- 私钥不进入 argv、不进入日志；权限/密钥文件有明确边界。
+
+### P2：证据闭环
+
+**范围**
+
+- witness v1：DSSE 兼容签名 + 环境/材料/产物；
+- `admit` 严格模式：签名、信任、树、退出码、环境、策略全过才收；
+- handoff 包携带 witness/accept receipt/签名/证明；
+- Git 桥显式标记 `provenance: lossy`，保留原 SHA 映射；能导入作者签名摘要就导入，不能就如实标缺；
+- 证据查询：按 commit/路径/actor 反查“当时的通过证明”。
+
+**完成定义**
+
+- 伪造 `exit=0`、换 stdout、换树、换执行者 key，全部判红。
+- 离线 handoff 包不接仓库也能验：commit → tree → diff → claim set → witness → receipt → 签名。
+- Git 导入的提交在 `audit show` 中明确显示 `provenance_lossy: ["merge_graph","author_signature"]`，不假装完整。
+
+### P3：跨机透明
+
+**范围**
+
+- 中央仓审计账本：publish/pull/auth/ref/force 全记；
+- 每 actor 独立 token（或签名 challenge），token 轮换/吊销进审计；
+- 客户端记录每个 remote/ref 的 last-seen checkpoint；
+- 服务端提供 `checkpoint`/`proof`/`consistency` 接口；
+- 受保护 ref 支持 N 个独立 cosigner（注意：这里的 cosigner 不是现有 `witness` 测试见证）；
+- 服务端回滚、分裂视图、静默改写 ref 的告警。
+
+**完成定义**
+
+- 服务端返回旧检查点 → 客户端 `remote_rollback`。
+- 同一 ref 两个不同检查点 → `remote_equivocation`，并给出两边 root/size。
+- 鉴权失败有事件（actor 可未知，但请求 id/来源/结果必须有）。
+- `publish` 的本地事件与中央事件能用 `op_id` 对上。
+
+### P4：运营与体验
+
+- `audit blame`：按路径/行追到提交、认领、证据、签名者；
+- 审计时间线/告警/保留策略/归档；
+- 日志脱敏与敏感等级；
+- 增量验证索引，避免每次 `Journal::open` 全读；
+- dashboard/CI 集成；
+- GitHub 桥的审计锚：每天/每次发布把检查点根写进一个专用 ref，作为外部锚；不追求每条事件都上传。
+
+---
+
+## 7. 验收矩阵：红队先写，功能后写
+
+| 编号 | 攻击/故障 | 期望 kind | 由哪期覆盖 |
+|---|---|---|---|
+| R1 | 删掉整个 `journal.jsonl` | `journal_missing` / `state_drift` | P0 |
+| R2 | 删最后 N 条事件并重算链 | `journal_truncated` / `checkpoint_mismatch` | P1 |
+| R3 | 改中间一条事件并重算后面 | `checkpoint_mismatch` / `proof_invalid` | P1 |
+| R4 | 用旧的有效链替换整条 | `anchor_consistency_failed` | P1 |
+| R5 | 手改 `.tritvcs/refs/main` | `state_drift` | P0 |
+| R6 | 删一个被引用的对象 | `object_missing` | P0 |
+| R7 | 伪造 `session=qoder:s1` 的提交 | `signer_untrusted` / `signature_missing` | P1 |
+| R8 | 把 witness 的 `exit` 改成 0 | `signature_invalid` / `attestation_mismatch` | P1 |
+| R9 | 提交后改 claim 账本，缩小/删除原认领 | `claim_snapshot_mismatch` | P0 |
+| R10 | 服务端把 ref 回滚到旧提交 | `remote_rollback` | P3 |
+| R11 | 服务端对不同客户端返回不同历史 | `remote_equivocation` | P3 |
+| R12 | 鉴权失败但服务端不留痕 | `auth_event_missing` | P3 |
+| R13 | 崩在 ref 写入与事件追加之间 | `dangling_state` | P0 |
+| R14 | 10 个进程同时 commit | 链完整、事件不丢、seq 不重 | P0 |
+| R15 | 10 万事件后验一个老事件 | inclusion proof 通过，旧锚仍成立 | P1 |
+
+每条红队夹具都要进 `tests/`，并在 `scripts/mutants/trit-vcs.json` 登记“关掉对应检查后测试必须变红”。没有变异条目的审计控制，不算控制。
+
+---
+
+## 8. 性能与成本目标
+
+下面是**目标值，不是已达成读数**；实施后必须用 benchmark 填实测，再写进 README。没有实测前不许写“更快/更强”。
+
+| 指标 | 目标 |
+|---|---|
+| 事件追加 p99（含 fsync） | ≤ 5 ms，本机 SSD |
+| `audit verify --quick` 10 万事件 | ≤ 1 s（不碰对象内容） |
+| `audit verify --deep` 10 万事件 | ≤ 10 s（含对象 fsck 与证据） |
+| 单条 inclusion proof | ≤ 1 KB（1 万–100 万事件量级） |
+| 证明验证 | ≤ 2 ms/条 |
+| 检查点生成 | 10 万事件 ≤ 200 ms |
+| 审计日志体积 | 典型提交的日志增量中位数 ≤ 2 KB；压缩后 ≤ 对象库的 1% |
+| 打开仓库 | 不再全量读 journal；有检查点缓存/增量索引 |
+
+审计不能靠“每次都全量扫”赢。全量扫是正确性基线；增量验证才是产品能力。
+
+---
+
+## 9. 和现有工具比，强在哪、不强在哪
+
+| 能力 | Git | GitHub/GitLab | in-toto/SLSA + Sigstore/Rekor | trit 现在 | trit 目标 |
+|---|---|---|---|---|---|
+| 提交身份签名 | GPG/SSH 可选，默认不强制 | 平台账号，不绑定提交字节 | 制品签名强，不管 VCS 提交 | 无 | 策略可强制，commit 自包含签名 |
+| 操作日志 | reflog 本地、可改写、会过期 | 服务端审计日志，平台私有 | 无 VCS 操作日志 | 本仓哈希链，6 类事件 | 全操作 + 拒绝事件 + 可重放 |
+| 截断/换链检测 | 无 | 依赖服务端 | Rekor 透明日志强 | 链内能查，链外不能 | Merkle 检查点 + 锚 + 一致性证明 |
+| 授权/认领快照 | 无 | 分支保护/审批，不绑定内容 | 策略在 CI，不绑 VCS | 认领门，commit 只存 id | ClaimSet 对象 + 签名 + 事后复核 |
+| 证据绑定 | notes/CI 外挂 | checks 外挂 | in-toto 强，需外部系统 | witness 绑树但不签名 | 签名 attestation + 环境/材料 + 离线 |
+| 跨仓一致视图 | 无 | 平台内 | Rekor 可审计 | 客户端/中央两本账 | 中央账本 + 客户端 pin + 分裂检测 |
+| 离线第三方验证 | 只能看对象 | 不行 | 部分，依赖 Rekor 数据 | 手工验对象 | 单文件 audit bundle，零网络 |
+| 查询/解释 | log/blame | UI 强，不可导出证明 | 工具链分裂 | 只有 commit log | audit log/show/prove，机器可读 |
+
+**要诚实：**
+
+- Git 的 commit signing 比我们现在的“无签名”强；GitHub 的服务端审计日志比我们现在的“本地一条链”强；Rekor 的公开透明日志比我们现在的“无锚”强。
+- 我们不是要在每一项上超过它们；我们要在一个它们没有的位置上赢：**VCS 内建、授权/证据/历史/状态同图、离线可复算**。
+- 如果只做签名不做对账，我们只是“给 Git 补一个签名”，没有结构性优势。
+
+---
+
+## 10. 不做什么 / 诚实边界
+
+1. **不把 BLAKE3 当签名。** 哈希链证明“内容没变”，不证明“谁做的”。
+2. **不把 `session` 当身份。** 字符串谁都能填；身份必须来自密钥和 trust store。
+3. **不把日志当备份。** 日志是审计面，不是对象库的副本；对象丢了要能发现，不是靠日志恢复。
+4. **不在明文 HTTP 上分发私钥/token。** 网络 v0 只绑回环或套 SSH/反代；签名密钥不上网。
+5. **不追求每个读操作都上链。** 读操作不改变状态，全记会淹没真正的变更；只记安全相关的读取（如导出审计包）可选。
+6. **不承诺抵抗 root/内核级攻击。** 如果攻击者能改内核、内存和所有锚，任何本地审计都有限；目标是在“文件可被改、服务端可能不诚实”的威胁模型下可发现。
+7. **不承诺“所有维度世界第一”。** 只承诺可复算的维度：完整性、授权快照、证据绑定、对账、离线证明、跨机一致。
+8. **不引入必需的外部 SaaS。** 外部锚/时间戳是可选增强；核心审计必须能离线跑。
+9. **不让审计日志泄露秘密。** 日志/证据要脱敏、可保留、可删除敏感字段；删除本身也要留审计事件（只记摘要，不记内容）。
+
+---
+
+## 11. 如果现在只动一次手，先做哪五件事
+
+按依赖顺序，不要并行堆功能：
+
+1. **`Journal` 加锁 + `op_begin/op_result` 写前协议**，先把并发/崩溃撕裂堵住。
+2. **`audit reconcile` + 状态摘要**，让 `verify` 能回答“日志是否解释了当前状态”。
+3. **全操作事件覆盖 + 拒绝事件**，把 gate/accept/publish/pull/auth/policy/key/force 都记账。
+4. **ClaimSet 快照 + accept receipt 落对象**，让授权和证据事后可复核。
+5. **`audit status/log/show/verify --json`**，把审计从内部 JSONL 变成可用的产品面。
+
+这五件做完，才轮到 Ed25519、Merkle、锚、跨机透明。
+
+一句话收束：
+
+> 先把账记全、把账对上；再盖章、再放到别人手里。  
+> 这样“审计强”才是可复算的事实，不是一句宣传语。
