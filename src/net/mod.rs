@@ -26,6 +26,7 @@ pub use crate::wire::Limits;
 
 mod auth;
 mod deny;
+mod pull;
 mod reject;
 
 use self::reject::{drain_body, reject_json};
@@ -370,7 +371,7 @@ fn handle_conn(stream: TcpStream, state: &Arc<State>) -> Result<(), NetError> {
             }
         }
         ("POST", "/v1/publish") => publish(&mut reader, &request, state),
-        ("GET", "/v1/pull") => pull(reader.get_mut(), &request, state),
+        ("GET", "/v1/pull") => pull::handle(reader.get_mut(), &request, state),
         _ => respond_json(reader.get_mut(), 404, "not_found", "没有这个端点", &[]),
     }
 }
@@ -516,41 +517,6 @@ fn read_publish_body<R: Read>(
     }
     wire_reader.finish()?;
     Ok(received)
-}
-
-fn pull(stream: &mut TcpStream, request: &Request, state: &Arc<State>) -> Result<(), NetError> {
-    let Some(name) = request.query.get("ref") else {
-        return respond_json(stream, 400, "bad_request", "pull 需要 ?ref=NAME", &[]);
-    };
-    let prefix = request
-        .query
-        .get("prefix")
-        .map(String::as_str)
-        .filter(|p| !p.is_empty());
-    let repo = state.repo.lock().expect("服务器仓库锁中毒");
-    let plan = match crate::remote::pull_plan(&repo, name, prefix) {
-        Ok(plan) => plan,
-        Err(err) => return respond_remote(stream, &err),
-    };
-    let total = match plan.body.byte_len(repo.store()) {
-        Ok(total) => total,
-        Err(err) => return respond_remote(stream, &err.into()),
-    };
-    let head = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {total}\r\n\
-         x-trit-ref: {name}\r\nx-trit-tip: {}\r\nx-trit-manifest: {}\r\nx-trit-files: {}\r\n\
-         x-trit-objects: {}\r\nconnection: close\r\n\r\n",
-        plan.tip.to_hex(),
-        plan.manifest.to_hex(),
-        plan.files,
-        plan.body.count()
-    );
-    stream.write_all(head.as_bytes())?;
-    if let Err(err) = plan.body.write(repo.store(), &mut *stream) {
-        // 头已经发出去了，只能在流上直接断；客户端会读到截断并判红。
-        return Err(NetError::Wire(err.to_string()));
-    }
-    Ok(())
 }
 
 struct Request {

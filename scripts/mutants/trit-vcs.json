@@ -1516,5 +1516,15 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "lib"
+},
+{
+ "name": "vcs: 服务端 pull 拒绝不落 deny 事件（未知 ref 无账）",
+ "file": "src/net/deny.rs",
+ "old": "        \"pull\",",
+ "new": "        \"pull_changed\",",
+ "filter": "pull_shape_and_unknown_ref_are_denied_and_audited",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
 }
 ]

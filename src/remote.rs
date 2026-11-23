@@ -482,6 +482,21 @@ mod tests {
         response
     }
 
+    fn raw_pull(addr: std::net::SocketAddr, target: &str) -> String {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let head = format!(
+            "GET {target} HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer {TOKEN}\r\n\
+             connection: close\r\n\r\n"
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
     #[test]
     fn publish_shape_rejections_are_denied_and_audited() {
         let root = temp("publish-shape");
@@ -513,6 +528,37 @@ mod tests {
             assert_eq!(
                 deny.payload["state_before"], deny.payload["state_after"],
                 "请求形状拒绝不改仓库状态"
+            );
+        }
+        server.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pull_shape_and_unknown_ref_are_denied_and_audited() {
+        let root = temp("pull-shape");
+        let server = start(&root);
+        let missing = raw_pull(server.addr(), "/v1/pull");
+        assert!(missing.starts_with("HTTP/1.1 400"), "{missing}");
+        let unknown = raw_pull(server.addr(), "/v1/pull?ref=main");
+        assert!(unknown.starts_with("HTTP/1.1 404"), "{unknown}");
+
+        let central = Repo::open(root.join("central")).unwrap();
+        let denies: Vec<_> = central
+            .journal()
+            .events()
+            .iter()
+            .filter(|event| event.kind == "deny")
+            .collect();
+        assert_eq!(denies.len(), 2, "缺 ref/未知 ref 都要有 deny");
+        assert_eq!(denies[0].payload["action"], "pull");
+        assert_eq!(denies[0].payload["reason"], "missing_ref");
+        assert_eq!(denies[1].payload["action"], "pull");
+        assert_eq!(denies[1].payload["reason"], "unknown_ref");
+        for deny in denies {
+            assert_eq!(
+                deny.payload["state_before"], deny.payload["state_after"],
+                "pull 拒绝不写中央仓状态"
             );
         }
         server.shutdown();
