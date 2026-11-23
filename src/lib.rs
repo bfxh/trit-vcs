@@ -33,6 +33,7 @@ pub mod mcp;
 pub mod merge;
 pub mod model;
 pub mod net;
+pub mod op;
 pub mod preflight;
 pub mod remediation;
 pub mod remote;

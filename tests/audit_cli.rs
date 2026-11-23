@@ -91,7 +91,12 @@ fn clean_repo_is_l2_and_log_is_readable() {
     assert_eq!(value["ok"], true);
     assert_eq!(value["level"], "L2");
     assert_eq!(value["chain_ok"], true);
-    assert_eq!(value["events"], 3);
+    let event_count = value["events"].as_u64().unwrap();
+    assert!(
+        event_count >= 6,
+        "stage/commit 都应成对留下 op_begin/op_result"
+    );
+    assert_eq!(value["open_ops"], 0);
 
     let default = run(&root, &["audit", "--json"]);
     assert!(default.status.success(), "{}", stderr(&default));
@@ -101,14 +106,20 @@ fn clean_repo_is_l2_and_log_is_readable() {
     let log = run(&root, &["audit", "log", "--json"]);
     assert!(log.status.success(), "{}", stderr(&log));
     let rows: serde_json::Value = serde_json::from_str(&stdout(&log)).unwrap();
-    assert_eq!(rows.as_array().unwrap().len(), 3);
-    assert_eq!(rows[0]["kind"], "stage");
+    assert_eq!(rows.as_array().unwrap().len() as u64, event_count);
+    assert_eq!(rows[0]["kind"], "op_begin");
+    assert!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "stage")
+    );
 
     let show = run(&root, &["audit", "show", "0", "--json"]);
     assert!(show.status.success(), "{}", stderr(&show));
     let event: serde_json::Value = serde_json::from_str(&stdout(&show)).unwrap();
     assert_eq!(event["seq"], 0);
-    assert_eq!(event["kind"], "stage");
+    assert_eq!(event["kind"], "op_begin");
 }
 
 #[test]

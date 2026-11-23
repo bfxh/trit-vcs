@@ -39,17 +39,18 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 
 | 能力 | 入口 | 事实 |
 |---|---|---|
-| 日志对账 | `audit status` / `audit verify` / `audit reconcile` | 比对日志文件是否存在/可读、HEAD、refs、对象闭包、`claim_set`、`accept` 回执、最新 `state_after` |
+| 日志对账 | `audit status` / `audit verify` / `audit reconcile` | 比对日志文件是否存在/可读、HEAD、refs、对象闭包、`claim_set`、`accept` 回执、`op_begin/op_result` 配对、最新 `state_after`；`open_ops` 单独报 |
 | 状态摘要 | `Repo::state_digest` | HEAD + refs + index + policy 原始字节 + claims 原始字节，canonical JSON 后 BLAKE3；不把 journal 算进去，避免循环自证 |
 | 单写者链 | `Journal::append` | `journal.lock` 跨进程锁；拿锁后按文件长度决定是否重读，避免两个进程拿同一个 `seq` |
+| 写前协议 | `Repo::begin_operation` / `finish_operation` | 状态变更前先写 `op_begin`（含 `state_before`），写后写 `op_result`（含 `status`/`state_after`）；崩溃留下开放操作，`audit` 报 `op_open`/`op_state_gap` |
 | 授权快照 | `ClaimSet` 对象 + `Commit.claim_set` | 提交时按 path 覆盖集合生成不可变快照；`verify`/`audit` 校验对象存在且摘要对得上 |
 | 判据回执 | `AcceptReceipt` 对象 + `accept` 事件 | 记录树、基线、session、认领 id、每条判据的 exit/超时/输出摘要/是否截断；回执摘要进链 |
-| 操作事件 | `stage` / `commit` / `ref` / `adopt` / `claim_*` / `publish` / `pull` / `accept` | 带 `state_after` 的事件能被状态摘要校验；`publish` 记 `previous`/`forced`，`pull` 记 prefix/force |
+| 操作事件 | `stage` / `commit` / `ref` / `adopt` / `claim_*` / `publish` / `pull` / `accept` / `gate` | 带 `state_after` 的事件能被状态摘要校验；`publish` 记 `previous`/`forced`，`pull` 记 prefix/force，`gate` 记拒绝原因与 `state_before`/`state_after` |
 | 查询面 | `audit log` / `audit show` / `--json` | 审计员不必用眼睛翻 JSONL；`audit status --json` 可直接分支 |
 | 坏日志容错 | `Repo::open_for_audit` | journal 是坏 JSON 时仍能打开审计入口，输出 `journal_broken`，而不是在 `Repo::open` 阶段只丢一句 IO 错 |
 | 失败即非零 | `audit status` | 有 issue 时退出码 1；`--json` 仍输出结构化报告，便于 CI 消费 |
 
-尚未完成、不能假装完成的：`op_begin/op_result` 写前协议、gate 拒绝事件、merge/策略/密钥/鉴权失败事件、Ed25519 签名、Merkle 检查点、仓外锚、跨机 journal 互链。**这些没做完之前，L3 不能宣称。**
+尚未完成、不能假装完成的：merge/策略/密钥/鉴权失败事件、Ed25519 签名、Merkle 检查点、仓外锚、跨机 journal 互链。**这些没做完之前，L3 不能宣称。**
 
 ---
 
@@ -96,8 +97,8 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 | G1 | 日志不能解释状态 | `Repo::verify` 仍只统计事件数、跑对象 fsck、走第一父链；但 `audit status` 已比对 journal 与 refs/HEAD/claims/policy/state_digest | `verify` 单独跑仍可能绿；用 `audit` 才会抓删日志/手改 ref/漏记 commit | P0，**部分关闭** |
 | G2 | 链可截断、可换整条 | 没有检查点、没有 Merkle 根、没有仓外锚；`verify` 只验当前文件 | 删最后 N 条并重算，或整链替换，仍验不出 | P0，未关闭 |
 | G3 | 身份不可验证 | `session` 是自由字符串；提交/认领/见证都没有签名 | 谁都能自称 `qoder:s1`，伪造“谁做的” | P0，未关闭 |
-| G4 | 操作覆盖不全 | 已扩到 `stage`/`commit`/`ref`/`adopt`/`claim_add`/`claim_release`/`publish`/`pull`/`accept`；仍缺 gate 拒绝、merge、策略/密钥/鉴权失败、deny | 拒绝的 gate、鉴权失败、策略变更仍可能不留账 | P0，**部分关闭** |
-| G5 | 并发与崩溃会撕裂日志 | `Journal::append` 已有 `journal.lock` 单写者锁；`set_ref` 仍先写 ref 再记账，commit 写 HEAD 后记账 | 锁住并发写；崩在中间会留下“状态变了、账没记”，由 `audit` 抓 | P0，**部分关闭** |
+| G4 | 操作覆盖不全 | 状态变更已走 `op_begin/op_result`（`stage`/`commit`/`ref`/`adopt`/`claim_*`）；提交门拒绝落 `gate` 事件；仍缺 merge、策略/密钥/鉴权失败、deny 事件 | 被拒绝的 merge、鉴权失败、策略变更仍可能不留账 | P0，**部分关闭** |
+| G5 | 并发与崩溃会撕裂日志 | `Journal::append` 已有 `journal.lock` 单写者锁；关键状态变更前有 `op_begin.state_before`、后有 `op_result.state_after`；崩在中间会留下 `op_open` 或 `op_state_gap` | 锁住并发写；写前协议让“操作开始”有账，但仍不能阻止进程死在中间，只能让审计抓到 | P0，**部分关闭** |
 | G6 | 授权不可事后复核 | 已落 `ClaimSet` 不可变快照，claim 事件补 `path_list`；账本 TTL 过后原条目仍会消失 | 快照能证明当时授权；账本原始条目仍需归档策略 | P0，**部分关闭** |
 | G7 | 证据不可验证 | witness 不签名；`accept` 结果已落 `AcceptReceipt` 对象/事件；handoff 仍不携带 witness/accept | 回执可复核“跑了什么”，但回执本身没签名，仍可被替换 | P1，**部分关闭** |
 | G8 | 跨机没有同一视图 | 客户端 journal 与中央仓 journal 是两本账；`publish`/`pull` 已有事件但两本账不互链；单 token 无 actor 身份；ref 是普通文件 | 服务端可回滚/改写 ref 和账本；客户端没有 pin，发现不了第二个历史 | P1，未关闭 |
@@ -114,7 +115,7 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 
 2. **`set_ref` 先 `fs::write` 再 `journal.append`。**
    两次系统调用之间崩溃，ref 已经动了，账上却没有这一笔。审计日志不是写前日志（WAL）。
-   **现在**：`audit` 用 `state_digest` 对账，能抓“状态变了、账没记”；但抓到不等于阻止，`op_begin/op_result` 仍未实现。
+   **现在**：`op_begin/op_result` 已落到 `stage/commit/ref/adopt/claim_*`，`audit` 能抓 `op_open` 与 `op_state_gap`；但抓到不等于阻止，进程死在写盘中间仍会留下半截状态，下一次合法操作会把 `state_before` 对出来，而不是自动回滚。
 
 3. **认领事件只记 `paths.len()`。**
    旧事件里审计员只看到“某个 owner 认领了 3 条路径”，看不到是哪 3 条，也看不到当时的账本摘要；TTL 到期后，原始条目可能被清掉。
@@ -349,12 +350,20 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 
 - `journal_missing`
 - `journal_truncated`
-- `checkpoint_mismatch`
-- `anchor_missing`
+- `journal_broken`
+- `head_mismatch`
+- `ref_mismatch`
 - `state_drift`
-- `unlogged_state`
+- `op_open`（warning：有 `op_begin` 没收口）
+- `op_state_gap`（`op_begin.state_before` 接不上上一条 `state_after`）
+- `event_state_gap`（带 `state_before` 的非 op 事件接不上上一条 `state_after`）
+- `op_result_unknown` / `op_result_mismatch` / `op_result_bad`
+- `op_failed_state_change`（操作标 failed，但 `state_after` 已经不等于动手前状态）
+- `gate_bad`
 - `claim_snapshot_missing`
 - `claim_snapshot_mismatch`
+- `checkpoint_mismatch`
+- `anchor_missing`
 - `signature_invalid`
 - `signer_untrusted`
 - `signer_revoked`
@@ -381,14 +390,14 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 - accept receipt 落对象 + 事件；
 - `audit status/log/show/verify --json`。
 
-**本轮已落地**：仓级 `journal.lock` 单写者锁；`state_digest` + `audit status/verify/reconcile`；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`。
+**本轮已落地**：仓级 `journal.lock` 单写者锁；`state_digest` + `audit status/verify/reconcile`；`op_begin/op_result` 写前协议（`stage`/`commit`/`set_ref`/`adopt`/`claim_*`）；提交门拒绝的 `gate` 事件；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`；`audit` 对 `op_open` / `op_state_gap` 的检查。
 
-**仍未落地**：`AuditEvent v2` 类型化、`op_begin/op_result` 写前协议、gate 拒绝 / merge / policy / key / auth 失败 / deny 事件。这也是为什么现在只能算 L2 首批，不能算 P0 完成。
+**仍未落地**：`AuditEvent v2` 类型化、merge / policy / key / auth 失败 / deny 事件、仓级策略变更审计。这也是为什么现在只能算 L2 首批，不能算 P0 完成。
 
 **完成定义**
 
 - 删 journal、删尾、改中间、手改 ref、删对象、崩在两次写之间、10 进程并发写，7 类夹具全部按预期 kind 判红。
-- 每个改状态的 CLI 路径都有且只有一条 `op_result`；拒绝路径有 `denied` 事件。
+- 每个改状态的本地 CLI 路径都有 `op_begin` 和 `op_result`；提交门拒绝路径有 `gate` 事件；merge/auth/policy 拒绝仍待补。
 - `audit reconcile` 在干净仓上零告警，在任意一类篡改上失败闭合。
 - 不引入签名依赖也能先交付。
 
@@ -505,13 +514,13 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 | 能力 | Git | GitHub/GitLab | in-toto/SLSA + Sigstore/Rekor | trit 现在 | trit 目标 |
 |---|---|---|---|---|---|
 | 提交身份签名 | GPG/SSH 可选，默认不强制 | 平台账号，不绑定提交字节 | 制品签名强，不管 VCS 提交 | 无 | 策略可强制，commit 自包含签名 |
-| 操作日志 | reflog 本地、可改写、会过期 | 服务端审计日志，平台私有 | 无 VCS 操作日志 | 本仓哈希链，6 类事件 | 全操作 + 拒绝事件 + 可重放 |
+| 操作日志 | reflog 本地、可改写、会过期 | 服务端审计日志，平台私有 | 无 VCS 操作日志 | 本仓哈希链，`op_begin/op_result` + gate | 全操作 + 拒绝事件 + 可重放 |
 | 截断/换链检测 | 无 | 依赖服务端 | Rekor 透明日志强 | 链内能查，链外不能 | Merkle 检查点 + 锚 + 一致性证明 |
 | 授权/认领快照 | 无 | 分支保护/审批，不绑定内容 | 策略在 CI，不绑 VCS | 认领门，commit 只存 id | ClaimSet 对象 + 签名 + 事后复核 |
 | 证据绑定 | notes/CI 外挂 | checks 外挂 | in-toto 强，需外部系统 | witness 绑树但不签名 | 签名 attestation + 环境/材料 + 离线 |
 | 跨仓一致视图 | 无 | 平台内 | Rekor 可审计 | 客户端/中央两本账 | 中央账本 + 客户端 pin + 分裂检测 |
 | 离线第三方验证 | 只能看对象 | 不行 | 部分，依赖 Rekor 数据 | 手工验对象 | 单文件 audit bundle，零网络 |
-| 查询/解释 | log/blame | UI 强，不可导出证明 | 工具链分裂 | 只有 commit log | audit log/show/prove，机器可读 |
+| 查询/解释 | log/blame | UI 强，不可导出证明 | 工具链分裂 | `audit status/log/show`，机器可读 | audit log/show/prove，机器可读 |
 
 **要诚实：**
 

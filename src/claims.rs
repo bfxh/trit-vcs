@@ -252,8 +252,30 @@ pub fn add(central: &Path, request: NewClaim<'_>, now: u64) -> Result<ClaimSpec,
         claims.retain(|claim| claim.id != spec.id);
     }
     claims.push(spec.clone());
-    write_ledger(central, &claims)?;
-    audit(central, "claim_add", &spec, now)?;
+    let mut repo = Repo::init(central)?;
+    let at_ms = claim_at_ms(now);
+    let begin = repo.begin_operation(
+        "claim_add",
+        json!({
+            "id": spec.id.clone(),
+            "owner": spec.owner.clone(),
+            "paths": spec.paths.len(),
+            "path_list": spec.paths.clone(),
+            "expires_at": spec.expires_at,
+        }),
+        at_ms,
+    )?;
+    if let Err(err) = write_ledger(central, &claims) {
+        let _ = repo.finish_operation(
+            &begin,
+            "claim_add",
+            "failed",
+            json!({"error": err.to_string()}),
+            at_ms,
+        );
+        return Err(err);
+    }
+    finish_claim(&mut repo, &begin, "claim_add", &spec, at_ms)?;
     Ok(spec)
 }
 
@@ -273,8 +295,29 @@ pub fn release(central: &Path, id: &str, owner: &str, now: u64) -> Result<ClaimS
         });
     }
     let spec = claims.remove(index);
-    write_ledger(central, &claims)?;
-    audit(central, "claim_release", &spec, now)?;
+    let mut repo = Repo::init(central)?;
+    let at_ms = claim_at_ms(now);
+    let begin = repo.begin_operation(
+        "claim_release",
+        json!({
+            "id": spec.id.clone(),
+            "owner": spec.owner.clone(),
+            "paths": spec.paths.len(),
+            "path_list": spec.paths.clone(),
+        }),
+        at_ms,
+    )?;
+    if let Err(err) = write_ledger(central, &claims) {
+        let _ = repo.finish_operation(
+            &begin,
+            "claim_release",
+            "failed",
+            json!({"error": err.to_string()}),
+            at_ms,
+        );
+        return Err(err);
+    }
+    finish_claim(&mut repo, &begin, "claim_release", &spec, at_ms)?;
     Ok(spec)
 }
 
@@ -344,25 +387,36 @@ fn write_ledger(central: &Path, claims: &[ClaimSpec]) -> Result<(), ClaimsError>
     Ok(())
 }
 
-fn audit(central: &Path, kind: &str, spec: &ClaimSpec, now: u64) -> Result<(), ClaimsError> {
-    let mut repo = Repo::init(central)?;
-    let at_ms = std::time::SystemTime::now()
+fn claim_at_ms(now: u64) -> u64 {
+    let wall = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
+    wall.max(now.saturating_mul(1000))
+}
+
+/// 认领动作的统一收口：先记 `claim_add/claim_release` 事件（带 state_after），再记 `op_result`。
+fn finish_claim(
+    repo: &mut Repo,
+    begin: &crate::journal::Event,
+    kind: &str,
+    spec: &ClaimSpec,
+    at_ms: u64,
+) -> Result<(), ClaimsError> {
     let state_after = repo.state_digest()?.to_hex();
     repo.journal_mut().append(
         kind,
         json!({
-            "id": spec.id,
-            "owner": spec.owner,
+            "id": spec.id.clone(),
+            "owner": spec.owner.clone(),
             "paths": spec.paths.len(),
-            "path_list": spec.paths,
+            "path_list": spec.paths.clone(),
             "expires_at": spec.expires_at,
             "state_after": state_after,
         }),
-        at_ms.max(now.saturating_mul(1000)),
+        at_ms,
     )?;
+    repo.finish_operation(begin, kind, "ok", json!({}), at_ms)?;
     Ok(())
 }
 

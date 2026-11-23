@@ -78,6 +78,15 @@ fn unclaimed_commit_is_rejected_by_default() {
         .unwrap_err();
     assert!(matches!(err, RepoError::Unclaimed { .. }), "{err:?}");
     assert!(repo.head().unwrap().is_none(), "被拒的提交不许推进 HEAD");
+    let gate = repo
+        .journal()
+        .events()
+        .iter()
+        .find(|event| event.kind == "gate")
+        .expect("被提交门拒绝也必须留一条 gate 事件");
+    assert_eq!(gate.payload["decision"], "denied");
+    assert_eq!(gate.payload["reason"], "unclaimed");
+    assert_eq!(gate.payload["session"], "qoder:s1");
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -94,9 +103,13 @@ fn unclaimed_commit_can_be_forced_and_is_recorded() {
         ..Default::default()
     })
     .unwrap();
-    let last = repo.journal().events().last().unwrap();
-    assert_eq!(last.kind, "commit");
-    assert_eq!(last.payload["verdict"], "unclaimed", "放行也要留痕");
+    let commit = repo
+        .journal()
+        .events()
+        .iter()
+        .find(|event| event.kind == "commit")
+        .unwrap();
+    assert_eq!(commit.payload["verdict"], "unclaimed", "放行也要留痕");
     let _ = fs::remove_dir_all(&root);
 }
 

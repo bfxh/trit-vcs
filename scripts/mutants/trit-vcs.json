@@ -65,8 +65,8 @@
  {
   "name": "vcs: 提交不推 HEAD（前端一直看不到新提交）",
   "file": "src/repo.rs",
-  "old": "        self.write_head(&id)?;",
-  "new": "        let _ = &id;",
+  "old": "            repo.write_head(&id)?;",
+  "new": "            let _ = &id;",
   "filter": "stage_commit_and_log",
   "pkg": "trit-vcs",
   "runner": "cargo"
@@ -623,8 +623,8 @@
  {
   "name": "vcs: pull 总是强推（本地改动被静默盖掉）",
   "file": "src/central.rs",
-  "old": "client.root(), None, force)?;",
-  "new": "client.root(), None, true)?;",
+  "old": "client.root(), prefix, force)?;",
+  "new": "client.root(), prefix, true)?;",
   "filter": "pull_refuses_to_overwrite_local_changes",
   "pkg": "trit-vcs",
   "runner": "cargo"
@@ -695,8 +695,8 @@
  {
   "name": "vcs: 写 ref 不进哈希链（改分支不留痕）",
   "file": "src/repo.rs",
-  "old": "        self.journal.append(\n            \"ref\",",
-  "new": "        self.journal.append(\n            \"stage\",",
+  "old": "                repo.journal.append(\n                    \"ref\",",
+  "new": "                repo.journal.append(\n                    \"stage\",",
   "filter": "refs_are_named_and_listed",
   "pkg": "trit-vcs",
   "runner": "cargo"
@@ -704,7 +704,7 @@
  {
   "name": "vcs: 中央仓 ref 随便后退（甩掉别人的历史）",
   "file": "src/central.rs",
-  "old": "        if !descendant && !force {",
+  "old": "        if !descendant {",
   "new": "        if false {",
   "filter": "publish_only_moves_a_ref_forwards",
   "pkg": "trit-vcs",
@@ -1383,6 +1383,56 @@
  "old": "        if expected != digest.to_hex() {",
  "new": "        if false {",
  "filter": "manual_head_write_without_event_is_caught",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: op_begin 不带 state_before（写前状态不可复核）",
+ "file": "src/op.rs",
+ "old": "                \"state_before\": state_before,",
+ "new": "                \"state_before\": null,",
+ "filter": "clean_commit_reaches_l2_and_verify_sees_claim_set",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: op_result 不带 state_after（写后状态不可复核）",
+ "file": "src/op.rs",
+ "old": "                \"state_after\": state_after,",
+ "new": "                \"state_after\": null,",
+ "filter": "clean_commit_reaches_l2_and_verify_sees_claim_set",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: gate 拒绝写成 allowed（拒绝无账）",
+ "file": "src/op.rs",
+ "old": "                \"decision\": \"denied\",",
+ "new": "                \"decision\": \"allowed\",",
+ "filter": "unclaimed_commit_is_rejected_by_default",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: 不检查 op_begin 的 state_before 接续（中间漏账被覆盖）",
+ "file": "src/audit/ops.rs",
+ "old": "                        if let Some(last) = &last_state\n                            && last != &before.to_hex()",
+ "new": "                        if let Some(last) = &last_state\n                            && false",
+ "filter": "unlogged_state_between_ops_is_caught_by_next_begin",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: 失败操作改了状态不判红（半截写盘被放过）",
+ "file": "src/audit/ops.rs",
+ "old": "                        if status == Some(\"failed\") && after.to_hex() != begin_state {",
+ "new": "                        if status == Some(\"failed\") && after.to_hex() == begin_state {",
+ "filter": "failed_operation_that_changed_state_is_red",
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "lib"

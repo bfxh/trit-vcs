@@ -130,9 +130,10 @@ fn render(report: &AuditReport) {
         if report.ok { "绿" } else { "红" }
     );
     println!(
-        "  链：{}　事件：{} 条",
+        "  链：{}　事件：{} 条　开放操作：{} 个",
         if report.chain_ok { "绿" } else { "红" },
-        report.events
+        report.events,
+        report.open_ops
     );
     println!("  HEAD：{}", report.head.as_deref().unwrap_or("（空）"));
     if report.refs.is_empty() {

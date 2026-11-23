@@ -20,6 +20,8 @@ use crate::hash::Hash;
 use crate::journal::{Event, Journal, JournalError};
 use crate::repo::{Repo, RepoError};
 
+mod ops;
+
 #[derive(Clone, Debug, Serialize)]
 pub struct AuditIssue {
     pub kind: String,
@@ -42,6 +44,7 @@ pub struct AuditReport {
     pub level: String,
     pub next_level: String,
     pub events: usize,
+    pub open_ops: usize,
     pub chain_ok: bool,
     pub head: Option<String>,
     pub refs: BTreeMap<String, String>,
@@ -129,6 +132,8 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
             ));
         }
     }
+
+    let open_ops = ops::check_operations(events, &mut issues, &mut warnings);
 
     let actual_head = repo.head()?;
     let mut expected_head = None;
@@ -334,6 +339,33 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                     );
                 }
             }
+            "gate" => {
+                if event.payload.get("decision").and_then(Value::as_str) != Some("denied") {
+                    push_issue(
+                        &mut issues,
+                        "gate_bad",
+                        format!("第 {} 条 gate 事件的 decision 不是 denied", event.seq),
+                    );
+                }
+                if event
+                    .payload
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .is_none()
+                {
+                    push_issue(
+                        &mut issues,
+                        "gate_bad",
+                        format!("第 {} 条 gate 事件缺 reason", event.seq),
+                    );
+                }
+                if parse_hash(event.payload.get("state_after")).is_none() {
+                    warnings.push(AuditIssue::new(
+                        "gate_no_state",
+                        format!("第 {} 条 gate 事件没有可解析的 state_after", event.seq),
+                    ));
+                }
+            }
             "accept" => {
                 let Some(receipt) = parse_hash(event.payload.get("receipt")) else {
                     push_issue(
@@ -417,6 +449,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
         level: level.to_string(),
         next_level: next_level.to_string(),
         events: events.len(),
+        open_ops,
         chain_ok,
         head: actual_head.map(|id| id.to_hex()),
         refs: actual_refs,
@@ -466,6 +499,7 @@ mod tests {
     use super::*;
     use crate::gate::ClaimSpec;
     use crate::repo::CommitRequest;
+    use serde_json::json;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -610,4 +644,131 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn open_operation_is_visible_but_not_red() {
+        let (root, mut repo) = seed("open-op");
+        let before = repo.state_digest().unwrap().to_hex();
+        repo.journal_mut()
+            .append(
+                "op_begin",
+                json!({"op": "manual", "state_before": before, "args": {}}),
+                2_000,
+            )
+            .unwrap();
+        let report = status(&repo).unwrap();
+        assert_eq!(report.open_ops, 1);
+        assert!(report.ok, "没改状态的中断操作只应提示，不应判红");
+        assert_eq!(report.level, "L2");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.kind == "op_open")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn op_result_hash_mismatch_is_red() {
+        let (root, mut repo) = seed("op-result");
+        let before = repo.state_digest().unwrap().to_hex();
+        let begin = repo
+            .journal_mut()
+            .append(
+                "op_begin",
+                json!({"op": "manual", "state_before": before, "args": {}}),
+                2_000,
+            )
+            .unwrap();
+        let after = repo.state_digest().unwrap().to_hex();
+        repo.journal_mut()
+            .append(
+                "op_result",
+                json!({
+                    "op": "manual",
+                    "begin": begin.seq,
+                    "begin_hash": Hash::of(b"wrong-begin").to_hex(),
+                    "status": "ok",
+                    "state_after": after,
+                    "result": {},
+                }),
+                2_001,
+            )
+            .unwrap();
+        let report = status(&repo).unwrap();
+        assert!(!report.ok);
+        assert_eq!(report.open_ops, 0);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "op_result_mismatch")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unlogged_state_between_ops_is_caught_by_next_begin() {
+        let (root, mut repo) = seed("op-gap");
+        let head = repo.head().unwrap().unwrap();
+        let refs = root.join(crate::repo::DIR).join("refs");
+        std::fs::create_dir_all(&refs).unwrap();
+        std::fs::write(refs.join("hotfix"), format!("{head}\n")).unwrap();
+        let before = repo.state_digest().unwrap().to_hex();
+        repo.journal_mut()
+            .append(
+                "op_begin",
+                json!({"op": "manual", "state_before": before, "args": {}}),
+                2_000,
+            )
+            .unwrap();
+        let report = status(&repo).unwrap();
+        assert!(!report.ok);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "op_state_gap"),
+            "下一个 op_begin 的 state_before 必须接得上上一条 state_after：{:?}",
+            report.issues
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn denied_commit_leaves_auditable_gate_event() {
+        let (root, mut repo) = seed("gate");
+        let mut files = BTreeMap::new();
+        files.insert("b.txt".to_string(), b"denied\n".to_vec());
+        repo.stage(&files, 2_000).unwrap();
+        let err = repo
+            .commit(CommitRequest {
+                message: "denied".to_string(),
+                session: "audit:test".to_string(),
+                now_secs: 2_000,
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(matches!(err, RepoError::Unclaimed { .. }), "{err}");
+        let gate = repo
+            .journal()
+            .events()
+            .iter()
+            .find(|event| event.kind == "gate")
+            .expect("拒绝必须留下来 gate 事件");
+        assert_eq!(gate.payload["decision"], "denied");
+        let report = status(&repo).unwrap();
+        assert!(
+            report.ok,
+            "合法的 gate 拒绝事件不应把审计判红：{:?}",
+            report.issues
+        );
+        assert_eq!(report.open_ops, 0);
+        assert_eq!(report.level, "L2");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
+
+#[cfg(test)]
+mod extra_tests;
