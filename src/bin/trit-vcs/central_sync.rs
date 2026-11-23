@@ -18,13 +18,27 @@ fn repo_at(path: impl Into<std::path::PathBuf>, args: &[String]) -> Result<Repo,
 }
 
 pub(crate) fn publish_cmd(args: &[String]) -> ExitCode {
-    let ids = positionals(args, &["--repo", "--central", "--commit"]);
+    let ids = positionals(
+        args,
+        &[
+            "--repo",
+            "--central",
+            "--commit",
+            "--remote",
+            "--token-file",
+        ],
+    );
     let Some(name) = ids.first() else {
-        eprintln!("publish 需要 ref 名：trit-vcs publish main --central PATH");
+        eprintln!(
+            "publish 需要 ref 名：trit-vcs publish main --central PATH | --remote http://host:port"
+        );
         return ExitCode::from(2);
     };
+    if has(args, "--remote") {
+        return super::remote_cli::remote_publish(args, name);
+    }
     let Some(central_path) = flag(args, "--central") else {
-        eprintln!("publish 需要 --central PATH");
+        eprintln!("publish 需要 --central PATH（或用 --remote http://host:port）");
         return ExitCode::from(2);
     };
     let client = match repo_at(repo_path(args), args) {
@@ -65,13 +79,27 @@ pub(crate) fn publish_cmd(args: &[String]) -> ExitCode {
 }
 
 pub(crate) fn pull_cmd(args: &[String]) -> ExitCode {
-    let ids = positionals(args, &["--repo", "--central", "--prefix"]);
+    let ids = positionals(
+        args,
+        &[
+            "--repo",
+            "--central",
+            "--prefix",
+            "--remote",
+            "--token-file",
+        ],
+    );
     let Some(name) = ids.first() else {
-        eprintln!("pull 需要 ref 名：trit-vcs pull main --central PATH [--prefix DIR]");
+        eprintln!(
+            "pull 需要 ref 名：trit-vcs pull main --central PATH | --remote http://host:port [--prefix DIR]"
+        );
         return ExitCode::from(2);
     };
+    if has(args, "--remote") {
+        return super::remote_cli::remote_pull(args, name);
+    }
     let Some(central_path) = flag(args, "--central") else {
-        eprintln!("pull 需要 --central PATH");
+        eprintln!("pull 需要 --central PATH（或用 --remote http://host:port）");
         return ExitCode::from(2);
     };
     let mut client = match repo_at(repo_path(args), args) {

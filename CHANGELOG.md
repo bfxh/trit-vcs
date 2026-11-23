@@ -6,6 +6,21 @@
 ## [Unreleased]
 
 ### Added
+- 跨机传输与鉴权（网络 v0）：`trit-vcs serve --dir <中央仓> --bind 127.0.0.1:7878 --token-file <文件>`，
+  客户端 `publish/pull --remote http://host:port --token-file <文件>`。协议是自写的 HTTP/1.1 子集
+  （`GET`/`POST`、`Content-Length`、一请求一连接、拒 `chunked`），只用 `std`；对象流 `TVOB`
+  （magic + schema + 对象数，逐条 id/长度/载荷），收端**逐块重算 BLAKE3** 再入库。
+  鉴权是 Bearer token（16–256 字节，常量时间比较，只从 `--token-file`/`TRIT_VCS_TOKEN` 进、不进 argv）。
+  服务端发布要过三道闸：ref 名合法、tip 是提交且树闭包齐全（文件映射与所有块都在）、
+  `merge_base(tip, current)==current` 才移动 ref；退历史回 409。
+  边界：明文 HTTP 无 TLS（跨机套 SSH 隧道/反代）；对象数 100 万、单对象 32 MiB、body 256 MiB、
+  连接 8、读写超时 30 s，超限回 413/503；网络面**不开放 force**。
+  测试：`src/net` + `src/wire.rs` + `src/remote.rs` 单测 14 条、`tests/remote_cli.rs` 端到端 1 条
+  （起 serve、发布、全量/前缀 pull、错 token 401、非快进 409、CLI 拒 force）；
+  登记 4 条变异（token 比较恒真 / 对象流不看 magic / 收端不重算哈希 / 服务端不判快进），本机 4/4 全抓。
+- `pull` 全量时把 HEAD 与索引一起落到被拉的提交（`Repo::adopt`），pull 完 `status` 立刻干净；
+  拉之前先判快进与暂存区脏（`Repo::staged_paths`），不过就报 `NonFastForward` / `worktree_dirty`。
+  带 `--prefix` 的 pull 仍不动 HEAD，避免范围外文件被算成删除。
 - `trit-vcs handoff <提交id> --out <包>` 产出自带 `manifest.json` 的交接包：
   commit/tree/parents、intent、claims、冲突面、diff、改动文件的文件映射与内容；
   `trit-vcs handoff-verify <包>` 逐项重算，缺件/篡改/悬空引用一律判红。

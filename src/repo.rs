@@ -298,6 +298,57 @@ impl Repo {
         Ok(())
     }
 
+    /// pull 收尾：把 HEAD 与索引一起落到 `commit/tree`（**全量**拉取专用）。
+    ///
+    /// 只该在"快进已判过或显式 `force`"之后调用。索引写的是这次物化的清单（全量时就是
+    /// 提交的树），这样 `status` 与下一次 `commit` 从同一棵树出发，不会把刚拉下来的文件
+    /// 全算成"新增未暂存"。
+    pub fn adopt(&mut self, commit: &Hash, tree: &Hash, paths: &[String]) -> Result<(), RepoError> {
+        let index = Index {
+            tree: tree.to_hex(),
+            paths: paths.to_vec(),
+        };
+        let path = Self::dir(&self.root).join("index.json");
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&index).map_err(|e| RepoError::BadHead(e.to_string()))?,
+        )?;
+        self.write_head(commit)?;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.journal.append(
+            "adopt",
+            json!({
+                "commit": commit.to_hex(),
+                "tree": tree.to_hex(),
+                "paths": paths.len(),
+            }),
+            now_ms,
+        )?;
+        Ok(())
+    }
+
+    /// 暂存区与 HEAD 是否不一致：不一致就说明有"已 add 未 commit"的改动，
+    /// 全量 pull 会把它覆盖掉 ⇒ 调用方要先挡（或显式 `--force`）。
+    pub fn staged_paths(&self) -> Result<Option<Vec<String>>, RepoError> {
+        let Some(index) = self.index()? else {
+            return Ok(None);
+        };
+        match self.head()? {
+            Some(head) => {
+                let tree = self.commit_at(&head)?.tree;
+                if index.tree == tree.to_hex() {
+                    Ok(None)
+                } else {
+                    Ok(Some(index.paths))
+                }
+            }
+            None => Ok(Some(index.paths)),
+        }
+    }
+
     pub fn ref_commit(&self, name: &str) -> Result<Option<Hash>, RepoError> {
         Self::validate_ref(name)?;
         let path = Self::dir(&self.root).join("refs").join(name);

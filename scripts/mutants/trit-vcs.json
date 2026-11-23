@@ -1286,5 +1286,45 @@
   "filter": "unsupported_schema_is_rejected",
   "pkg": "trit-vcs",
   "runner": "cargo"
+ },
+ {
+  "name": "vcs: token 比较恒真（错 token 也放行）",
+  "file": "src/net/mod.rs",
+  "old": "        diff |= a ^ b;",
+  "new": "        diff |= 0;",
+  "filter": "ct_eq_is_length_safe_and_exact",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 对象流不看 magic（随便一段字节都当对象流）",
+  "file": "src/wire.rs",
+  "old": "        if &magic != MAGIC {",
+  "new": "        if false {",
+  "filter": "wrong_magic_and_schema_are_rejected",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 收端不重算对象哈希（被改的载荷照常入库）",
+  "file": "src/wire.rs",
+  "old": "        let actual = Hash::of(&payload);\n        if actual != id {",
+  "new": "        let actual = Hash::of(&payload);\n        if false {",
+  "filter": "truncated_and_tampered_streams_are_loud",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 服务端不判快进（退历史也照收）",
+  "file": "src/remote.rs",
+  "old": "        if base != Some(current) {",
+  "new": "        if false {",
+  "filter": "wrong_token_and_non_fast_forward_are_loud",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]

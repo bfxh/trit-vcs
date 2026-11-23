@@ -28,20 +28,46 @@
 
 ## 明确没做的（别当成已具备）
 
-- **没有网络协议，也没有鉴权**：`publish` / `pull` 的"中央仓"就是**另一个目录**。跨机、认证、多租户一概没有。
-- `pull` 不动客户端 HEAD，也不删本地多余文件（它只补范围内的东西）。
+- **网络只有 v0：明文 HTTP、无 TLS、单 token**。`serve` 只该绑回环；跨机请套 SSH 隧道或反代，
+  鉴权只是"同一个 Bearer token"，没有多租户、没有按路径授权，也没有证书。
+- `pull` 全量时会把 HEAD 与索引落到被拉的提交；**带 `--prefix` 时不动 HEAD**（否则范围外会被算成删除），
+  两种形态都不删本地多余文件。
 - 认领账本是**跨仓**的账，不由本 crate 持有；`--repo <owner/repo>` 在给出的命令里仍是占位符。
 - v0 的 witness **不签名** ⇒ 防篡改、防绑错树，不防有人自己造一份。
 - 大仓 status 只做了 stat 缓存这一层；没有 sparse-index 那种持久索引。
 - 三值逻辑只用在裁决处：全仓 `src` 实测三值 **4.5%**、二值 2.2%、中性 93.4%（`scripts/parity_scan.py`）。
+
+## 网络 v0（跨机 + 鉴权）
+
+没有读数的维度不写"更强"：这一节只写**边界**和**怎么用**。协议是自写的 HTTP/1.1 子集
+（`GET`/`POST`、`Content-Length`、一请求一连接、拒 `chunked`），不引 HTTP 框架，理由和
+"对象格式自己写"一样——多一层框架就多一层"它的行为谁保证"。
+
+```sh
+# 服务端：中央仓目录 + token 文件（token 不进 argv，16–256 字节）
+trit-vcs serve --dir ./central --bind 127.0.0.1:7878 --token-file token.txt
+
+# 客户端：发布 / 全量拉取（ref 只准快进；网络面不开放 force）
+trit-vcs publish main --remote http://127.0.0.1:7878 --token-file token.txt
+trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt
+trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt --prefix gen/d00
+```
+
+- 服务端收发布时先逐块重算 BLAKE3 再入库，再查"tip 是提交、树闭包齐全、`merge_base(tip, current)==current`"，
+  三条都过才移动 ref；退历史一律 409。
+- 全量 `pull` 先判快进与暂存区脏，再物化，最后把 HEAD/索引落到被拉的提交；
+  `--prefix` 只补范围内文件，不擅动 HEAD。
+- 上限：对象数 100 万、单对象 32 MiB、body 256 MiB（`--max-body-mb` 可调）、连接 8（`--max-conn`）、
+  读写超时 30 s（`--read-timeout`），超限回 413/503 而不是把线程堆爆。
+- 已知边界：401 在读完 body 前就回，超大 body 可能被 RST；服务端 `shutdown` 只停 accept，不等处理线程。
 
 ## 复算
 
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test                                                     # 12 个测试二进制 / 155 条（2026-11-06 实测）
-python scripts/mutation_check.py --pkg trit-vcs                    # 113 条登记（含六张判决面）
+cargo test                                                     # 15 个测试二进制 / 201 条（2026-11-24 实测）
+python scripts/mutation_check.py --pkg trit-vcs                    # 147 条登记（含网络面的 4 条）
 ```
 
 最后一条在本仓就能跑（`scripts/mutation_check.py` + `scripts/mutants/` 已随拆分一起搬过来，
@@ -54,7 +80,8 @@ python scripts/mutation_check.py --pkg trit-vcs                    # 113 条登�
 |---|---|
 | `store` / `chunk` / `hash` | 内容寻址的对象库、CDC 分块、BLAKE3 id |
 | `bundle` | `TVBD` 包 + 过滤后的**树清单** + 范围内传输（export 与 pull 共用同一条路） |
-| `central` | 命名 ref（`.tritvcs/refs/<name>`）、`publish`（闭包 + 父链 + 只准往前推）、`pull`（稀疏物化，脏则拒） |
+| `central` | 命名 ref（`.tritvcs/refs/<name>`）、`publish`（闭包 + 父链 + 只准往前推）、`pull`（稀疏物化，脏则拒；全量落 HEAD+索引） |
+| `net` / `wire` / `remote` | 自写 HTTP/1.1 子集 + Bearer token（常量时间比较）、`TVOB` 对象流（收端重算 BLAKE3）、跨机 publish/pull 的快进与完整性闸门 |
 | `repo` / `journal` | 提交与查询、哈希链事件日志 |
 | `preflight` | `commit()` 与 `preflight()` **共用**的唯一判决处 ⇒ 预检不会和真提交分叉 |
 | `remediation` | 每条 `RepoError` → `kind` + 可执行命令（`--json` 下失败也是纯对象） |

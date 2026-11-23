@@ -94,10 +94,36 @@ pub fn pull(
     let commit_obj = central.commit_at(&commit)?;
     // 走和包传输同一条路：发"过滤后的树清单"，原树整体不进客户端。
     let list = bundle::manifest(central.store(), commit_obj.tree, prefix)?;
+    if prefix.is_none() {
+        // 全量 pull 会动 HEAD 与索引：先判快进、再判"有没有 add 了没 commit 的东西"，
+        // 两件都过了才开始写工作树（失败时一个字节都不该动）。
+        if let Some(head) = client.head()?
+            && head != commit
+        {
+            let base = client.merge_base(&commit, &head)?;
+            if !force && base != Some(head) {
+                return Err(CentralError::Repo(RepoError::NonFastForward {
+                    name: name.to_string(),
+                    current: head.short(),
+                    incoming: commit.short(),
+                }));
+            }
+        }
+        if !force && let Some(paths) = client.staged_paths()? {
+            return Err(CentralError::Worktree(WorktreeError::Dirty(
+                paths.len(),
+                paths,
+            )));
+        }
+    }
     let mut objects = vec![commit];
     objects.extend(bundle::entries_closure(central.store(), &list.entries)?);
     let transfer = bundle::transfer_scoped(central.store(), client.store(), &objects, &list)?;
     let stats = worktree::materialize(client.store(), &list.id, client.root(), None, force)?;
+    if prefix.is_none() {
+        let paths: Vec<String> = list.entries.keys().cloned().collect();
+        client.adopt(&commit, &list.id, &paths)?;
+    }
     Ok(PullStats {
         commit,
         transfer,

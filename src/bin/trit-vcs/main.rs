@@ -22,6 +22,7 @@ mod cli_fail;
 mod handoff_cli;
 mod mcp_serve;
 mod query;
+mod remote_cli;
 mod transport;
 mod verdict;
 use cli_args::{collect, commit_request, current_tree};
@@ -47,7 +48,10 @@ fn usage() -> ExitCode {
          trit-vcs export <树id> --out FILE [--prefix DIR] [--dest REPO] [--repo SRC]\n  \
          trit-vcs import <包文件> [--repo DEST]\n  \
          trit-vcs publish <ref> --central PATH [--commit ID] [--force] [--repo SRC]\n  \
+         trit-vcs publish <ref> --remote http://host:port --token-file FILE [--commit ID] [--repo SRC]\n  \
          trit-vcs pull <ref> --central PATH [--prefix DIR] [--force] [--repo DEST]\n  \
+         trit-vcs pull <ref> --remote http://host:port --token-file FILE [--prefix DIR] [--repo DEST]\n  \
+         trit-vcs serve --dir PATH [--bind 127.0.0.1:7878] --token-file FILE [--max-body-mb N] [--max-object-mb N] [--max-conn N] [--read-timeout 秒]\n  \
          trit-vcs git-export <git目录> [--map FILE] [--repo PATH]\n  \
          trit-vcs mcp [--repo PATH]\n  \
          trit-vcs git-import <git目录> [--map FILE] [--repo PATH]\n  \
@@ -129,6 +133,7 @@ fn main() -> ExitCode {
                 Err(err) => fail_err(&err, &root, "", &args),
             }
         }
+        "serve" => remote_cli::serve_cmd(&args),
         "add" => {
             let root = repo_path(&args);
             // 目标 = 位置参数；跳过 `--repo` 及其值
