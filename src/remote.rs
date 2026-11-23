@@ -69,7 +69,7 @@ impl RemoteError {
             RemoteError::Store(inner) => crate::remediation::kind_store(inner),
             RemoteError::Repo(inner) => crate::remediation::kind(inner),
             RemoteError::Bundle(_) => "wire_bad_bundle",
-            RemoteError::Worktree(_) => "worktree_conflict",
+            RemoteError::Worktree(inner) => crate::remediation::kind_worktree(inner),
             RemoteError::TipMissing(_) => "tip_missing",
             RemoteError::HistoryGap(_) => "history_gap",
             RemoteError::TreeIncomplete(_) => "tree_incomplete",
@@ -290,7 +290,16 @@ pub fn pull_from(
 ) -> Result<PullStats, RemoteError> {
     let client = Client::new(remote, token)?;
     let reply = client.pull(name, prefix, repo.store(), Limits::default())?;
-    apply_pull(repo, &reply, prefix, force, name)
+    let result = apply_pull(repo, &reply, prefix, force, name);
+    if let Err(err) = &result {
+        repo.record_deny(
+            "pull",
+            err.kind(),
+            &err.to_string(),
+            serde_json::json!({"ref": name, "prefix": prefix, "tip": reply.tip.to_hex()}),
+        );
+    }
+    result
 }
 
 fn apply_pull(
@@ -488,6 +497,49 @@ mod tests {
         assert!(client_dir.join("gen/d00/a.txt").is_file());
         assert!(!client_dir.join("gen/d01").exists());
         assert!(client.head().unwrap().is_none(), "前缀 pull 不擅动 HEAD");
+        server.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dirty_worktree_pull_is_denied_and_audited() {
+        let root = temp("dirty-pull");
+        let mut src = Repo::init(root.join("src")).unwrap();
+        let files = BTreeMap::from([("a.txt".to_string(), b"a\n".to_vec())]);
+        commit_all(&mut src, &files, 1_000);
+        let server = start(&root);
+        let remote = format!("http://{}", server.addr());
+        publish_to(&remote, TOKEN, &src, "main", None).unwrap();
+
+        let client_dir = root.join("client");
+        std::fs::create_dir_all(&client_dir).unwrap();
+        let mut client = Repo::init(&client_dir).unwrap();
+        client
+            .stage(
+                &BTreeMap::from([("dirty.txt".to_string(), b"local\n".to_vec())]),
+                2_000,
+            )
+            .unwrap();
+        let err = pull_from(&remote, TOKEN, &mut client, "main", None, false).unwrap_err();
+        assert!(
+            matches!(err, RemoteError::Worktree(WorktreeError::Dirty(..))),
+            "{err}"
+        );
+        let deny = client
+            .journal()
+            .events()
+            .iter()
+            .find(|event| event.kind == "deny")
+            .expect("脏工作树 pull 必须留下 deny 事件");
+        assert_eq!(deny.payload["action"], "pull");
+        assert_eq!(deny.payload["decision"], "denied");
+        assert_eq!(deny.payload["reason"], "worktree_dirty");
+        assert_eq!(deny.payload["detail"]["ref"], "main");
+        assert_eq!(
+            deny.payload["state_before"], deny.payload["state_after"],
+            "被拒的 pull 不改 HEAD/index"
+        );
+        assert!(client.head().unwrap().is_none(), "被拒的 pull 不落 HEAD");
         server.shutdown();
         let _ = std::fs::remove_dir_all(&root);
     }

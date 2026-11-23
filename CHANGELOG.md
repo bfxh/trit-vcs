@@ -29,10 +29,12 @@
   的失败，裸健康探针不进账，避免扫描器刷爆日志。`auth` 事件由审计做字段/401/状态检查。
   服务端 publish 被业务规则拒绝（非快进、对象流坏、ref 非法等）落 `deny` 事件：
   action/decision/reason/message/detail 与同值 state_before/state_after，仍不记 token；
-  审计新增 `deny_bad` / `deny_no_state`。
+  审计新增 `deny_bad` / `deny_no_state`。客户端 `pull` 在应用回执时被拒（脏工作树、
+  非快进、清单/历史完整性不通过）也落本地 `deny`，`reason` 用 `worktree_dirty` /
+  `non_fast_forward` 等，事件只记 ref/prefix/tip，不落路径正文。
   测试：`src/audit.rs` / `src/audit/extra_tests.rs` 15 条、`tests/audit_cli.rs` 5 条、`tests/policy_cli.rs` 1 条、`tests/merge_cli.rs` 2 条（干净仓 L2、删日志 L0、坏 JSON 仍可审计、手改
-  ref/HEAD 判红、accept 回执进链、开放操作/拒绝事件/失败操作改状态、策略变更进链与手改策略判红、合并事件与冲突后审计、错误 token 留 auth 事件、auth/deny 字段语义、非快进 publish 留 deny）；新增 6 条变异（policy 事件不落链 / merge 事件不落链 / auth 事件不落链 / auth 不看 401 状态 / publish 拒绝不落 deny / deny 不看 reason），本机 auth 2/2、policy/merge/deny 各 1/1 全抓；
-  上一批 5 条写前/gate/失败状态变异仍保持 5/5，早先 3 条审计/锁变异仍全抓。尚未做：key 事件、pull/工作树等其他 deny、Ed25519/Merkle/仓外锚。
+  ref/HEAD 判红、accept 回执进链、开放操作/拒绝事件/失败操作改状态、策略变更进链与手改策略判红、合并事件与冲突后审计、错误 token 留 auth 事件、auth/deny 字段语义、非快进 publish 留 deny、脏工作树 pull 留 deny）；新增 7 条变异（policy 事件不落链 / merge 事件不落链 / auth 事件不落链 / auth 不看 401 状态 / publish 拒绝不落 deny / deny 不看 reason / pull 拒绝不落 deny），本机 auth 2/2、policy/merge/deny 各 1/1 全抓；
+  上一批 5 条写前/gate/失败状态变异仍保持 5/5，早先 3 条审计/锁变异仍全抓。尚未做：key 事件、publish 请求形状拒绝、服务端 pull 拒绝、Ed25519/Merkle/仓外锚。
 - 跨机传输与鉴权（网络 v0）：`trit-vcs serve --dir <中央仓> --bind 127.0.0.1:7878 --token-file <文件>`，
   客户端 `publish/pull --remote http://host:port --token-file <文件>`。协议是自写的 HTTP/1.1 子集
   （`GET`/`POST`、`Content-Length`、一请求一连接、拒 `chunked`），只用 `std`；对象流 `TVOB`
