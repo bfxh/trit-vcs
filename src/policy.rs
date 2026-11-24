@@ -4,10 +4,24 @@
 //! `state_digest` 漂移抓到，却没有一条能说明“谁在什么时候把哪一项打开了”的事件。
 //! 这里补上 `policy` 事件，并让 `policy_hash` 与 `state_digest` 使用同一套字节哈希。
 
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::hash::Hash;
-use crate::repo::{DIR, Policy, Repo, RepoError};
+use crate::repo::{DIR, Repo, RepoError};
+
+/// 仓库策略（`.tritvcs/policy.json`）。默认全关：不影响别项目，成熟后逐项目 opt-in。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Policy {
+    #[serde(default)]
+    pub require_witness: bool,
+    #[serde(default)]
+    pub require_intent: bool,
+    #[serde(default)]
+    pub require_signed_claims: bool,
+    #[serde(default)]
+    pub require_signed_witness: bool,
+}
 
 impl Repo {
     /// 写入整份策略，并记录 `policy` 事件。参数是“完整策略”，不是增量：
@@ -26,6 +40,7 @@ impl Repo {
             "require_witness": policy.require_witness,
             "require_intent": policy.require_intent,
             "require_signed_claims": policy.require_signed_claims,
+            "require_signed_witness": policy.require_signed_witness,
         });
         self.with_operation("policy", args, at_ms, move |repo| {
             let before = repo.state_digest()?.to_hex();
@@ -42,6 +57,7 @@ impl Repo {
                     "require_witness": policy.require_witness,
                     "require_intent": policy.require_intent,
                     "require_signed_claims": policy.require_signed_claims,
+                    "require_signed_witness": policy.require_signed_witness,
                     "policy_hash": policy_hash.to_hex(),
                     "state_before": before,
                     "state_after": after,

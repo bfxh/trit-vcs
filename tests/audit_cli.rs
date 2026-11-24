@@ -4,6 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use trit_vcs::journal::Event;
+use trit_vcs::{Commit, Hash, Hlc, Repo};
+
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_trit-vcs")
 }
@@ -253,4 +256,194 @@ fn accept_receipt_is_hashed_and_audited() {
         "{}",
         stdout(&verify)
     );
+}
+
+fn rewrite_policy_event(root: &Path, mutate: impl FnOnce(&mut serde_json::Value)) {
+    let path = root.join(".tritvcs").join("journal.jsonl");
+    let mut events: Vec<Event> = fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let policy = events
+        .iter_mut()
+        .find(|event| event.kind == "policy")
+        .expect("测试应先写入 policy 事件");
+    mutate(&mut policy.payload);
+    let mut previous = None;
+    let mut remapped = std::collections::HashMap::new();
+    let mut lines = Vec::new();
+    for event in &mut events {
+        let old_hash = event.hash.to_hex();
+        if event.kind == "op_result"
+            && let Some(begin_hash) = event
+                .payload
+                .get("begin_hash")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+            && let Some(new_begin) = remapped.get(&begin_hash)
+        {
+            event.payload["begin_hash"] = serde_json::json!(new_begin);
+        }
+        event.prev = previous;
+        let prev = event
+            .prev
+            .map(|hash| hash.to_hex())
+            .unwrap_or_else(|| "-".to_string());
+        let body = format!(
+            "{}\n{}\n{}\n{}\n{prev}",
+            event.seq,
+            event.at_ms,
+            event.kind,
+            serde_json::to_string(&event.payload).unwrap()
+        );
+        event.hash = Hash::of(body.as_bytes());
+        remapped.insert(old_hash, event.hash.to_hex());
+        previous = Some(event.hash);
+        lines.push(serde_json::to_string(event).unwrap());
+    }
+    fs::write(path, format!("{}\n", lines.join("\n"))).unwrap();
+}
+
+#[test]
+fn policy_event_accepts_legacy_shape_but_rejects_non_boolean_signed_witness() {
+    let root = temp("policy-compat");
+    let init = run(&root, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    let set = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-witness",
+            "--json",
+        ],
+    );
+    assert!(set.status.success(), "{}", stderr(&set));
+
+    fs::write(root.join("a.txt"), b"policy\n").unwrap();
+    assert!(run(&root, &["add", "a.txt"]).status.success());
+    assert!(
+        run(&root, &["witness", "--", "cargo", "--version"])
+            .status
+            .success()
+    );
+    let witness = fs::read_dir(root.join(".tritvcs/witness"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let witness_text = witness.to_string_lossy().to_string();
+    let commit = run(
+        &root,
+        &[
+            "commit",
+            "-m",
+            "policy replay",
+            "--owner",
+            "qoder:policy",
+            "--allow-unclaimed",
+            "--witness",
+            &witness_text,
+        ],
+    );
+    assert!(commit.status.success(), "{}", stderr(&commit));
+
+    rewrite_policy_event(&root, |payload| {
+        let payload = payload.as_object_mut().unwrap();
+        payload.remove("require_signed_witness");
+        payload.remove("schema");
+    });
+    let legacy = run(&root, &["audit", "status", "--json"]);
+    assert!(legacy.status.success(), "{}", stdout(&legacy));
+    let legacy_value: serde_json::Value = serde_json::from_str(&stdout(&legacy)).unwrap();
+    assert_eq!(legacy_value["ok"], true);
+
+    rewrite_policy_event(&root, |payload| {
+        payload.as_object_mut().unwrap().insert(
+            "require_signed_witness".to_string(),
+            serde_json::json!("yes"),
+        );
+    });
+    let malformed = run(&root, &["audit", "status", "--json"]);
+    assert!(!malformed.status.success(), "非布尔策略值必须判红");
+    let value: serde_json::Value = serde_json::from_str(&stdout(&malformed)).unwrap();
+    let kinds: Vec<_> = value["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| issue["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"policy_bad"), "{}", stdout(&malformed));
+    assert!(
+        kinds.contains(&"attestation_missing"),
+        "{}",
+        stdout(&malformed)
+    );
+
+    rewrite_policy_event(&root, |payload| {
+        let payload = payload.as_object_mut().unwrap();
+        payload.remove("require_signed_witness");
+        payload.insert("schema".to_string(), serde_json::json!("trit-policy-v1"));
+    });
+    let missing = run(&root, &["audit", "status", "--json"]);
+    assert!(!missing.status.success(), "新版策略缺字段必须 fail-closed");
+    let value: serde_json::Value = serde_json::from_str(&stdout(&missing)).unwrap();
+    assert!(
+        value["issues"].as_array().unwrap().iter().any(|issue| {
+            issue["kind"] == "policy_bad"
+                && issue["detail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("require_signed_witness")
+        }),
+        "{}",
+        stdout(&missing)
+    );
+    assert!(
+        value["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "attestation_missing"),
+        "{}",
+        stdout(&missing)
+    );
+
+    let mut repo = Repo::open(&root).unwrap();
+    let commit = Commit::new(
+        Hash::of(b"unwitnessed-tree"),
+        "qoder:policy",
+        "policy replay",
+        Hlc::zero(),
+    );
+    let (unwitnessed_id, _) = repo.store().put_chunk(&commit.encode().unwrap()).unwrap();
+    repo.append_audit(
+        "commit",
+        serde_json::json!({"id": unwitnessed_id.to_hex()}),
+        2_000,
+    )
+    .unwrap();
+    drop(repo);
+    let unwitnessed = run(&root, &["audit", "status", "--json"]);
+    assert!(
+        !unwitnessed.status.success(),
+        "严格策略下的无 witness 提交必须判红"
+    );
+    let value: serde_json::Value = serde_json::from_str(&stdout(&unwitnessed)).unwrap();
+    assert!(
+        value["issues"].as_array().unwrap().iter().any(|issue| {
+            issue["kind"] == "attestation_missing"
+                && issue["detail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("缺 witness")
+        }),
+        "{}",
+        stdout(&unwitnessed)
+    );
+    let _ = fs::remove_dir_all(&root);
 }

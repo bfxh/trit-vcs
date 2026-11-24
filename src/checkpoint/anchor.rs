@@ -56,14 +56,14 @@ impl AnchorError {
 }
 
 #[derive(Clone, Debug)]
-struct CheckpointData {
-    height: usize,
-    head: Option<Hash>,
-    root: Hash,
-    previous: Option<Hash>,
-    key_id: String,
-    signature: String,
-    signed_at_ms: u64,
+pub(super) struct CheckpointData {
+    pub(super) height: usize,
+    pub(super) head: Option<Hash>,
+    pub(super) root: Hash,
+    pub(super) previous: Option<Hash>,
+    pub(super) key_id: String,
+    pub(super) signature: String,
+    pub(super) signed_at_ms: u64,
 }
 
 pub fn from_repo(repo: &Repo, checkpoint_seq: usize) -> Result<AuditAnchor, AnchorError> {
@@ -175,29 +175,48 @@ pub fn verify_against_repo(
     anchor: &AuditAnchor,
 ) -> Result<AnchorOutcome, AnchorError> {
     let outcome = verify(repo, anchor)?;
+    let data = parse_checkpoint(&anchor.event)?;
+    verify_repo_prefix(
+        repo,
+        anchor.event.hash,
+        outcome.height,
+        data.head,
+        data.root,
+        data.previous,
+    )?;
+    Ok(outcome)
+}
+
+pub(super) fn verify_repo_prefix(
+    repo: &Repo,
+    checkpoint_hash: Hash,
+    height: usize,
+    head: Option<Hash>,
+    root: Hash,
+    previous: Option<Hash>,
+) -> Result<(), AnchorError> {
     let events = repo.journal().events();
-    let anchored = events.get(outcome.height).ok_or_else(|| {
+    let anchored = events.get(height).ok_or_else(|| {
         AnchorError::invalid(
             "anchor_ahead",
             format!(
                 "锚指向 {} 条事件，当前日志只有 {} 条",
-                outcome.height + 1,
+                height.saturating_add(1),
                 events.len()
             ),
         )
     })?;
-    if anchored.hash != anchor.event.hash {
+    if anchored.hash != checkpoint_hash {
         return Err(AnchorError::invalid(
             "anchor_mismatch",
             format!(
-                "事件 #{} 不是锚住的检查点：锚是 {}，当前是 {}",
-                outcome.height,
-                anchor.event.hash.to_hex(),
+                "事件 #{height} 不是锚住的检查点：锚是 {}，当前是 {}",
+                checkpoint_hash.to_hex(),
                 anchored.hash.to_hex()
             ),
         ));
     }
-    let prefix = &events[..outcome.height];
+    let prefix = &events[..height];
     let expected_head = prefix.last().map(|event| event.hash);
     let expected_previous = prefix
         .iter()
@@ -205,10 +224,7 @@ pub fn verify_against_repo(
         .find(|event| event.kind == "checkpoint")
         .map(|event| event.hash);
     let expected_root = merkle_root(&prefix.iter().map(|event| event.hash).collect::<Vec<_>>());
-    if outcome.head != expected_head.map(|hash| hash.to_hex())
-        || outcome.previous != expected_previous.map(|hash| hash.to_hex())
-        || outcome.merkle_root != expected_root.to_hex()
-    {
+    if head != expected_head || previous != expected_previous || root != expected_root {
         return Err(AnchorError::invalid(
             "anchor_mismatch",
             "锚住的检查点与当前事件前缀的 head/root/previous 不符",
@@ -217,14 +233,14 @@ pub fn verify_against_repo(
 
     let Some(latest) = events
         .iter()
-        .skip(outcome.height + 1)
+        .skip(height + 1)
         .rev()
         .find(|event| event.kind == "checkpoint")
     else {
-        return Ok(outcome);
+        return Ok(());
     };
     let latest_data = parse_checkpoint(latest)?;
-    if latest_data.height != latest.seq as usize || latest_data.height <= outcome.height {
+    if latest_data.height != latest.seq as usize || latest_data.height <= height {
         return Err(AnchorError::invalid(
             "anchor_consistency_failed",
             "较新检查点的 height 与事件序号不匹配",
@@ -234,20 +250,17 @@ pub fn verify_against_repo(
         .iter()
         .map(|event| event.hash)
         .collect::<Vec<_>>();
-    let proof = consistency_proof(&leaves, outcome.height)
+    let proof = consistency_proof(&leaves, height)
         .map_err(|err| AnchorError::invalid("anchor_consistency_failed", err.to_string()))?;
     let valid = verify_consistency(&proof)
         .map_err(|err| AnchorError::invalid("anchor_consistency_failed", err.to_string()))?;
-    if !valid
-        || proof.old_root.to_hex() != outcome.merkle_root
-        || proof.new_root != latest_data.root
-    {
+    if !valid || proof.old_root != root || proof.new_root != latest_data.root {
         return Err(AnchorError::invalid(
             "anchor_consistency_failed",
             "旧锚与较新检查点之间不能构成一致前缀",
         ));
     }
-    Ok(outcome)
+    Ok(())
 }
 
 pub fn load(path: &Path) -> Result<AuditAnchor, AnchorError> {
@@ -255,7 +268,7 @@ pub fn load(path: &Path) -> Result<AuditAnchor, AnchorError> {
     serde_json::from_slice(&bytes).map_err(AnchorError::from)
 }
 
-fn parse_checkpoint(event: &Event) -> Result<CheckpointData, AnchorError> {
+pub(super) fn parse_checkpoint(event: &Event) -> Result<CheckpointData, AnchorError> {
     let payload = &event.payload;
     let height = payload
         .get("height")
@@ -323,7 +336,7 @@ fn outcome(seq: u64, data: &CheckpointData) -> AnchorOutcome {
 }
 
 impl AnchorError {
-    fn invalid(kind: &'static str, detail: impl Into<String>) -> Self {
+    pub(super) fn invalid(kind: &'static str, detail: impl Into<String>) -> Self {
         Self::Invalid {
             kind,
             detail: detail.into(),

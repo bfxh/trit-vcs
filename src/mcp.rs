@@ -91,8 +91,12 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "admit",
-            "合并准入：见证必须绑该提交树且通过",
-            json!({"commit": {"type": "string"}, "witness_path": {"type": "string"}}),
+            "合并准入：见证必须绑该提交树且通过；signed=true 还要求有效 attestation",
+            json!({
+                "commit": {"type": "string"},
+                "witness_path": {"type": "string"},
+                "signed": {"type": "boolean"},
+            }),
             &["commit", "witness_path"],
         ),
         tool(
@@ -569,11 +573,36 @@ impl Mcp {
             "admit" => {
                 let id = hex(need(args, "commit")?, "commit")?;
                 let path = need(args, "witness_path")?;
+                let signed = match args.get("signed") {
+                    Some(value) => value.as_bool().ok_or_else(|| {
+                        McpFail::new(
+                            "mcp_bad_args",
+                            "signed 必须是布尔值".to_string(),
+                            vec!["admit 的 signed 只接受 JSON true/false".to_string()],
+                        )
+                    })?,
+                    None => false,
+                };
                 let bytes = std::fs::read(path).map_err(|err| McpFail::local_io(path, &err))?;
-                let witness = self
-                    .repo
-                    .admit(&id, &bytes)
-                    .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
+                let effective_signed = signed
+                    || self
+                        .repo
+                        .policy()
+                        .map_err(|err| McpFail::from_error(&err, self.ctx()))?
+                        .require_signed_witness;
+                let (witness, attestation) = if effective_signed {
+                    let admission = self
+                        .repo
+                        .admit_signed(&id, &bytes)
+                        .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
+                    (admission.witness, Some(admission.attestation.to_hex()))
+                } else {
+                    let witness = self
+                        .repo
+                        .admit(&id, &bytes)
+                        .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
+                    (witness, None)
+                };
                 let subject_tree = witness.subject_tree().map_err(|err| {
                     McpFail::new(
                         "mcp_witness_shape",
@@ -583,6 +612,8 @@ impl Mcp {
                 })?;
                 Ok(json!({
                     "admitted": true,
+                    "signed": effective_signed,
+                    "attestation": attestation,
                     "tree": subject_tree.to_hex(),
                     "command": witness.predicate.command,
                     "exit": witness.predicate.exit,

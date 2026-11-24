@@ -5,6 +5,15 @@ use serde_json::Value;
 use super::{AuditIssue, parse_hash};
 use crate::journal::Event;
 
+pub(super) fn require_signed_witness(event: &Event) -> bool {
+    let versioned = event.payload.get("schema").and_then(Value::as_str) == Some("trit-policy-v1");
+    match event.payload.get("require_signed_witness") {
+        Some(Value::Bool(value)) => *value,
+        None => versioned,
+        Some(_) => true,
+    }
+}
+
 pub(super) fn check_policy(
     event: &Event,
     issues: &mut Vec<AuditIssue>,
@@ -53,6 +62,21 @@ pub(super) fn check_policy(
             "policy_bad",
             format!(
                 "第 {} 条 policy 事件的 require_signed_claims 不是布尔值",
+                event.seq
+            ),
+        ));
+    }
+    let signed_witness = event
+        .payload
+        .get("require_signed_witness")
+        .and_then(Value::as_bool);
+    if signed_witness.is_none()
+        && (versioned || event.payload.get("require_signed_witness").is_some())
+    {
+        issues.push(AuditIssue::new(
+            "policy_bad",
+            format!(
+                "第 {} 条 policy 事件的 require_signed_witness 不是布尔值",
                 event.seq
             ),
         ));

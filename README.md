@@ -21,7 +21,7 @@
 | 写前准入 | Git 无对应面 | 未认领的提交默认拒；认领有 TTL、同名 id 判红；判决是三态（True/Unknown/False），"不知道"不等于"过" |
 | 被拒之后 | 更强 | 每条判决附**能直接跑的下一步命令**：`unclaimed` 负载 329→455 元（3 条命令）、`claim_conflict` 18→88 元、`witness_required` 26→73 元 |
 | 预检成本 | 有读数 | 60 文件 / 121 对象 / 9,400 字节的预检 **4.8 ms**，**写盘 0 个对象**（对象数、哈希链长度、HEAD 三样分别断言） |
-| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节，`claims add/release --sign-key` 落 `claim_signature` 并复验操作/完整 ClaimSpec/前后状态/操作时点授权，审计按 `op_begin` 到 `op_result` 的日志顺序拒绝操作前吊销和操作中吊销/轮换，并核对 `op_result.state_after`；`trit-policy-v1` 缺签名字段时 fail-closed，旧策略事件保持兼容，审计重放强制签名策略并检查 sidecar 缺失，`key rotate` 由旧/新两把钥双签声明并由 `audit` 复验，`audit checkpoint` 落签名 Merkle 检查点并复验前缀根/链，`audit consistency` 证明旧前缀是新根的前缀（1 万叶、旧前缀 4,321 叶的证明少于 64 个节点），`audit anchor` 导出可离线复验的文件锚；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；提交可带 `evidence`/`tags` |
+| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节，`claims add/release --sign-key` 落 `claim_signature` 并复验操作/完整 ClaimSpec/前后状态/操作时点授权，审计按 `op_begin` 到 `op_result` 的日志顺序拒绝操作前吊销和操作中吊销/轮换，并核对 `op_result.state_after`；`trit-policy-v1` 缺签名字段时 fail-closed，旧策略事件保持兼容，审计重放强制签名策略并检查 sidecar 缺失，`key rotate` 由旧/新两把钥双签声明并由 `audit` 复验，`audit checkpoint` 落签名 Merkle 检查点并复验前缀根/链，`audit consistency` 证明旧前缀是新根的前缀（1 万叶、旧前缀 4,321 叶的证明少于 64 个节点），`audit anchor` 导出可离线复验的仓内文件锚，`audit external-anchor/verify-external-anchor` 用调用方从仓外钉住的独立公钥签/验检查点与前缀摘要；`attest` 给已提交 witness 追加 Ed25519 sidecar，`admit --signed` 与 MCP `admit({signed:true})` 强制验签，策略 `require_signed_witness` 可要求新见证必须带 attestation；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；提交可带 `evidence`/`tags` |
 | 时间 | 有面 | HLC（混合逻辑时钟）而非裸墙钟 |
 | 上下文预算 | 有面 | `--budget <元>` 对所有读数生效：只丢整行、从尾部丢，`truncation` 元数据自己算进预算；ASCII 4 字 = 1 元、非 ASCII 4 元 |
 | Git 生态 | 薄 | 双向桥只走第一父链：`git-export` / `git-import`（同步删除、防路径穿越、剥 `Trit-*` 尾注）；无 merge 图 / submodule / tag |
@@ -42,13 +42,16 @@
   `append_audit`/`begin_operation`/`finish_operation` 和独立审计事件写入共用同一把 `claims.lock`，
   避免它们并发撕裂 `state_before`/`state_after` 或让检查点前缀与追加位置错开；拿不到锁明确报
   `state_locked`，不静默覆盖，也不教人删锁。
-- v0 的 witness **不签名** ⇒ 防篡改、防绑错树，不防有人自己造一份。`commit --sign-key` 的
-  Ed25519 签名是**事件 sidecar**：覆盖提交对象字节，不改变提交 id；`claims add/release --sign-key`
+- v0 的 witness 本体仍保持 in-toto Statement 形状；默认准入不要求签名，以兼容旧仓。`attest` 可追加
+  Ed25519 `attestation` sidecar，绑定提交 id、witness 摘要、树、实际第一父树、签者、会话与签名时间，
+  不改变提交 id、对象格式或 bundle。`commit --sign-key` 的签名覆盖提交对象字节；`claims add/release --sign-key`
   同样以 sidecar 证明中央账本变更，但导出的 `claims.json` 仍只是未签名 `ClaimSpec` 数组。
-  检查点已有仓内签名 v0、文件锚 v0 和检查点间 consistency proof，但文件锚只是调用方保管的
-  已签检查点副本，**不是独立 CA、透明日志或可信时间戳**；能同时改仓库、锚副本和信任表的人仍可整体伪造。
-  签名里的 `signed_at_ms` 也是签名者自报时间，不是可信时间戳；提交/检查点的吊销判断依赖它，
-  不能防签名者刻意回填时间。认领签名授权已改为按 `op_begin` 到 `op_result` 的事件顺序重建。
+  检查点已有仓内签名 v0、仓内文件锚 v0、检查点间 consistency proof 和独立外锚 v1；仓内文件锚只是
+  调用方保管的已签检查点副本，**不是独立信任根**。独立外锚只认调用方从仓库外信任渠道钉住的公钥，
+  不读仓内 `keys.json`；但实际独立性取决于外部私钥保管与部署，不能自动抵抗整机或同一管理域被攻陷。
+  两者都不是透明日志、CA 或可信时间戳；签名里的 `signed_at_ms` 也是签名者自报时间，不能防刻意回填。
+  认领签名授权按 `op_begin` 到 `op_result` 的事件顺序重建；见证签名允许同毫秒吊销不追溯，但拒绝签名早于
+  签者加入信任表的时间。
 - sparse 索引只记**一个前缀**（没有 git 的多前缀/cone 模式）；换范围就等于换一次前缀 checkout。
 - 三值逻辑只用在裁决处：全仓 `src` 实测三值 **4.5%**、二值 2.2%、中性 93.4%（`scripts/parity_scan.py`）。
 
@@ -110,14 +113,15 @@ trit-vcs policy set --owner qoder:admin --require-signed-claims
 
 ```sh
 trit-vcs policy --json
-trit-vcs policy set --owner qoder:s1 --require-witness --require-intent --require-signed-claims --json
+trit-vcs policy set --owner qoder:s1 --require-witness --require-intent --require-signed-claims --require-signed-witness --json
 ```
 
 `policy set` 的语义是**整份替换**：没带的开关归 false，不沿用旧 true。每次变更落 `op_begin` +
-`policy` + `op_result`，新事件带 `schema: trit-policy-v1`、`session`、三个开关、`policy_hash`、
-`state_before`/`state_after`；版本化事件缺 `require_signed_claims` 会判红并在重放时按强制签名处理，
-无该字段的旧事件仍按关闭处理。绕过 CLI 直接改文件会被 `audit` 的 `state_drift` 或下一次
-`op_state_gap` 抓出来。
+`policy` + `op_result`，新事件带 `schema: trit-policy-v1`、`session`、四个开关、`policy_hash`、
+`state_before`/`state_after`；版本化事件缺 `require_signed_claims` / `require_signed_witness` 或显式非布尔值
+都会判红，并在重放时按强制签名处理；无该字段的旧事件仍按关闭处理。`require_signed_witness` 开启后，
+新提交必须先带 witness，普通 `admit` 也会要求有效 attestation。绕过 CLI 直接改文件会被 `audit` 的
+`state_drift` 或下一次 `op_state_gap` 抓出来。
 
 信任表也走同一套写前协议（表里存公钥/主体/角色；实际验签由下面的 `signing` 层负责）：
 
@@ -146,6 +150,23 @@ trit-vcs commit -m "..." --owner qoder:s1 --sign-key ~/.trit/keys/author.key
 `audit status` 用信任表公钥逐条 `verify_strict`，签名坏报 `signature_invalid`，未信任报 `signer_untrusted`，
 吊销后签的报 `signer_revoked`。签名是 sidecar，不改变提交 id。
 
+Witness 签名使用独立域 `trit-attestation-v1`，不改 witness 或提交对象：
+
+```sh
+trit-vcs key add --key-file ~/.trit/keys/witness.key --principal qoder:s1 --role author --owner qoder:s1
+trit-vcs attest <提交id> --witness witness.json --key-file ~/.trit/keys/witness.key --owner qoder:s1 --json
+trit-vcs admit <提交id> --witness witness.json --signed
+```
+
+签者角色可为 `author`/`auditor`/`release`；签名绑定提交 id、原始 witness 摘要、树、实际第一父树、
+key_id、会话与签名时间。旧 witness 可不声明 `predicate.base`，但一旦声明就必须与真实父树一致。
+默认 `admit` 保持未签名兼容；`--signed`、MCP `admit({signed:true})` 或策略 `require_signed_witness`
+要求有效 attestation。严格策略下 MCP 即使省略 `signed` 也按已签名准入，并返回 `signed:true` 与
+`attestation`。审计检查事件/对象一致性、操作收口、重复 sidecar、信任成员、公钥指纹、角色、
+信任加入时间、吊销与 Ed25519 签名；attestation 的 `state_before`/`state_after` 必须分别等于
+`op_begin`/`op_result`，严格策略下的无 witness 提交也判红；吊销只追溯
+`signed_at_ms > revoked_at_ms` 的签名。
+
 认领签名使用独立域 `trit-claim-sign-v1`：`claims add/release --sign-key` 签 action、`op_begin` 哈希、
 完整 `ClaimSpec`、操作前后状态、key_id/principal/owner 和签名时间，落 `claim_signature` 事件。
 `audit` 重建同一声明并核对事件顺序、成功收口、信任/角色/吊销与 Ed25519 签名；授权按操作时点重放，
@@ -170,6 +191,8 @@ trit-vcs audit consistency --from <旧检查点事件 seq> --to <新检查点事
 trit-vcs audit verify-consistency --from <旧检查点事件 seq> --to <新检查点事件 seq> --proof consistency.json --json
 trit-vcs audit anchor --checkpoint <检查点事件 seq> --out anchor.json --json
 trit-vcs audit verify-anchor --anchor anchor.json --json
+trit-vcs audit external-anchor --checkpoint <检查点事件 seq> --key-file external.key --anchor-public-key <仓外独立公钥hex> --out external-anchor.json --json
+trit-vcs audit verify-external-anchor --anchor external-anchor.json --anchor-public-key <仓外独立公钥hex> --json
 trit-vcs audit verify --anchor anchor.json --json
 ```
 
@@ -190,9 +213,17 @@ trit-vcs audit verify --anchor anchor.json --json
 `head`/`previous`/Merkle 根，并验证它到较新检查点的一致性；`audit verify --anchor` 则把同一检查
 接在完整审计报告后面。坏锚会让 JSON 报告带具体 `anchor_*` kind 并非零退出。
 
+`audit external-anchor` 使用单独的 `trit-external-anchor-v1`：外部私钥必须与 `--anchor-public-key`
+是同一把钥，签名覆盖检查点事件哈希、高度、head、Merkle 根、previous、外部 key_id 与签名时间。
+`verify-external-anchor` 只认调用方明确传入的公钥，不读取仓内信任表；导出前和验证时都重算当前仓库前缀，
+较新检查点必须构成一致扩展。输出文件同样拒绝覆盖。**公钥必须从仓库外的信任渠道取得并核对指纹**；
+把仓库里的 `keys.json` 当外部公钥来源不构成独立性。
+
 **边界要说清**：文件锚能发现“保留的锚之后被换链或删到锚高以下”，也能在保留较新锚时发现它之后
 被删尾；但只有旧锚时，较短而一致的前缀仍是合法扩展，无法证明从未见过的后续事件不存在。锚必须由
-调用方放到独立保管位置；同一台机器/同一管理域里的副本不构成抗整机篡改的外部信任根。
+调用方放到独立保管位置；同一台机器/同一管理域里的副本不构成抗整机篡改的外部信任根。独立外锚提供
+“只认仓外公钥”的密码学边界，但真实独立性仍取决于外部密钥保管与部署；它不是透明日志、CA 或可信
+时间戳服务。
 
 ## 持久 sparse 索引
 
@@ -213,15 +244,15 @@ trit-vcs sparse --clear     # 清掉索引，退回全量判定
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test                                                     # 19 个集成测试二进制 / 293 条（2026-11-24 实测，含 MSRV 1.88）
-python scripts/mutation_check.py --pkg trit-vcs                    # 255 条登记（认领签名 29 / 账本 2 / 网络 4 / sparse 1）
+cargo test                                                     # 20 个集成测试二进制 / 313 条 crate 测试（2026-11-25 实测，含 MSRV 1.88）
+python scripts/mutation_check.py --pkg trit-vcs                    # 281 条登记（见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8）
 python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/change_policy.py --pkg scripts/ci_integrity.py --pkg scripts/docs_hygiene.py --pkg scripts/module_budget.py --pkg scripts/mutation_check.py --pkg scripts/repo_triage.py --pkg scripts/test_surface.py  # 脚本面 111 条
 ```
 
 最后一条在本仓就能跑（`scripts/mutation_check.py` + `scripts/mutants/` 已随拆分一起搬过来，
 路径口径改成新仓根：`src/…`）。门自身的自测面在镜像仓会 SKIP 掉只对单体仓成立的 7 条夹具，并大声打 SKIP。
 变异登记的口径：每条 = 一个单点文本改动 + 点名的那条测试；测试必须变红，否则算存活。
-255 条 Rust 变异全部声明最小 Cargo 目标（175 条 `--lib`、80 条对应集成测试），门会拒绝目标不存在
+281 条 Rust 变异全部声明最小 Cargo 目标（190 条 `--lib`、91 条对应集成测试），门会拒绝目标不存在
 或过滤后零测试的条目，不再为每条变异重编整包。
 
 ## 库面
@@ -231,17 +262,18 @@ python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/cha
 | `store` / `chunk` / `hash` | 内容寻址的对象库、CDC 分块、BLAKE3 id |
 | `bundle` | `TVBD` 包 + 过滤后的**树清单** + 范围内传输（export 与 pull 共用同一条路） |
 | `claims` | 中央仓跨仓认领账本（单写者锁、冲突点名、`add/release/list/export`）；变更进哈希链，可选 Ed25519 sidecar 签名，审计按操作时点信任/吊销重建授权，支持强制签名策略 |
-| `policy` | `policy set` 整份写入门禁开关，`trit-policy-v1` 事件记 session/开关/摘要/前后状态；新版缺签名字段 fail-closed，旧事件保持兼容 |
+| `policy` | `policy set` 整份写入门禁开关，`trit-policy-v1` 事件记 session/四个开关/摘要/前后状态；新版缺签名字段 fail-closed，旧事件保持兼容 |
 | `keys` | 受审计信任表：`key add/revoke/rotate/list` 写 `.tritvcs/keys.json`，每次变更落 `key` 事件；带公钥的 add 由审计复验 Ed25519 形状、key_id 指纹和信任表一致，rotate 要求旧/新双签并记 `rotated_from` |
-| `signing` | Ed25519 私钥文件、公钥指纹、提交与认领声明签名；`commit/claims --sign-key` 落 sidecar 事件，`audit` 用信任表公钥复验 |
-| `checkpoint` | 事件前缀的 Merkle 根与签名检查点、旧→新 consistency proof、文件锚；`audit checkpoint/proof/consistency/anchor/verify-anchor` 与 `audit verify --anchor` 形成闭环，文件锚不是独立外部信任根 |
+| `signing` | Ed25519 私钥文件、公钥指纹、提交/认领/见证声明签名；`commit/claims --sign-key` 与 `attest --key-file` 落 sidecar 事件，`audit` 用信任表公钥复验 |
+| `attestation` | witness 的 Ed25519 sidecar：绑定提交/树/父树/原始见证/签者/会话，不改提交 id；支持严格策略、操作收口与重复/信任/吊销审计 |
+| `checkpoint` | 事件前缀的 Merkle 根与签名检查点、旧→新 consistency proof、仓内文件锚和独立外锚；外部锚只认调用方钉住的仓外公钥 |
 | `central` | 命名 ref（`.tritvcs/refs/<name>`）、`publish`（闭包 + 父链 + 只准往前推）、`pull`（稀疏物化，脏则拒；全量落 HEAD+索引） |
 | `net` / `wire` / `remote` | 自写 HTTP/1.1 子集 + Bearer token（常量时间比较）、`TVOB` 对象流（收端重算 BLAKE3）、跨机 publish/pull 的快进与完整性闸门；鉴权失败落 `auth` 事件 |
 | `repo` / `journal` | 提交与查询、哈希链事件日志 |
 | `preflight` | `commit()` 与 `preflight()` **共用**的唯一判决处 ⇒ 预检不会和真提交分叉 |
 | `remediation` | 每条 `RepoError` → `kind` + 可执行命令（`--json` 下失败也是纯对象） |
 | `tokens` | 一把 token 尺，CLI 与 MCP 共用 |
-| `gate` / `witness` / `model` | 认领门（三态判决 + `ClaimSpec`）、提交见证（in-toto 形状，v0 不签名）、`Commit`/`HLC`/`Intent` |
+| `gate` / `witness` / `model` | 认领门（三态判决 + `ClaimSpec`）、提交见证（in-toto 形状，本体保持未签名，可选 attestation sidecar）、`Commit`/`HLC`/`Intent` |
 | `worktree` / `merge` / `delta` | 扫描与稀疏物化、行级三路合并（CLI/MCP 走 `merge_audited` 留下 merge 事件）、前后缀 delta |
 | `sparse` | 持久 sparse 索引：前缀 + 基准树；`status` 只扫范围内，全量检出自动清 |
 | `git_bridge` / `techmap` / `status_cache` / `mcp` | Git 双向桥、技术标签索引、status 缓存、13 个工具的 stdio JSON-RPC |

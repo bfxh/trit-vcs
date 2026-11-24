@@ -66,6 +66,10 @@ pub fn kind(err: &RepoError) -> &'static str {
         RepoError::IntentRequired => "intent_required",
         RepoError::IntentInvalid(_) => "intent_invalid",
         RepoError::IntentBaseMismatch { .. } => "intent_base_mismatch",
+        RepoError::AttestationRequired(_) => "attestation_required",
+        RepoError::AttestationInvalid(_) => "attestation_invalid",
+        RepoError::AttestationUntrusted(_) => "attestation_untrusted",
+        RepoError::AttestationRevoked(_) => "attestation_revoked",
     }
 }
 
@@ -170,6 +174,18 @@ pub fn commands(err: &RepoError, ctx: Context<'_>) -> Vec<String> {
             format!("把 intent.base 换成父树的 {actual}，或留空让提交自己绑父树"),
             format!("{VCS} log --json --repo {repo}"),
         ],
+        RepoError::AttestationRequired(id) => vec![format!(
+            "{VCS} attest {id} --witness <文件> --key-file <私钥> --owner <宿主:会话id> --repo {repo}"
+        )],
+        RepoError::AttestationInvalid(_) => vec![format!(
+            "{VCS} audit status --json --repo {repo}；确认 witness 字节与 attestation sidecar 未被改动"
+        )],
+        RepoError::AttestationUntrusted(key_id) => vec![format!(
+            "{VCS} key list --json --repo {repo}；用受信任且未吊销的公钥重签 {key_id}"
+        )],
+        RepoError::AttestationRevoked(key_id) => vec![format!(
+            "{VCS} key list --json --repo {repo}；{key_id} 已吊销，不能用于新准入"
+        )],
     }
 }
 
@@ -263,6 +279,10 @@ mod tests {
                 declared: "aa".to_string(),
                 actual: "bb".to_string(),
             },
+            RepoError::AttestationRequired("cafe".to_string()),
+            RepoError::AttestationInvalid("签名不通过".to_string()),
+            RepoError::AttestationUntrusted("ed25519:bad".to_string()),
+            RepoError::AttestationRevoked("ed25519:old".to_string()),
         ]
     }
 

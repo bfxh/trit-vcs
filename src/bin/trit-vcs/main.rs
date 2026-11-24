@@ -15,12 +15,14 @@ use trit_vcs::witness::{RunOutput, Witness};
 use trit_vcs::worktree;
 
 mod accept_cli;
+mod attest_cli;
 mod audit_cli;
 mod bridge;
 mod central_sync;
 mod claims_cli;
 mod cli_args;
 mod cli_fail;
+mod external_anchor_cli;
 mod handoff_cli;
 mod key_cli;
 mod mcp_serve;
@@ -56,7 +58,8 @@ fn usage() -> ExitCode {
          [--tag 标签]... [--witness FILE] [--goal 目标] [--accept 判据]... [--allow-unclaimed] [--dry-run] [--sign-key FILE] [--json] [--repo PATH]\n  \
          trit-vcs preflight -m <说明> --owner <宿主:会话id> [同 commit 的参数] [--budget N] [--json] [--repo PATH]\n   [--verify-accept --claims FILE [--accept-timeout 秒]]\
          trit-vcs witness [--out FILE] [--repo PATH] -- <命令>...\n  \
-         trit-vcs admit <提交id> --witness FILE [--repo PATH]\n   [--verify-accept --claims FILE]\
+         trit-vcs attest <提交id> --witness FILE --key-file FILE --owner <宿主:会话id> [--json] [--repo PATH]\n  \
+         trit-vcs admit <提交id> --witness FILE [--signed] [--repo PATH]\n   [--verify-accept --claims FILE]\
          trit-vcs export <树id> --out FILE [--prefix DIR] [--dest REPO] [--repo SRC]\n  \
          trit-vcs import <包文件> [--repo DEST]\n  \
          trit-vcs publish <ref> --central PATH [--commit ID] [--force] [--repo SRC]\n  \
@@ -78,7 +81,7 @@ fn usage() -> ExitCode {
          trit-vcs claims list --central PATH [--all] [--json]\n  \
          trit-vcs claims export --central PATH --out FILE\n  \
          trit-vcs policy [--json] [--repo PATH]\n  \
-         trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--json] [--repo PATH]\n  \
+         trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--json] [--repo PATH]\n  \
          trit-vcs key [list] [--json] [--repo PATH]\n  \
          trit-vcs key add --key-id <指纹> --principal <主体> [--role author|auditor|release|reader] --owner <宿主:会话id> [--json] [--repo PATH]\n  \
          trit-vcs key revoke --key-id <指纹> --reason <原因> --owner <宿主:会话id> [--json] [--repo PATH]\n  \
@@ -95,6 +98,8 @@ fn usage() -> ExitCode {
          trit-vcs audit verify-consistency --from <seq> --to <seq> --proof FILE [--json] [--repo PATH]\n  \
          trit-vcs audit anchor --checkpoint <seq> --out FILE [--json] [--repo PATH]\n  \
          trit-vcs audit verify-anchor --anchor FILE [--json] [--repo PATH]\n  \
+         trit-vcs audit external-anchor --checkpoint <seq> --key-file <外部私钥> --anchor-public-key <独立公钥hex> --out FILE [--json] [--repo PATH]\n  \
+         trit-vcs audit verify-external-anchor --anchor FILE --anchor-public-key <独立公钥hex> [--json] [--repo PATH]\n  \
          trit-vcs audit log [事件类型] [--from N] [--to N] [--json] [--repo PATH]\n  \
          trit-vcs audit show <序号> [--json] [--repo PATH]\n  \
          trit-vcs stats [--repo PATH]"
@@ -168,6 +173,7 @@ fn main() -> ExitCode {
         "serve" => remote_cli::serve_cmd(&args),
         "policy" => policy_cli::policy_cmd(&args),
         "key" => key_cli::key_cmd(&args),
+        "attest" => attest_cli::attest_cmd(&args),
         "add" => {
             let root = repo_path(&args);
             // 目标 = 位置参数；跳过 `--repo` 及其值
@@ -384,7 +390,12 @@ fn main() -> ExitCode {
             ) {
                 return fail_err(&err, &root, &commit.session, &args);
             }
-            match repo.admit(&id, &bytes) {
+            match if has(&args, "--signed") {
+                repo.admit_signed(&id, &bytes)
+                    .map(|admission| admission.witness)
+            } else {
+                repo.admit(&id, &bytes)
+            } {
                 Ok(witness) => {
                     println!(
                         "准入通过：提交 {}，树 {}，命令 {}，退出 {}",

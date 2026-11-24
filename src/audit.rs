@@ -6,7 +6,7 @@
 //! - HEAD、refs、对象是否和日志里记的最后状态对得上；
 //! - 最新事件里如果带 `state_after`，它是否等于当前状态摘要。
 //!
-//! 提交签名、密钥轮换、检查点/锚与认领签名已接入；witness/attestation 签名仍是下一层。
+//! 提交签名、密钥轮换、检查点/锚、认领签名与 witness attestation 已接入。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -19,6 +19,7 @@ use crate::hash::Hash;
 use crate::journal::{Event, Journal, JournalError};
 use crate::repo::{Repo, RepoError};
 
+pub(crate) mod attestation_event;
 mod auth_event;
 mod checkpoint_event;
 mod claim_signature_event;
@@ -238,8 +239,9 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
             );
         }
     }
-
+    let mut require_signed_witness = false;
     let mut require_signed_claims = false;
+    let mut signed_witness_commits = BTreeMap::new();
     for (index, event) in events.iter().enumerate() {
         match event.kind.as_str() {
             "claim_add" | "claim_release" => {
@@ -270,6 +272,14 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                 if let Some(id) = parse_hash(event.payload.get("id")) {
                     match repo.commit_at(&id) {
                         Ok(commit) => {
+                            attestation_event::track_commit(
+                                id,
+                                index,
+                                &commit,
+                                require_signed_witness,
+                                &mut signed_witness_commits,
+                                &mut issues,
+                            );
                             if let Some(claim_set) = commit.claim_set {
                                 match repo.store().get_chunk(&claim_set) {
                                     Ok(bytes) => match ClaimSet::decode(&bytes) {
@@ -388,6 +398,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                     .get("require_signed_claims")
                     .and_then(Value::as_bool)
                     .unwrap_or(versioned);
+                require_signed_witness = policy_event::require_signed_witness(event);
                 policy_event::check_policy(event, &mut issues, &mut warnings);
             }
             "key" => key_event::check_key(repo, event, &mut issues, &mut warnings),
@@ -409,6 +420,9 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                 &mut issues,
                 &mut warnings,
             ),
+            "attestation" => {
+                attestation_event::check_attestation(repo, events, index, event, &mut issues)
+            }
             "auth" => auth_event::check_auth(event, &mut issues, &mut warnings),
             "deny" => deny_event::check_deny(event, &mut issues, &mut warnings),
             "accept" => {
@@ -454,7 +468,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
             _ => {}
         }
     }
-
+    attestation_event::check_required(events, &signed_witness_commits, &mut issues);
     let digest = repo.state_digest()?;
     let latest_state = events
         .iter()

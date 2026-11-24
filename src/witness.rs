@@ -4,8 +4,8 @@
 //! 见证绑定一棵树（`subject.digest.blake3`），改名/换行/改一个字节都会让树变、绑定失效；
 //! 见证文件本身以它自己的 BLAKE3 记进提交，改动见证文件同样会被拒。
 //!
-//! v0 的信任边界要说清楚：没有签名，所以它防的是**事后篡改与错配**，不防"谁都能自己造一份"。
-//! 签名与公钥分发在 v1；在那之前，跨机器只把它当"未签名证据"，不当"可信命题"。
+//! witness 本体保持 v0 未签名；可选 Ed25519 `attestation` sidecar 见 `crate::attestation`。
+//! 没有签名的 witness 只能当未签名证据，不能当可信命题。
 
 use std::collections::BTreeMap;
 
@@ -102,6 +102,8 @@ pub enum WitnessError {
     TreeMismatch { subject: String, actual: String },
     #[error("见证记录的命令退出码是 {0}；测试没通过不能当证据")]
     Failed(i32),
+    #[error("见证记录的父树 {subject} 与实际父树 {actual} 不一致")]
+    BaseMismatch { subject: String, actual: String },
     #[error("见证文件被改动：提交里记的是 {recorded}，实际是 {actual}")]
     FileTampered { recorded: String, actual: String },
 }
@@ -169,7 +171,24 @@ impl Witness {
         Ok(())
     }
 
-    /// 见证记录的是不是一次通过（退出码 0）。
+    /// 见证若声明了父树，就必须与实际父树一致；旧见证允许不声明。
+    pub fn check_base(&self, base: Option<Hash>) -> Result<(), WitnessError> {
+        let Some(declared) = self.predicate.base.as_deref() else {
+            return Ok(());
+        };
+        let actual = Hash::from_hex(declared)
+            .ok_or_else(|| WitnessError::BadDigest(declared.to_string()))?;
+        if Some(actual) != base {
+            return Err(WitnessError::BaseMismatch {
+                subject: actual.to_hex(),
+                actual: base
+                    .map(|hash| hash.to_hex())
+                    .unwrap_or_else(|| "-".to_string()),
+            });
+        }
+        Ok(())
+    }
+
     pub fn check_passed(&self) -> Result<(), WitnessError> {
         if self.predicate.exit != 0 {
             return Err(WitnessError::Failed(self.predicate.exit));
