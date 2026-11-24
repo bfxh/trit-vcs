@@ -45,6 +45,11 @@
   自测 28/28 与 22/22；两道新门登记 17 条变异，复跑全抓。
 
 ### Changed
+- `trit-core` / `trit-orch` 的 git pin 从拆库提交 `2400fb9d` 显式抬到 `79542df8`（改 pin 单独一笔，不跟 main 漂）。
+  取的是**升 MSRV 1.89 之前最后一笔 main**（`fc8fb6ea` 的父）：收进 `#440` 的 6 项底层安全修复
+  （YARA 死循环 / pool UAF / `from_i8_unchecked` 健全性 / 同步越界 / 攻击链 DoS）、`#488` 的 5-trit 打包下沉、`#615` 的 data 面，
+  同时把工具链地板留在 1.88（`cargo +1.88.0 test --workspace --locked` 全绿）。
+  `trit-orch` 因此多一个 `trit-ops` 依赖；本仓 `src/` / `tests/` 零改动，194 条测试与四道门本地全绿。
 - `ci_integrity.py` 不再把默认仓写死成 `bfxh/trit`：搬仓后它拿别人仓的保护规则比对完照样打印"通过"，
   这是最坏的一种绿（判据跑在错对象上）。现在认不出 origin、或读不到保护 ⇒ rc=2 出声；
   认仓只留 `repo_triage.py` 一份实现，`--self-test` 从 14 条涨到 27 条；顺带收掉 `repo_from_url`
