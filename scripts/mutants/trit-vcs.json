@@ -1526,5 +1526,15 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "lib"
+},
+{
+ "name": "vcs: keyset 不进状态摘要（手改信任表仍绿）",
+ "file": "src/repo/state.rs",
+ "old": "        if let Some(keyset) = keyset {\n            state[\"keyset\"] = json!(keyset);",
+ "new": "        if false {\n            state[\"keyset\"] = json!(keyset);",
+ "filter": "key_add_and_revoke_are_audited_and_keyset_drift_is_red",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "test:key_cli"
 }
 ]

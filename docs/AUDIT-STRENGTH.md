@@ -1,6 +1,6 @@
 # trit-vcs 审计强度路线图
 
-> 状态：P0 首批已落地（L2 对账、认领快照、判据回执）；签名 / Merkle / 仓外锚尚未实现
+> 状态：P0 首批已落地（L2 对账、认领快照、判据回执、信任表 v0）；Ed25519 签名 / Merkle / 仓外锚尚未实现
 > 日期：2026-11-24  
 > 目标：审计面做到“第三方可以离线复算”，不是“再加一条日志”  
 > 一句话：现在有**链**、有**对账**，但还没有**签名锚**；有**认领**、有**授权快照**；有 `verify`、也有 `audit`。下一步不是把日志写长，而是把剩余操作补全、把链签死。
@@ -40,18 +40,18 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 | 能力 | 入口 | 事实 |
 |---|---|---|
 | 日志对账 | `audit status` / `audit verify` / `audit reconcile` | 比对日志文件是否存在/可读、HEAD、refs、对象闭包、`claim_set`、`accept` 回执、`op_begin/op_result` 配对、最新 `state_after`；`open_ops` 单独报 |
-| 状态摘要 | `Repo::state_digest` | HEAD + refs + index + policy 原始字节 + claims 原始字节，canonical JSON 后 BLAKE3；不把 journal 算进去，避免循环自证 |
+| 状态摘要 | `Repo::state_digest` | HEAD + refs + index + policy 原始字节 + claims 原始字节；存在 `keys.json` 时再加 keyset 原始字节；canonical JSON 后 BLAKE3；不把 journal 算进去，避免循环自证 |
 | 单写者链 | `Journal::append` | `journal.lock` 跨进程锁；拿锁后按文件长度决定是否重读，避免两个进程拿同一个 `seq` |
 | 写前协议 | `Repo::begin_operation` / `finish_operation` | 状态变更前先写 `op_begin`（含 `state_before`），写后写 `op_result`（含 `status`/`state_after`）；崩溃留下开放操作，`audit` 报 `op_open`/`op_state_gap` |
 | 策略变更 | `trit-vcs policy set` / `Repo::set_policy` | 整份写入 `policy.json` 也走 `op_begin/op_result`；`policy` 事件记 `session`、两个开关、`policy_hash`、`state_before`/`state_after` |
 | 授权快照 | `ClaimSet` 对象 + `Commit.claim_set` | 提交时按 path 覆盖集合生成不可变快照；`verify`/`audit` 校验对象存在且摘要对得上 |
 | 判据回执 | `AcceptReceipt` 对象 + `accept` 事件 | 记录树、基线、session、认领 id、每条判据的 exit/超时/输出摘要/是否截断；回执摘要进链 |
-| 操作事件 | `stage` / `commit` / `ref` / `adopt` / `claim_*` / `publish` / `pull` / `accept` / `gate` / `deny` / `policy` / `merge` / `auth` | 带 `state_after` 的事件能被状态摘要校验；`publish` 记 `previous`/`forced`，`pull` 记 prefix/force，`gate` 记拒绝原因与 `state_before`/`state_after`，`deny` 记业务拒绝的入口/原因/消息/请求细节（含 publish 请求形状、服务端 pull 的缺 ref/未知 ref、本地 pull 的脏工作树/非快进），`policy` 记开关与策略摘要，`merge` 记两个输入/树/冲突数，`auth` 记被拒方法/路径/原因（不记 token） |
+| 操作事件 | `stage` / `commit` / `ref` / `adopt` / `claim_*` / `publish` / `pull` / `accept` / `gate` / `deny` / `policy` / `key` / `merge` / `auth` | 带 `state_after` 的事件能被状态摘要校验；`publish` 记 `previous`/`forced`，`pull` 记 prefix/force，`gate` 记拒绝原因与 `state_before`/`state_after`，`deny` 记业务拒绝的入口/原因/消息/请求细节（含 publish 请求形状、服务端 pull 的缺 ref/未知 ref、本地 pull 的脏工作树/非快进），`policy` 记开关与策略摘要，`key` 记 action/key_id/principal/role/keyset 摘要，`merge` 记两个输入/树/冲突数，`auth` 记被拒方法/路径/原因（不记 token） |
 | 查询面 | `audit log` / `audit show` / `--json` | 审计员不必用眼睛翻 JSONL；`audit status --json` 可直接分支 |
 | 坏日志容错 | `Repo::open_for_audit` | journal 是坏 JSON 时仍能打开审计入口，输出 `journal_broken`，而不是在 `Repo::open` 阶段只丢一句 IO 错 |
 | 失败即非零 | `audit status` | 有 issue 时退出码 1；`--json` 仍输出结构化报告，便于 CI 消费 |
 
-尚未完成、不能假装完成的：密钥、Ed25519 签名、Merkle 检查点、仓外锚、跨机 journal 互链。**这些没做完之前，L3 不能宣称。**
+尚未完成、不能假装完成的：Ed25519 密钥生成与验签、密钥轮换、Merkle 检查点、仓外锚、跨机 journal 互链。当前 `keys.json` 只是受审计的信任元数据，`key_id` 还不被任何提交/回执签名验证。**这些没做完之前，L3 不能宣称。**
 
 ---
 
@@ -97,8 +97,8 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 |---|---|---|---|---|
 | G1 | 日志不能解释状态 | `Repo::verify` 仍只统计事件数、跑对象 fsck、走第一父链；但 `audit status` 已比对 journal 与 refs/HEAD/claims/policy/state_digest | `verify` 单独跑仍可能绿；用 `audit` 才会抓删日志/手改 ref/漏记 commit | P0，**部分关闭** |
 | G2 | 链可截断、可换整条 | 没有检查点、没有 Merkle 根、没有仓外锚；`verify` 只验当前文件 | 删最后 N 条并重算，或整链替换，仍验不出 | P0，未关闭 |
-| G3 | 身份不可验证 | `session` 是自由字符串；提交/认领/见证都没有签名 | 谁都能自称 `qoder:s1`，伪造“谁做的” | P0，未关闭 |
-| G4 | 操作覆盖不全 | 状态变更已走 `op_begin/op_result`（`stage`/`commit`/`ref`/`adopt`/`claim_*`），提交门拒绝落 `gate`，策略变更落 `policy`，合并落 `merge`，鉴权失败落 `auth`，publish 业务/请求形状拒绝、服务端 pull 拒绝、本地 pull 业务拒绝落 `deny`；仍缺密钥变更 | 密钥轮换/吊销仍可能不留账 | P0，**部分关闭** |
+| G3 | 身份不可验证 | `session` 是自由字符串；`keys.json` 只记录 key_id/principal/role，key_id 还没有绑定到提交/认领/见证签名 | 谁都能自称 `qoder:s1`；信任表能审计“谁被信任”，但不能证明“这条提交真由该 key 签的” | P0，未关闭 |
+| G4 | 操作覆盖不全 | 状态变更已走 `op_begin/op_result`（`stage`/`commit`/`ref`/`adopt`/`claim_*`），提交门拒绝落 `gate`，策略变更落 `policy`，合并落 `merge`，鉴权失败落 `auth`，publish 业务/请求形状拒绝、服务端 pull 拒绝、本地 pull 业务拒绝落 `deny`，信任表 add/revoke 落 `key`；仍缺成功鉴权的 actor/request id 绑定 | 密钥元数据已有账；已认证请求仍不能追到主体 | P0，**部分关闭** |
 | G5 | 并发与崩溃会撕裂日志 | `Journal::append` 已有 `journal.lock` 单写者锁；关键状态变更前有 `op_begin.state_before`、后有 `op_result.state_after`；崩在中间会留下 `op_open` 或 `op_state_gap` | 锁住并发写；写前协议让“操作开始”有账，但仍不能阻止进程死在中间，只能让审计抓到 | P0，**部分关闭** |
 | G6 | 授权不可事后复核 | 已落 `ClaimSet` 不可变快照，claim 事件补 `path_list`；账本 TTL 过后原条目仍会消失 | 快照能证明当时授权；账本原始条目仍需归档策略 | P0，**部分关闭** |
 | G7 | 证据不可验证 | witness 不签名；`accept` 结果已落 `AcceptReceipt` 对象/事件；handoff 仍不携带 witness/accept | 回执可复核“跑了什么”，但回执本身没签名，仍可被替换 | P1，**部分关闭** |
@@ -338,7 +338,11 @@ trit-vcs audit anchor --checkpoint checkpoint.json --to central
 trit-vcs audit bundle --out repo.audit.tvab --trust ./trust.json
 trit-vcs audit verify-bundle repo.audit.tvab --offline
 
-# 身份
+# 身份（v0：只记信任元数据，不做 Ed25519 验签）
+trit-vcs key add --key-id ed25519:<指纹> --principal qoder:s1 --role author --owner qoder:s1
+trit-vcs key revoke --key-id ed25519:<指纹> --reason "轮换" --owner qoder:s1
+
+# 目标 L3（未实现）
 trit-vcs key init --algorithm ed25519 --out ~/.trit/keys/audit.ed25519
 trit-vcs key trust --key ./audit.pub --principal qoder:s1 --role author
 trit-vcs key rotate --old ... --new ... --statement rotation.json
@@ -397,14 +401,14 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 - accept receipt 落对象 + 事件；
 - `audit status/log/show/verify --json`。
 
-**本轮已落地**：仓级 `journal.lock` 单写者锁；`state_digest` + `audit status/verify/reconcile`；`op_begin/op_result` 写前协议（`stage`/`commit`/`set_ref`/`adopt`/`claim_*`/`policy`/`merge`）；提交门拒绝的 `gate` 事件；策略变更的 `policy` 事件；合并的 `merge` 事件；服务端鉴权失败的 `auth` 事件；publish 业务/请求形状、服务端 pull 与本地 pull 业务拒绝的 `deny` 事件；全量 pull 在请求前检查脏工作树；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`；`audit` 对 `op_open` / `op_state_gap` / `event_state_gap` 的检查。
+**本轮已落地**：仓级 `journal.lock` 单写者锁；`state_digest` + `audit status/verify/reconcile`；`op_begin/op_result` 写前协议（`stage`/`commit`/`set_ref`/`adopt`/`claim_*`/`policy`/`key`/`merge`）；提交门拒绝的 `gate` 事件；策略变更的 `policy` 事件；信任表 add/revoke 的 `key` 事件（v0，无验签）；合并的 `merge` 事件；服务端鉴权失败的 `auth` 事件；publish 业务/请求形状、服务端 pull 与本地 pull 业务拒绝的 `deny` 事件；全量 pull 在请求前检查脏工作树；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`；`audit` 对 `op_open` / `op_state_gap` / `event_state_gap` 的检查。
 
-**仍未落地**：`AuditEvent v2` 类型化、key 事件、签名与密钥审计。`auth` 事件目前有方法/路径/原因/401，但没有请求 id、来源地址和经过认证的 actor；`deny` 目前覆盖服务端 publish（含请求形状）、服务端 pull 和客户端 pull 应用回执时的业务拒绝。这也是为什么现在只能算 L2 首批，不能算 P0 完成。
+**仍未落地**：`AuditEvent v2` 类型化、Ed25519 验签/密钥轮换、Merkle 检查点与仓外锚、成功鉴权的 actor/request id。当前 `keys.json` 只记录 key_id/principal/role，`key_id` 不被提交或回执签名验证。`auth` 事件目前有方法/路径/原因/401，但没有请求 id、来源地址和经过认证的 actor；`deny` 目前覆盖服务端 publish（含请求形状）、服务端 pull 和客户端 pull 应用回执时的业务拒绝。这也是为什么现在只能算 L2 首批，不能算 P0 完成。
 
 **完成定义**
 
 - 删 journal、删尾、改中间、手改 ref、删对象、崩在两次写之间、10 进程并发写，7 类夹具全部按预期 kind 判红。
-- 每个改状态的本地 CLI 路径都有 `op_begin` 和 `op_result`；提交门拒绝路径有 `gate` 事件；鉴权失败路径有 `auth` 事件；服务端 publish（含请求形状）、服务端 pull 与本地 pull 的业务拒绝有 `deny` 事件，但缺请求 id/来源与已认证 actor。
+- 每个改状态的本地 CLI 路径都有 `op_begin` 和 `op_result`；提交门拒绝路径有 `gate` 事件；鉴权失败路径有 `auth` 事件；服务端 publish（含请求形状）、服务端 pull 与本地 pull 的业务拒绝有 `deny` 事件；信任表 add/revoke 有 `key` 事件，但缺请求 id/来源与已认证 actor。
 - `audit reconcile` 在干净仓上零告警，在任意一类篡改上失败闭合。
 - 不引入签名依赖也能先交付。
 
@@ -414,7 +418,7 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 
 **范围**
 
-- Ed25519 key init/trust/rotate/revoke；
+- Ed25519 key init/rotate（v0 的 `key add/revoke` 只写信任元数据，不生成/验证密钥）；
 - commit/claim/checkpoint/attestation 签名；
 - Merkle 检查点 + inclusion/consistency proof；
 - 仓外锚：central 锚 + 可选外部锚（文件/HTTP 时间戳/OpenTimestamps/RFC3161，做成插件，不做硬依赖）；
@@ -557,7 +561,7 @@ MCP 面只暴露只读审计工具：`audit_status`、`audit_log`、`audit_verif
 
 1. **`Journal` 加锁 + `op_begin/op_result` 写前协议**，先把并发/崩溃撕裂堵住。
 2. **`audit reconcile` + 状态摘要**，让 `verify` 能回答“日志是否解释了当前状态”。
-3. **全操作事件覆盖 + 拒绝事件**，把 gate/accept/publish/pull/auth/policy/key/force 都记账；`auth`、publish（含请求形状）、服务端 pull 与本地 pull 的 `deny` 已落，key 仍待补。
+3. **全操作事件覆盖 + 拒绝事件**，把 gate/accept/publish/pull/auth/policy/key/force 都记账；`auth`、publish（含请求形状）、服务端 pull 与本地 pull 的 `deny` 已落，信任表 add/revoke 的 `key` 已落；key 验签/轮换仍待补，force 仍未单独成事件。
 4. **ClaimSet 快照 + accept receipt 落对象**，让授权和证据事后可复核。
 5. **`audit status/log/show/verify --json`**，把审计从内部 JSONL 变成可用的产品面。
 

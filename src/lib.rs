@@ -29,6 +29,7 @@ pub mod handoff;
 pub mod handoff_bundle;
 pub mod hash;
 pub mod journal;
+pub mod keys;
 pub mod mcp;
 pub mod merge;
 pub mod model;

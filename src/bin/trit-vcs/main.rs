@@ -22,6 +22,7 @@ mod claims_cli;
 mod cli_args;
 mod cli_fail;
 mod handoff_cli;
+mod key_cli;
 mod mcp_serve;
 mod policy_cli;
 mod query;
@@ -71,6 +72,9 @@ fn usage() -> ExitCode {
          trit-vcs claims export --central PATH --out FILE\n  \
          trit-vcs policy [--json] [--repo PATH]\n  \
          trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--json] [--repo PATH]\n  \
+         trit-vcs key [list] [--json] [--repo PATH]\n  \
+         trit-vcs key add --key-id <指纹> --principal <主体> [--role author|auditor|release|reader] --owner <宿主:会话id> [--json] [--repo PATH]\n  \
+         trit-vcs key revoke --key-id <指纹> --reason <原因> --owner <宿主:会话id> [--json] [--repo PATH]\n  \
          trit-vcs checkout <提交id> [--prefix DIR] [--force] [--repo PATH]\n  \
          trit-vcs log [--json] [--budget N] [--tag T] [--evidence 文本] [--session S] [--grep 文本] [--repo PATH]\n  \
          trit-vcs where <路径/测试/标签> --techmap FILE [--json]\n  \
@@ -150,6 +154,7 @@ fn main() -> ExitCode {
         }
         "serve" => remote_cli::serve_cmd(&args),
         "policy" => policy_cli::policy_cmd(&args),
+        "key" => key_cli::key_cmd(&args),
         "add" => {
             let root = repo_path(&args);
             // 目标 = 位置参数；跳过 `--repo` 及其值
