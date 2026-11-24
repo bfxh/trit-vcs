@@ -278,8 +278,17 @@ fn versioned_policy_without_signed_claim_flag_fails_closed() {
     let report = status(&repo).unwrap();
     assert!(!report.ok);
     assert!(
-        report.issues.iter().any(|issue| issue.kind == "policy_bad"),
-        "{:?}",
+        report.issues.iter().any(|issue| {
+            issue.kind == "policy_bad" && issue.detail.contains("require_signed_claims")
+        }),
+        "缺 require_signed_claims 必须单独报 policy_bad：{:?}",
+        report.issues
+    );
+    assert!(
+        report.issues.iter().any(|issue| {
+            issue.kind == "policy_bad" && issue.detail.contains("require_signed_witness")
+        }),
+        "缺 require_signed_witness 必须单独报 policy_bad：{:?}",
         report.issues
     );
     assert!(
