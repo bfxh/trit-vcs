@@ -6,9 +6,9 @@
 //! - HEAD、refs、对象是否和日志里记的最后状态对得上；
 //! - 最新事件里如果带 `state_after`，它是否等于当前状态摘要。
 //!
-//! 没有签名的链只能证明“链内自洽”；这里先把“自洽”收紧到“能对账”。提交签名、密钥轮换和
-//! 仓内签名 Merkle 检查点已经接入，但仓外锚、inclusion/consistency proof 仍是下一层，
-//! 不在这个模块里假装已经具备。
+//! 没有签名的链只能证明“链内自洽”；这里先把“自洽”收紧到“能对账”。提交签名、密钥轮换、
+//! 仓内签名 Merkle 检查点与单事件 inclusion proof 已经接入，但检查点间 consistency proof
+//! 与仓外锚仍是下一层，不在这个模块里假装已经具备。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
