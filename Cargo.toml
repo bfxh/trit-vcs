@@ -16,8 +16,8 @@ path = "src/bin/trit-vcs/main.rs"
 # 三值裁决层与编排内核属于 `bfxh/trit`，**按边界只 pin 不复制**：
 # 复制进来就等于把「哪个是正本」问错了对象（STE/量化/编排同口径）。
 # rev 钉到拆库时的那笔提交，改 pin 要显式提交，不许跟着 main 漂。
-trit-core = { git = "https://github.com/bfxh/trit", rev = "2400fb9d2de751cab358455e3bf622b7a3288f1c", package = "trit-core" }
-trit-orch = { git = "https://github.com/bfxh/trit", rev = "2400fb9d2de751cab358455e3bf622b7a3288f1c", package = "trit-orch" }
+trit-core = { git = "https://github.com/bfxh/trit", rev = "79542df8ad3ffbf598f90cfdc09dc8df0018c144", package = "trit-core" }
+trit-orch = { git = "https://github.com/bfxh/trit", rev = "79542df8ad3ffbf598f90cfdc09dc8df0018c144", package = "trit-orch" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
