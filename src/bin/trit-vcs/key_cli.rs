@@ -12,7 +12,7 @@ use trit_vcs::repo::Repo;
 use trit_vcs::signing::KeyFile;
 
 use super::verdict::fail_err;
-use super::{flag, has, now_secs, positionals, repo_path};
+use super::{flag, has, now_ms, positionals, repo_path};
 
 const USAGE: &str = "key 用法：\n  \
      trit-vcs key [list] [--json] [--repo PATH]\n  \
@@ -119,17 +119,18 @@ fn add(args: &[String]) -> ExitCode {
         Ok(repo) => repo,
         Err(err) => return fail_err(&err, &root, owner, args),
     };
+    let now = now_ms();
     let entry = TrustEntry {
         key_id: key_id.clone(),
         principal: principal.to_string(),
         role: role.to_string(),
-        added_at_ms: now_secs() * 1000,
+        added_at_ms: now,
         public_key,
         rotated_from: None,
         revoked_at_ms: None,
         revoke_reason: None,
     };
-    match repo.add_key(entry, owner, now_secs() * 1000) {
+    match repo.add_key(entry, owner, now) {
         Ok(hash) => {
             if has(args, "--json") {
                 println!(
@@ -165,7 +166,7 @@ fn revoke(args: &[String]) -> ExitCode {
         Ok(repo) => repo,
         Err(err) => return fail_err(&err, &root, owner, args),
     };
-    match repo.revoke_key(key_id, reason, owner, now_secs() * 1000) {
+    match repo.revoke_key(key_id, reason, owner, now_ms()) {
         Ok(hash) => {
             if has(args, "--json") {
                 println!(
@@ -213,7 +214,7 @@ fn rotate(args: &[String]) -> ExitCode {
         Ok(repo) => repo,
         Err(err) => return fail_err(&err, &root, owner, args),
     };
-    let at_ms = now_secs() * 1000;
+    let at_ms = now_ms();
     match repo.rotate_key(&old_key, &new_key, reason, owner, at_ms) {
         Ok(hash) => {
             if has(args, "--json") {

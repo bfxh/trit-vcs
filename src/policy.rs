@@ -18,12 +18,14 @@ impl Repo {
         session: &str,
         at_ms: u64,
     ) -> Result<Hash, RepoError> {
+        let _guard = self.lock_state()?;
         let path = self.root().join(DIR).join("policy.json");
         let session_owned = session.to_string();
         let args = json!({
             "session": session_owned,
             "require_witness": policy.require_witness,
             "require_intent": policy.require_intent,
+            "require_signed_claims": policy.require_signed_claims,
         });
         self.with_operation("policy", args, at_ms, move |repo| {
             let before = repo.state_digest()?.to_hex();
@@ -35,9 +37,11 @@ impl Repo {
             repo.journal_mut().append(
                 "policy",
                 json!({
+                    "schema": "trit-policy-v1",
                     "session": session,
                     "require_witness": policy.require_witness,
                     "require_intent": policy.require_intent,
+                    "require_signed_claims": policy.require_signed_claims,
                     "policy_hash": policy_hash.to_hex(),
                     "state_before": before,
                     "state_after": after,

@@ -100,6 +100,7 @@ fn main() {
         serde_json::to_vec(&Policy {
             require_witness: true,
             require_intent: false,
+            require_signed_claims: false,
         })
         .unwrap(),
     )

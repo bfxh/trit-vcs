@@ -68,6 +68,7 @@ pub fn publish(
         ANCESTOR_CAP,
     )?);
     let transfer = bundle::transfer(client.store(), central.store(), &objects)?;
+    let _guard = central.lock_state()?;
     let previous = central.ref_commit(name)?;
     let mut forced = false;
     if let Some(current) = previous {
@@ -84,7 +85,7 @@ pub fn publish(
             forced = true;
         }
     }
-    central.set_ref(name, &resolved)?;
+    central.set_ref_audited_locked(name, &resolved)?;
     central
         .journal_mut()
         .append(
@@ -119,6 +120,7 @@ pub fn pull(
     let commit_obj = central.commit_at(&commit)?;
     // 走和包传输同一条路：发"过滤后的树清单"，原树整体不进客户端。
     let list = bundle::manifest(central.store(), commit_obj.tree, prefix)?;
+    let _guard = client.lock_state()?;
     if prefix.is_none() {
         // 全量 pull 会动 HEAD 与索引：先判快进、再判"有没有 add 了没 commit 的东西"，
         // 两件都过了才开始写工作树（失败时一个字节都不该动）。
@@ -148,7 +150,7 @@ pub fn pull(
     match prefix {
         None => {
             let paths: Vec<String> = list.entries.keys().cloned().collect();
-            client.adopt(&commit, &list.id, &paths)?;
+            client.adopt_audited_locked(&commit, &list.id, &paths)?;
         }
         Some(prefix) => {
             // 前缀 pull 不挪 HEAD，但要把"只检出了这个范围、基准是这棵树"记下来：
@@ -235,6 +237,33 @@ mod tests {
     fn open_repo(path: &std::path::Path) -> Repo {
         std::fs::create_dir_all(path).unwrap();
         Repo::init(path).unwrap()
+    }
+
+    #[test]
+    fn state_lock_blocks_publish_and_pull() {
+        let root = temp("state-lock");
+        let files = corpus(1, 1);
+        let mut src = open_repo(&root.join("src"));
+        commit_all(&mut src, &files, 1_000);
+        let mut central = open_repo(&root.join("central"));
+        publish(&src, &mut central, "main", None, false).unwrap();
+        let mut client = open_repo(&root.join("client"));
+
+        let guard = crate::claims::lock(central.root()).unwrap();
+        assert!(matches!(
+            publish(&src, &mut central, "main", None, false),
+            Err(CentralError::Repo(RepoError::StateLocked(_)))
+        ));
+        drop(guard);
+
+        let guard = crate::claims::lock(client.root()).unwrap();
+        assert!(matches!(
+            pull(&central, &mut client, "main", Some("gen/d00"), false),
+            Err(CentralError::Repo(RepoError::StateLocked(_)))
+        ));
+        drop(guard);
+        assert!(pull(&central, &mut client, "main", Some("gen/d00"), false).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

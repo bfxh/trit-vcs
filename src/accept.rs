@@ -413,7 +413,7 @@ mod tests {
         )
         .unwrap();
         let outcome = &report.outcomes[0];
-        assert!(outcome.output_excerpt.len() <= 200, "{:?}", outcome);
+        assert!(outcome.output_excerpt.len() <= 200, "{outcome:?}");
         assert!(
             outcome.output_bytes > outcome.output_excerpt.len(),
             "{outcome:?}"

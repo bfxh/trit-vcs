@@ -364,13 +364,14 @@ pub fn merge_audited(
     base: Option<&Hash>,
 ) -> Result<MergeOutcome, MergeError> {
     let at_ms = wall_ms();
+    let _guard = repo.lock_state()?;
     let args = json!({
         "ours": ours.to_hex(),
         "theirs": theirs.to_hex(),
         "base": base.map(|id| id.to_hex()),
     });
     let begin = repo
-        .begin_operation("merge", args, at_ms)
+        .begin_operation_locked("merge", args, at_ms)
         .map_err(MergeError::Repo)?;
     match merge(repo, ours, theirs, base) {
         Ok(outcome) => {
@@ -397,12 +398,12 @@ pub fn merge_audited(
                     at_ms,
                 )
                 .map_err(|err| MergeError::Repo(RepoError::Journal(err)))?;
-            repo.finish_operation(&begin, "merge", "ok", result, at_ms)
+            repo.finish_operation_locked(&begin, "merge", "ok", result, at_ms)
                 .map_err(MergeError::Repo)?;
             Ok(outcome)
         }
         Err(err) => {
-            let _ = repo.finish_operation(
+            let _ = repo.finish_operation_locked(
                 &begin,
                 "merge",
                 "failed",

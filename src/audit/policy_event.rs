@@ -33,6 +33,30 @@ pub(super) fn check_policy(
             format!("第 {} 条 policy 事件缺策略布尔值", event.seq),
         ));
     }
+    let versioned = event.payload.get("schema").and_then(Value::as_str) == Some("trit-policy-v1");
+    if let Some(schema) = event.payload.get("schema")
+        && schema.as_str() != Some("trit-policy-v1")
+    {
+        issues.push(AuditIssue::new(
+            "policy_bad",
+            format!("第 {} 条 policy 事件的 schema 不受支持", event.seq),
+        ));
+    }
+    let signed_claims = event
+        .payload
+        .get("require_signed_claims")
+        .and_then(Value::as_bool);
+    if signed_claims.is_none()
+        && (versioned || event.payload.get("require_signed_claims").is_some())
+    {
+        issues.push(AuditIssue::new(
+            "policy_bad",
+            format!(
+                "第 {} 条 policy 事件的 require_signed_claims 不是布尔值",
+                event.seq
+            ),
+        ));
+    }
     if parse_hash(event.payload.get("policy_hash")).is_none() {
         issues.push(AuditIssue::new(
             "policy_bad",

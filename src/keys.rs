@@ -65,8 +65,7 @@ impl TrustStore {
             return Ok(Self::default());
         }
         let text = fs::read_to_string(&path)?;
-        serde_json::from_str(&text)
-            .map_err(|err| RepoError::BadHead(format!("keys.json: {err}")))
+        serde_json::from_str(&text).map_err(|err| RepoError::BadHead(format!("keys.json: {err}")))
     }
 
     pub fn save(&self, root: &Path) -> Result<Hash, RepoError> {
@@ -137,6 +136,7 @@ impl Repo {
                 ));
             }
         }
+        let _guard = self.lock_state()?;
         let mut store = self.keys()?;
         if store.keys.contains_key(&entry.key_id) {
             return Err(RepoError::BadHead(format!(
@@ -170,6 +170,7 @@ impl Repo {
                         "key_id": key_id,
                         "principal": principal,
                         "role": role,
+                        "public_key": entry.public_key,
                         "session": session,
                         "keystore_hash": keystore_hash.to_hex(),
                         "state_before": before,
@@ -193,6 +194,7 @@ impl Repo {
         validate_key_id(key_id)?;
         validate_text("reason", reason)?;
         validate_text("session", session)?;
+        let _guard = self.lock_state()?;
         let mut store = self.keys()?;
         let Some(entry) = store.keys.get_mut(key_id) else {
             return Err(RepoError::BadHead(format!("key {key_id} 不在信任表")));
@@ -265,6 +267,7 @@ impl Repo {
                 "旧钥和新钥的 key_id 相同，不能轮换".to_string(),
             ));
         }
+        let _guard = self.lock_state()?;
         let mut store = self.keys()?;
         let Some(old_entry) = store.keys.get(&old_key.key_id) else {
             return Err(RepoError::BadHead(format!(

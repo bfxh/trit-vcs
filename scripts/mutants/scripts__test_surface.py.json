@@ -99,6 +99,15 @@
   "runner": "python"
  },
  {
+  "name": "test-surface: tests 子模块不计入测试面",
+  "file": "scripts/test_surface.py",
+  "old": "        sorted(root.glob(\"src/**/*.rs\")) + sorted(root.glob(\"tests/**/*.rs\"))",
+  "new": "        sorted(root.glob(\"src/**/*.rs\")) + sorted(root.glob(\"tests/*.rs\"))",
+  "pkg": "scripts/test_surface.py",
+  "filter": "",
+  "runner": "python"
+ },
+ {
   "name": "test-surface: 警告也算拦（不分两档）",
   "file": "scripts/test_surface.py",
   "old": "        \"red\": any(finding[\"blocking\"] for finding in findings),",

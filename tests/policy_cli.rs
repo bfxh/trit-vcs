@@ -77,6 +77,7 @@ fn policy_set_is_audited_and_manual_edit_is_red() {
         .iter()
         .find(|event| event["kind"] == "policy")
         .expect("策略变更必须留下 policy 事件");
+    assert_eq!(policy_event["payload"]["schema"], "trit-policy-v1");
     assert_eq!(policy_event["payload"]["session"], "qoder:policy");
     assert_eq!(policy_event["payload"]["require_witness"], true);
 

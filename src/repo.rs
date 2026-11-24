@@ -35,6 +35,8 @@ pub enum RepoError {
     Journal(#[from] JournalError),
     #[error("仓库没初始化（找不到 {0}）")]
     NotInitialized(String),
+    #[error("仓库状态写入被锁：{0}")]
+    StateLocked(String),
     #[error("暂存区是空的：先 `add`")]
     NothingStaged,
     #[error("未认领：{paths:?} 没有在效认领覆盖（默认拒绝；要放行加 --allow-unclaimed）")]
@@ -117,6 +119,8 @@ pub struct Policy {
     pub require_witness: bool,
     #[serde(default)]
     pub require_intent: bool,
+    #[serde(default)]
+    pub require_signed_claims: bool,
 }
 
 /// 认领范围已经覆盖的路径折叠成范围本身。
@@ -259,8 +263,7 @@ impl Repo {
         &self.journal
     }
 
-    /// 追加审计事件用（认领账本等跨仓动作要进中央仓的哈希链）。
-    pub fn journal_mut(&mut self) -> &mut Journal {
+    pub(crate) fn journal_mut(&mut self) -> &mut Journal {
         &mut self.journal
     }
 
@@ -305,6 +308,16 @@ impl Repo {
     /// 命名 ref：`.tritvcs/refs/<名字>` 存一个提交 id。
     pub fn set_ref(&mut self, name: &str, commit: &Hash) -> Result<(), RepoError> {
         Self::validate_ref(name)?;
+        let _guard = self.lock_state()?;
+        self.set_ref_audited_locked(name, commit)
+    }
+
+    pub(crate) fn set_ref_audited_locked(
+        &mut self,
+        name: &str,
+        commit: &Hash,
+    ) -> Result<(), RepoError> {
+        Self::validate_ref(name)?;
         let path = Self::dir(&self.root).join("refs").join(name);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -336,6 +349,16 @@ impl Repo {
     /// 提交的树），这样 `status` 与下一次 `commit` 从同一棵树出发，不会把刚拉下来的文件
     /// 全算成"新增未暂存"。
     pub fn adopt(&mut self, commit: &Hash, tree: &Hash, paths: &[String]) -> Result<(), RepoError> {
+        let _guard = self.lock_state()?;
+        self.adopt_audited_locked(commit, tree, paths)
+    }
+
+    pub(crate) fn adopt_audited_locked(
+        &mut self,
+        commit: &Hash,
+        tree: &Hash,
+        paths: &[String],
+    ) -> Result<(), RepoError> {
         let index = Index {
             tree: tree.to_hex(),
             paths: paths.to_vec(),
@@ -447,6 +470,14 @@ impl Repo {
         serde_json::from_str(&text).map_err(|e| RepoError::BadHead(format!("policy.json: {e}")))
     }
 
+    pub(crate) fn lock_state(&self) -> Result<crate::claims::LockGuard, RepoError> {
+        crate::claims::lock(self.root()).map_err(|err| match err {
+            crate::claims::ClaimsError::Locked(path) => RepoError::StateLocked(path),
+            crate::claims::ClaimsError::Io(err) => RepoError::Io(err),
+            other => RepoError::BadHead(other.to_string()),
+        })
+    }
+
     /// 暂存：把给定文件内容入库并写 index（不提交）。
     pub fn stage(
         &mut self,
@@ -454,7 +485,7 @@ impl Repo {
         now_secs: u64,
     ) -> Result<(Hash, PutStats), RepoError> {
         let at_ms = now_secs.saturating_mul(1000);
-        self.with_operation(
+        self.with_operation_locked(
             "stage",
             json!({"paths": files.keys().cloned().collect::<Vec<_>>()}),
             at_ms,
@@ -503,10 +534,11 @@ impl Repo {
 
     /// 提交：判决走 `preflight::decide()`（与 `preflight()` 同一条路），之后才写盘。
     pub fn commit(&mut self, req: CommitRequest) -> Result<CommitOutcome, RepoError> {
+        let _guard = self.lock_state()?;
         let decision = match crate::preflight::decide(self, &req) {
             Ok(decision) => decision,
             Err(err) => {
-                self.record_gate_denied(&req, &err);
+                self.record_gate_denied_locked(&req, &err);
                 return Err(err);
             }
         };

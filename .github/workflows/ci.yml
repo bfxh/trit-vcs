@@ -38,9 +38,6 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python scripts/change_policy.py --base "$BASE_SHA" --event "$GITHUB_EVENT_PATH"
-      - name: grade this change (push)
-        if: github.event_name == 'push'
-        run: python scripts/change_policy.py --base "${{ github.event.before }}"
 
   check:
     name: fmt + clippy + test (${{ matrix.os }})

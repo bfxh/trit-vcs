@@ -4,6 +4,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use serde_json::{Value, json};
+use trit_vcs::hash::Hash;
+use trit_vcs::repo::Repo;
+
+#[path = "claims_cli/flow.rs"]
+mod flow;
+#[path = "claims_cli/tamper.rs"]
+mod tamper;
+
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_trit-vcs")
 }
@@ -36,6 +45,138 @@ fn init(dir: &Path) {
     fs::create_dir_all(dir).unwrap();
     let out = run(dir, &["init"]);
     assert!(out.status.success(), "{}", stderr(&out));
+}
+
+fn path_text(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+fn trust_key(root: &Path, central: &Path, name: &str, principal: &str, role: &str) -> String {
+    let key_path = root.join(name);
+    let key_text = path_text(&key_path);
+    let generated = run(root, &["key", "init", "--out", &key_text, "--json"]);
+    assert!(generated.status.success(), "{}", stderr(&generated));
+    let value: Value = serde_json::from_str(&stdout(&generated)).unwrap();
+    let key_id = value["key_id"].as_str().unwrap().to_string();
+    let central_text = path_text(central);
+    let added = run(
+        root,
+        &[
+            "key",
+            "add",
+            "--key-file",
+            &key_text,
+            "--principal",
+            principal,
+            "--role",
+            role,
+            "--owner",
+            "qoder:key-admin",
+            "--repo",
+            &central_text,
+            "--json",
+        ],
+    );
+    assert!(added.status.success(), "{}", stderr(&added));
+    key_id
+}
+
+fn audit_report(central: &Path) -> Value {
+    let output = run(central, &["audit", "--json"]);
+    serde_json::from_str(&stdout(&output)).unwrap()
+}
+
+fn audit(central: &Path) -> Value {
+    let report = audit_report(central);
+    assert!(report["ok"].as_bool().unwrap(), "{report}");
+    report
+}
+
+fn has_issue(report: &Value, kind: &str) -> bool {
+    report["issues"]
+        .as_array()
+        .is_some_and(|issues| issues.iter().any(|issue| issue["kind"] == kind))
+}
+
+fn journal_events(central: &Path) -> Vec<Value> {
+    let text = fs::read_to_string(central.join(".tritvcs").join("journal.jsonl")).unwrap();
+    text.lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn event_index(events: &[Value], kind: &str) -> usize {
+    events
+        .iter()
+        .position(|event| event["kind"] == kind)
+        .unwrap_or_else(|| panic!("缺 {kind} 事件"))
+}
+
+fn value_hash(value: &Value) -> Hash {
+    let bytes: [u8; 32] = value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|byte| byte.as_u64().unwrap() as u8)
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    Hash::from_bytes(bytes)
+}
+
+fn event_hash(event: &Value, index: usize, previous: Option<Hash>) -> Hash {
+    let previous_hex = previous
+        .map(|hash| hash.to_hex())
+        .unwrap_or_else(|| "-".to_string());
+    let body = format!(
+        "{index}\n{}\n{}\n{}\n{previous_hex}",
+        event["at_ms"].as_u64().unwrap(),
+        event["kind"].as_str().unwrap(),
+        serde_json::to_string(&event["payload"]).unwrap(),
+    );
+    Hash::of(body.as_bytes())
+}
+
+fn rechain(events: &mut [Value]) {
+    let mut previous: Option<Hash> = None;
+    for (index, event) in events.iter_mut().enumerate() {
+        event["seq"] = json!(index);
+        let hash = event_hash(event, index, previous);
+        event["prev"] = previous
+            .map(|previous| json!(previous.as_bytes().to_vec()))
+            .unwrap_or(Value::Null);
+        event["hash"] = json!(hash.as_bytes().to_vec());
+        if let Some(object) = event.as_object_mut() {
+            object.remove("previous");
+        }
+        previous = Some(hash);
+    }
+}
+
+fn rewrite_journal(central: &Path, baseline: &Path, mutate: impl FnOnce(&mut Vec<Value>)) {
+    let text = fs::read_to_string(baseline).unwrap();
+    let mut events: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    mutate(&mut events);
+    rechain(&mut events);
+    let mut output = String::new();
+    for event in &events {
+        output.push_str(&serde_json::to_string(event).unwrap());
+        output.push('\n');
+    }
+    fs::write(central.join(".tritvcs").join("journal.jsonl"), output).unwrap();
+}
+
+fn sync_latest_state(central: &Path, events: &mut [Value]) {
+    let digest = Repo::open(central)
+        .unwrap()
+        .state_digest()
+        .unwrap()
+        .to_hex();
+    let last = events.last_mut().unwrap();
+    last["payload"]["state_after"] = json!(digest);
 }
 
 #[test]
@@ -80,7 +221,7 @@ fn shared_claim_ledger_gates_two_worktrees() {
     );
     let listed_value: serde_json::Value = serde_json::from_str(&stdout(&listed)).unwrap();
     assert_eq!(listed_value["claims"].as_array().unwrap().len(), 1);
-    assert_eq!(listed_value["claims"][0]["id"], "c1");
+    assert_eq!(listed_value["claims"][0]["owner"], "qoder:a");
 
     // 2) 另一个 owner 碰同一路径：拒绝并点名（不是静默覆盖）。
     let blocked = run(

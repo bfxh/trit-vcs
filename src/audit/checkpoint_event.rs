@@ -291,8 +291,7 @@ fn check_operation_link(
     let result_ok = result.kind == "op_result"
         && result.payload.get("op").and_then(Value::as_str) == Some("checkpoint")
         && result.payload.get("begin").and_then(Value::as_u64) == Some(begin.seq)
-        && result.payload.get("begin_hash").and_then(Value::as_str)
-            == Some(begin_hash.as_str())
+        && result.payload.get("begin_hash").and_then(Value::as_str) == Some(begin_hash.as_str())
         && result.payload.get("status").and_then(Value::as_str) == Some("ok")
         && parse_hash(result.payload.get("state_after"))
             == parse_hash(event.payload.get("state_after"));

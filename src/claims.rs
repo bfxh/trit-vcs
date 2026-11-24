@@ -19,6 +19,8 @@ use crate::hash::Hash;
 use crate::remediation::{Context, Remediable, VCS};
 use crate::repo::{DIR, Repo};
 
+pub(crate) mod signing;
+
 pub const FILE: &str = "claims.json";
 pub const LOCK: &str = "claims.lock";
 pub const MIN_TTL_SECS: u64 = 1;
@@ -95,6 +97,10 @@ pub enum ClaimsError {
         others: Vec<String>,
         paths: Vec<String>,
     },
+    #[error("中央仓策略要求认领操作带 --sign-key")]
+    SignatureRequired,
+    #[error("认领签名被拒绝：{0}")]
+    Signature(String),
     #[error("中央仓: {0}")]
     Repo(#[from] crate::repo::RepoError),
     #[error("事件日志: {0}")]
@@ -114,6 +120,8 @@ impl Remediable for ClaimsError {
                 "claims_bad_request"
             }
             Self::Conflict { .. } => "claims_conflict",
+            Self::SignatureRequired => "claims_signature_required",
+            Self::Signature(_) => "claims_signature_rejected",
         }
     }
 
@@ -148,6 +156,15 @@ impl Remediable for ClaimsError {
                     "{VCS} claims add --central {central} --id c1 --owner <宿主:会话id> --path src/x.rs --ttl 900"
                 )]
             }
+            Self::SignatureRequired => vec![format!(
+                "{VCS} claims add --central {central} --id c1 --owner <principal> --path src/x.rs --sign-key <私钥文件>"
+            )],
+            Self::Signature(_) => vec![
+                format!("{VCS} key list --repo {central} --json"),
+                format!(
+                    "{VCS} claims add --central {central} --id c1 --owner <与 principal 相同> --path src/x.rs --sign-key <私钥文件>"
+                ),
+            ],
             Self::Io(_) | Self::Repo(_) | Self::Journal(_) => vec![
                 format!("{VCS} claims list --central {central}"),
                 "确认 --central 指向中央仓目录（不是客户端仓）".to_string(),
@@ -193,6 +210,24 @@ pub fn list(central: &Path, now: u64, all: bool) -> Result<Vec<ClaimSpec>, Claim
 
 /// 新增/续期。同一个 id + 同一个 owner 视为续期（路径整体替换、到期时间重算）。
 pub fn add(central: &Path, request: NewClaim<'_>, now: u64) -> Result<ClaimSpec, ClaimsError> {
+    add_inner(central, request, None, now)
+}
+
+pub fn add_signed(
+    central: &Path,
+    request: NewClaim<'_>,
+    key_path: &Path,
+    now: u64,
+) -> Result<ClaimSpec, ClaimsError> {
+    add_inner(central, request, Some(key_path), now)
+}
+
+fn add_inner(
+    central: &Path,
+    request: NewClaim<'_>,
+    key_path: Option<&Path>,
+    now: u64,
+) -> Result<ClaimSpec, ClaimsError> {
     validate_id(request.id)?;
     validate_owner(request.owner)?;
     if !(MIN_TTL_SECS..=MAX_TTL_SECS).contains(&request.ttl_secs) {
@@ -253,8 +288,9 @@ pub fn add(central: &Path, request: NewClaim<'_>, now: u64) -> Result<ClaimSpec,
     }
     claims.push(spec.clone());
     let mut repo = Repo::init(central)?;
+    let signer = prepare_signer(&repo, request.owner, key_path)?;
     let at_ms = claim_at_ms(now);
-    let begin = repo.begin_operation(
+    let begin = repo.begin_operation_locked(
         "claim_add",
         json!({
             "id": spec.id.clone(),
@@ -266,7 +302,7 @@ pub fn add(central: &Path, request: NewClaim<'_>, now: u64) -> Result<ClaimSpec,
         at_ms,
     )?;
     if let Err(err) = write_ledger(central, &claims) {
-        let _ = repo.finish_operation(
+        let _ = repo.finish_operation_locked(
             &begin,
             "claim_add",
             "failed",
@@ -275,12 +311,39 @@ pub fn add(central: &Path, request: NewClaim<'_>, now: u64) -> Result<ClaimSpec,
         );
         return Err(err);
     }
-    finish_claim(&mut repo, &begin, "claim_add", &spec, at_ms)?;
+    finish_claim(
+        &mut repo,
+        &begin,
+        "claim_add",
+        &spec,
+        signer.as_ref(),
+        at_ms,
+    )?;
     Ok(spec)
 }
 
 /// 释放认领；只有 owner 本人能释放（替别人 release 是另一种"把工作甩掉"）。
 pub fn release(central: &Path, id: &str, owner: &str, now: u64) -> Result<ClaimSpec, ClaimsError> {
+    release_inner(central, id, owner, None, now)
+}
+
+pub fn release_signed(
+    central: &Path,
+    id: &str,
+    owner: &str,
+    key_path: &Path,
+    now: u64,
+) -> Result<ClaimSpec, ClaimsError> {
+    release_inner(central, id, owner, Some(key_path), now)
+}
+
+fn release_inner(
+    central: &Path,
+    id: &str,
+    owner: &str,
+    key_path: Option<&Path>,
+    now: u64,
+) -> Result<ClaimSpec, ClaimsError> {
     validate_id(id)?;
     validate_owner(owner)?;
     let _guard = lock(central)?;
@@ -296,8 +359,9 @@ pub fn release(central: &Path, id: &str, owner: &str, now: u64) -> Result<ClaimS
     }
     let spec = claims.remove(index);
     let mut repo = Repo::init(central)?;
+    let signer = prepare_signer(&repo, owner, key_path)?;
     let at_ms = claim_at_ms(now);
-    let begin = repo.begin_operation(
+    let begin = repo.begin_operation_locked(
         "claim_release",
         json!({
             "id": spec.id.clone(),
@@ -308,7 +372,7 @@ pub fn release(central: &Path, id: &str, owner: &str, now: u64) -> Result<ClaimS
         at_ms,
     )?;
     if let Err(err) = write_ledger(central, &claims) {
-        let _ = repo.finish_operation(
+        let _ = repo.finish_operation_locked(
             &begin,
             "claim_release",
             "failed",
@@ -317,7 +381,14 @@ pub fn release(central: &Path, id: &str, owner: &str, now: u64) -> Result<ClaimS
         );
         return Err(err);
     }
-    finish_claim(&mut repo, &begin, "claim_release", &spec, at_ms)?;
+    finish_claim(
+        &mut repo,
+        &begin,
+        "claim_release",
+        &spec,
+        signer.as_ref(),
+        at_ms,
+    )?;
     Ok(spec)
 }
 
@@ -395,32 +466,73 @@ fn claim_at_ms(now: u64) -> u64 {
     wall.max(now.saturating_mul(1000))
 }
 
-/// 认领动作的统一收口：先记 `claim_add/claim_release` 事件（带 state_after），再记 `op_result`。
+fn prepare_signer(
+    repo: &Repo,
+    owner: &str,
+    key_path: Option<&Path>,
+) -> Result<Option<signing::Signer>, ClaimsError> {
+    if repo.policy()?.require_signed_claims && key_path.is_none() {
+        return Err(ClaimsError::SignatureRequired);
+    }
+    key_path
+        .map(|path| signing::Signer::load(repo, path, owner))
+        .transpose()
+}
+
+/// 认领动作的统一收口：先记 `claim_add/claim_release` 事件（带 state_after），再记
+/// 可选签名与 `op_result`。签名不改变状态，也不改变账本 JSON 形状。
 fn finish_claim(
     repo: &mut Repo,
     begin: &crate::journal::Event,
     kind: &str,
     spec: &ClaimSpec,
+    signer: Option<&signing::Signer>,
     at_ms: u64,
 ) -> Result<(), ClaimsError> {
-    let state_after = repo.state_digest()?.to_hex();
-    repo.journal_mut().append(
+    let state_after = repo.state_digest()?;
+    let state_after_hex = state_after.to_hex();
+    let mut signature = match signer {
+        Some(signer) => match signer.sign(kind, spec, begin, state_after, at_ms) {
+            Ok(signature) => Some(signature),
+            Err(err) => {
+                let _ = repo.finish_operation_locked(
+                    begin,
+                    kind,
+                    "failed",
+                    json!({"error": err.to_string()}),
+                    at_ms,
+                );
+                return Err(err);
+            }
+        },
+        None => None,
+    };
+    let claim_event = repo.journal_mut().append(
         kind,
         json!({
+            "operation": begin.hash.to_hex(),
             "id": spec.id.clone(),
             "owner": spec.owner.clone(),
             "paths": spec.paths.len(),
             "path_list": spec.paths.clone(),
+            "acquired_at": spec.acquired_at,
             "expires_at": spec.expires_at,
-            "state_after": state_after,
+            "claim": spec,
+            "signed": signer.is_some(),
+            "state_after": state_after_hex,
         }),
         at_ms,
     )?;
-    repo.finish_operation(begin, kind, "ok", json!({}), at_ms)?;
+    if let Some(signature) = &mut signature {
+        signature["claim_event"] = json!(claim_event.hash.to_hex());
+        repo.journal_mut()
+            .append(signing::EVENT_KIND, signature.clone(), at_ms)?;
+    }
+    repo.finish_operation_locked(begin, kind, "ok", json!({}), at_ms)?;
     Ok(())
 }
 
-struct LockGuard {
+pub(crate) struct LockGuard {
     path: PathBuf,
 }
 
@@ -430,7 +542,7 @@ impl Drop for LockGuard {
     }
 }
 
-fn lock(central: &Path) -> Result<LockGuard, ClaimsError> {
+pub(crate) fn lock(central: &Path) -> Result<LockGuard, ClaimsError> {
     let path = central.join(DIR).join(LOCK);
     fs::create_dir_all(path.parent().expect("锁路径一定有父目录"))?;
     match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -455,6 +567,7 @@ pub fn digest(claims: &[ClaimSpec]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signing::KeyFile;
 
     fn temp(name: &str) -> PathBuf {
         let dir =
@@ -575,5 +688,98 @@ mod tests {
         ));
         drop(guard);
         assert!(add_one(&central, "c1", "qoder:s1", "a", 100).is_ok());
+
+        let mut repo = Repo::open(&central).unwrap();
+        let guard = lock(&central).unwrap();
+        let commit = Hash::of(b"locked-commit");
+        let tree = Hash::of(b"locked-tree");
+        let files = std::collections::BTreeMap::from([("a.rs".to_string(), b"a".to_vec())]);
+        assert!(matches!(
+            repo.stage(&files, 2_000),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        assert!(matches!(
+            repo.set_ref("main", &commit),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        assert!(matches!(
+            repo.adopt(&commit, &tree, &["a.rs".to_string()]),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        assert!(matches!(
+            repo.commit(crate::repo::CommitRequest {
+                allow_unclaimed: true,
+                now_secs: 2,
+                ..Default::default()
+            }),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        assert!(matches!(
+            crate::merge::merge_audited(&mut repo, &commit, &commit, None),
+            Err(crate::merge::MergeError::Repo(
+                crate::repo::RepoError::StateLocked(_)
+            ))
+        ));
+        let receipt = crate::accept::AcceptReceipt {
+            schema: crate::accept::AcceptReceipt::SCHEMA,
+            tree,
+            base: None,
+            session: "qoder:lock".to_string(),
+            claim_ids: Vec::new(),
+            outcomes: Vec::new(),
+            passed: true,
+            at_secs: 2,
+        };
+        assert!(matches!(
+            repo.record_accept(&receipt),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        let policy = crate::repo::Policy {
+            require_signed_claims: true,
+            ..Default::default()
+        };
+        assert!(matches!(
+            repo.set_policy(&policy, "qoder:admin", 1_000),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        drop(guard);
+        repo.set_policy(&policy, "qoder:admin", 1_000).unwrap();
+
+        let old = KeyFile::generate().unwrap();
+        let new = KeyFile::generate().unwrap();
+        let entry = crate::keys::TrustEntry {
+            key_id: old.key_id.clone(),
+            principal: "qoder:lock".to_string(),
+            role: "author".to_string(),
+            added_at_ms: 1_001,
+            public_key: Some(old.public.clone()),
+            rotated_from: None,
+            revoked_at_ms: None,
+            revoke_reason: None,
+        };
+        let missing_key = central.join("missing.key");
+        let guard = lock(&central).unwrap();
+        assert!(matches!(
+            repo.add_key(entry.clone(), "qoder:lock", 1_001),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        assert!(matches!(
+            repo.revoke_key(&old.key_id, "test", "qoder:lock", 1_002),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        assert!(matches!(
+            repo.rotate_key(&old, &new, "test", "qoder:lock", 1_002),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        assert!(matches!(
+            repo.sign_commit(&Hash::of(b"locked"), &missing_key, "qoder:lock", 1_002),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        assert!(matches!(
+            repo.checkpoint(&missing_key, "qoder:lock", 1_002),
+            Err(crate::repo::RepoError::StateLocked(_))
+        ));
+        drop(guard);
+        repo.add_key(entry, "qoder:lock", 1_001).unwrap();
     }
 }

@@ -12,8 +12,8 @@ use super::verdict::fail_err;
 use super::{fail, flag, flags, has, now_secs, positionals};
 
 const USAGE: &str = "claims 用法：\n  \
-     trit-vcs claims add --central PATH --id ID --owner <宿主:会话id> --path P... [--ttl 秒] [--json]\n  \
-     trit-vcs claims release --central PATH --id ID --owner <宿主:会话id> [--json]\n  \
+     trit-vcs claims add --central PATH --id ID --owner <宿主:会话id> --path P... [--ttl 秒] [--sign-key FILE] [--json]\n  \
+     trit-vcs claims release --central PATH --id ID --owner <宿主:会话id> [--sign-key FILE] [--json]\n  \
      trit-vcs claims list --central PATH [--all] [--json]\n  \
      trit-vcs claims export --central PATH --out FILE";
 
@@ -26,6 +26,17 @@ fn required<'a>(args: &'a [String], name: &str) -> Result<&'a str, ExitCode> {
         eprintln!("{name} 是必填");
         ExitCode::from(2)
     })
+}
+
+fn sign_key_path(args: &[String]) -> Result<Option<&Path>, ExitCode> {
+    let Some(index) = args.iter().position(|arg| arg == "--sign-key") else {
+        return Ok(None);
+    };
+    let Some(value) = args.get(index + 1).filter(|value| !value.starts_with("--")) else {
+        eprintln!("--sign-key 需要 <私钥文件>");
+        return Err(ExitCode::from(2));
+    };
+    Ok(Some(Path::new(value)))
 }
 
 fn print_json(value: &serde_json::Value) -> ExitCode {
@@ -43,7 +54,15 @@ pub(crate) fn claims_cmd(args: &[String]) -> ExitCode {
     };
     let words = positionals(
         args,
-        &["--central", "--id", "--owner", "--path", "--ttl", "--out"],
+        &[
+            "--central",
+            "--id",
+            "--owner",
+            "--path",
+            "--ttl",
+            "--out",
+            "--sign-key",
+        ],
     );
     let Some(action) = words.first().map(String::as_str) else {
         eprintln!("{USAGE}");
@@ -72,16 +91,34 @@ pub(crate) fn claims_cmd(args: &[String]) -> ExitCode {
                 },
                 None => 900,
             };
-            match claims::add(
-                &central,
-                NewClaim {
-                    id,
-                    owner,
-                    paths,
-                    ttl_secs: ttl,
-                },
-                now,
-            ) {
+            let sign_key = match sign_key_path(args) {
+                Ok(path) => path,
+                Err(code) => return code,
+            };
+            let result = match sign_key {
+                Some(path) => claims::add_signed(
+                    &central,
+                    NewClaim {
+                        id,
+                        owner,
+                        paths,
+                        ttl_secs: ttl,
+                    },
+                    Path::new(path),
+                    now,
+                ),
+                None => claims::add(
+                    &central,
+                    NewClaim {
+                        id,
+                        owner,
+                        paths,
+                        ttl_secs: ttl,
+                    },
+                    now,
+                ),
+            };
+            match result {
                 Ok(spec) => {
                     if has(args, "--json") {
                         return print_json(&serde_json::json!({
@@ -112,7 +149,15 @@ pub(crate) fn claims_cmd(args: &[String]) -> ExitCode {
                 Ok(value) => value,
                 Err(code) => return code,
             };
-            match claims::release(&central, id, owner, now) {
+            let sign_key = match sign_key_path(args) {
+                Ok(path) => path,
+                Err(code) => return code,
+            };
+            let result = match sign_key {
+                Some(path) => claims::release_signed(&central, id, owner, path, now),
+                None => claims::release(&central, id, owner, now),
+            };
+            match result {
                 Ok(spec) => {
                     if has(args, "--json") {
                         return print_json(&serde_json::json!({"ok": true, "released": spec}));

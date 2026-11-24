@@ -13,7 +13,7 @@ use super::{flag, has, now_secs, positionals, repo_path};
 
 const USAGE: &str = "policy 用法：\n  \
      trit-vcs policy [--json] [--repo PATH]\n  \
-     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--json] [--repo PATH]";
+     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--json] [--repo PATH]";
 
 fn show(repo: &Repo, args: &[String]) -> ExitCode {
     let policy = match repo.policy() {
@@ -26,12 +26,14 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
             serde_json::to_string_pretty(&json!({
                 "require_witness": policy.require_witness,
                 "require_intent": policy.require_intent,
+                "require_signed_claims": policy.require_signed_claims,
             }))
             .unwrap_or_else(|_| "{}".to_string())
         );
     } else {
         println!("require_witness={}", policy.require_witness);
         println!("require_intent={}", policy.require_intent);
+        println!("require_signed_claims={}", policy.require_signed_claims);
     }
     ExitCode::SUCCESS
 }
@@ -46,6 +48,7 @@ fn set(args: &[String]) -> ExitCode {
     let policy = Policy {
         require_witness: has(args, "--require-witness"),
         require_intent: has(args, "--require-intent"),
+        require_signed_claims: has(args, "--require-signed-claims"),
     };
     let mut repo = match Repo::open(&root) {
         Ok(repo) => repo,
@@ -59,15 +62,17 @@ fn set(args: &[String]) -> ExitCode {
                     serde_json::to_string_pretty(&json!({
                         "require_witness": policy.require_witness,
                         "require_intent": policy.require_intent,
+                        "require_signed_claims": policy.require_signed_claims,
                         "policy": hash.to_hex(),
                     }))
                     .unwrap_or_else(|_| "{}".to_string())
                 );
             } else {
                 println!(
-                    "策略已更新：require_witness={} require_intent={}（policy {}）",
+                    "策略已更新：require_witness={} require_intent={} require_signed_claims={}（policy {}）",
                     policy.require_witness,
                     policy.require_intent,
+                    policy.require_signed_claims,
                     hash.short()
                 );
             }

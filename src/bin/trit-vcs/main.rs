@@ -40,6 +40,13 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn usage() -> ExitCode {
     eprintln!(
         "用法：\n  \
@@ -66,12 +73,12 @@ fn usage() -> ExitCode {
          trit-vcs status [--prefix DIR] [--json] [--budget N] [--repo PATH]\n  \
          trit-vcs sparse [--json] [--repo PATH]\n  \
          trit-vcs sparse --clear [--repo PATH]\n  \
-         trit-vcs claims add --central PATH --id ID --owner <宿主:会话id> --path P... [--ttl 秒]\n  \
-         trit-vcs claims release --central PATH --id ID --owner <宿主:会话id>\n  \
+         trit-vcs claims add --central PATH --id ID --owner <宿主:会话id> --path P... [--ttl 秒] [--sign-key FILE]\n  \
+         trit-vcs claims release --central PATH --id ID --owner <宿主:会话id> [--sign-key FILE]\n  \
          trit-vcs claims list --central PATH [--all] [--json]\n  \
          trit-vcs claims export --central PATH --out FILE\n  \
          trit-vcs policy [--json] [--repo PATH]\n  \
-         trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--json] [--repo PATH]\n  \
+         trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--json] [--repo PATH]\n  \
          trit-vcs key [list] [--json] [--repo PATH]\n  \
          trit-vcs key add --key-id <指纹> --principal <主体> [--role author|auditor|release|reader] --owner <宿主:会话id> [--json] [--repo PATH]\n  \
          trit-vcs key revoke --key-id <指纹> --reason <原因> --owner <宿主:会话id> [--json] [--repo PATH]\n  \
@@ -81,9 +88,13 @@ fn usage() -> ExitCode {
          trit-vcs tests <路径/测试/标签> --techmap FILE\n  \
          trit-vcs explain <提交id> [--techmap FILE] [--json] [--repo PATH]\n  \
          trit-vcs verify [--repo PATH]\n  \
-         trit-vcs audit [status|verify|reconcile] [--json] [--repo PATH]\n  \
+         trit-vcs audit [status|verify|reconcile] [--anchor FILE] [--json] [--repo PATH]\n  \
          trit-vcs audit checkpoint --key-file <私钥文件> --owner <宿主:会话id> [--json] [--repo PATH]\n  \
          trit-vcs audit proof --checkpoint <seq> --event <seq> [--json] [--repo PATH]\n  \
+         trit-vcs audit consistency --from <seq> --to <seq> [--out FILE] [--json] [--repo PATH]\n  \
+         trit-vcs audit verify-consistency --from <seq> --to <seq> --proof FILE [--json] [--repo PATH]\n  \
+         trit-vcs audit anchor --checkpoint <seq> --out FILE [--json] [--repo PATH]\n  \
+         trit-vcs audit verify-anchor --anchor FILE [--json] [--repo PATH]\n  \
          trit-vcs audit log [事件类型] [--from N] [--to N] [--json] [--repo PATH]\n  \
          trit-vcs audit show <序号> [--json] [--repo PATH]\n  \
          trit-vcs stats [--repo PATH]"
@@ -232,10 +243,7 @@ fn main() -> ExitCode {
                         ) {
                             Ok(signature) => Some(signature),
                             Err(err) => {
-                                eprintln!(
-                                    "提交 {} 已写入，但签名失败：{err}",
-                                    outcome.id.short()
-                                );
+                                eprintln!("提交 {} 已写入，但签名失败：{err}", outcome.id.short());
                                 return fail_repo(&err, repo.root(), owner, &args);
                             }
                         }

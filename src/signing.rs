@@ -130,10 +130,12 @@ impl Repo {
         if session.trim().is_empty() || session.chars().any(char::is_control) {
             return Err(RepoError::BadHead("session 不能为空".to_string()));
         }
+        let _guard = self.lock_state()?;
         let key = KeyFile::load(key_path)?;
         let bytes = self.store().get_chunk(commit)?;
-        Commit::decode(&bytes)
-            .map_err(|err| RepoError::BadHead(format!("提交 {} 不是合法提交：{err}", commit.short())))?;
+        Commit::decode(&bytes).map_err(|err| {
+            RepoError::BadHead(format!("提交 {} 不是合法提交：{err}", commit.short()))
+        })?;
         let keys = self.keys()?;
         let Some(entry) = keys.keys.get(&key.key_id) else {
             return Err(RepoError::BadHead(format!(
@@ -218,10 +220,7 @@ fn encode_hex<const N: usize>(bytes: &[u8; N]) -> String {
 
 fn decode_hex<const N: usize>(text: &str, field: &str) -> Result<[u8; N], RepoError> {
     if text.len() != N * 2 || !text.is_ascii() {
-        return Err(RepoError::BadHead(format!(
-            "{field} 必须是 {} 字节 hex",
-            N
-        )));
+        return Err(RepoError::BadHead(format!("{field} 必须是 {N} 字节 hex")));
     }
     let mut out = [0u8; N];
     for (index, chunk) in text.as_bytes().chunks(2).enumerate() {
@@ -248,10 +247,8 @@ mod tests {
     use crate::repo::CommitRequest;
 
     fn temp(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "trit-vcs-signing-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("trit-vcs-signing-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
     }
@@ -346,4 +343,3 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 }
-

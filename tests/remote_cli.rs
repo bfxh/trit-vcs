@@ -82,7 +82,7 @@ fn serve(root: &Path, token_file: &Path) -> ServerProc {
             let _ = pipe.read_to_string(&mut text);
             text
         });
-        panic!("serve 没打印地址：{line}｜stderr {:?}", err);
+        panic!("serve 没打印地址：{line}｜stderr {err:?}");
     };
     let base = rest
         .split('（')

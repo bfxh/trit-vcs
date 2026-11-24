@@ -214,6 +214,7 @@ pub fn accept_publish(
         other => other.into(),
     })?;
     ensure_tree_present(central.store(), &commit.tree)?;
+    let _guard = central.lock_state()?;
     let previous = central.ref_commit(name)?;
     if let Some(current) = previous
         && current != *tip
@@ -233,7 +234,7 @@ pub fn accept_publish(
             .into());
         }
     }
-    central.set_ref(name, tip)?;
+    central.set_ref_audited_locked(name, tip)?;
     Ok(previous)
 }
 
@@ -345,6 +346,7 @@ fn apply_pull(
         )));
     }
     ensure_tree_present(repo.store(), &reply.manifest)?;
+    let _guard = repo.lock_state()?;
     if prefix.is_none() {
         check_fast_forward(repo, reply.tip, name, force)?;
         if !force && let Some(paths) = repo.staged_paths()? {
@@ -354,7 +356,7 @@ fn apply_pull(
     let stats = worktree::materialize(repo.store(), &reply.manifest, repo.root(), prefix, force)?;
     if prefix.is_none() {
         let paths: Vec<String> = entries.keys().cloned().collect();
-        repo.adopt(&reply.tip, &reply.manifest, &paths)?;
+        repo.adopt_audited_locked(&reply.tip, &reply.manifest, &paths)?;
     } else if let Some(prefix) = prefix {
         let index = crate::sparse::SparseIndex::new(prefix, reply.manifest, Some(reply.tip))
             .map_err(WorktreeError::Sparse)?;
@@ -731,6 +733,42 @@ mod tests {
             src.head().unwrap().unwrap(),
             "被拒的 publish 不该把 ref 挪走"
         );
+        server.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_lock_blocks_publish_and_pull() {
+        let root = temp("state-lock");
+        let mut src = Repo::init(root.join("src")).unwrap();
+        let files = BTreeMap::from([("gen/d00/a.txt".to_string(), b"a\n".to_vec())]);
+        let tip = commit_all(&mut src, &files, 1_000);
+        let server = start(&root);
+        let remote = format!("http://{}", server.addr());
+        publish_to(&remote, TOKEN, &src, "main", None).unwrap();
+
+        let mut central = Repo::open(root.join("central")).unwrap();
+        let guard = crate::claims::lock(central.root()).unwrap();
+        assert!(matches!(
+            accept_publish(&mut central, "main", &tip),
+            Err(RemoteError::Repo(RepoError::StateLocked(_)))
+        ));
+        drop(guard);
+
+        let client_dir = root.join("client");
+        std::fs::create_dir_all(&client_dir).unwrap();
+        let mut client = Repo::init(&client_dir).unwrap();
+        let network = Client::new(&remote, TOKEN).unwrap();
+        let reply = network
+            .pull("main", Some("gen/d00"), client.store(), Limits::default())
+            .unwrap();
+        let guard = crate::claims::lock(client.root()).unwrap();
+        assert!(matches!(
+            apply_pull(&mut client, &reply, Some("gen/d00"), false, "main"),
+            Err(RemoteError::Repo(RepoError::StateLocked(_)))
+        ));
+        drop(guard);
+        assert!(apply_pull(&mut client, &reply, Some("gen/d00"), false, "main").is_ok());
         server.shutdown();
         let _ = std::fs::remove_dir_all(&root);
     }

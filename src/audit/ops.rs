@@ -116,6 +116,9 @@ pub(super) fn check_operations(
                     )),
                 }
             }
+            "claim_signature" => {
+                // sidecar 绑定所引用的操作，不参与相邻事件的状态连续性。
+            }
             _ => {
                 if let Some(before) = parse_hash(event.payload.get("state_before"))
                     && let Some(last) = &last_state

@@ -21,12 +21,23 @@ pub(super) fn attempt_should_be_logged(request: &Request) -> bool {
 
 pub(super) fn record_denied(state: &Arc<State>, request: &Request, reason: &str) {
     let Ok(mut repo) = state.repo.lock() else {
+        eprintln!("trit-vcs: 鉴权拒绝事件无法落账：服务器仓库锁中毒");
         return;
     };
     let at_ms = wall_ms();
-    let state_before = repo.state_digest().ok().map(|digest| digest.to_hex());
+    let Ok(_guard) = repo.lock_state() else {
+        eprintln!("trit-vcs: 鉴权拒绝事件无法落账：仓库状态锁不可用");
+        return;
+    };
+    let state_before = match repo.state_digest() {
+        Ok(digest) => digest.to_hex(),
+        Err(err) => {
+            eprintln!("trit-vcs: 鉴权拒绝事件无法落账：状态摘要失败：{err}");
+            return;
+        }
+    };
     let state_after = state_before.clone();
-    let _ = repo.journal_mut().append(
+    if let Err(err) = repo.append_audit_locked(
         "auth",
         serde_json::json!({
             "action": "auth",
@@ -39,5 +50,7 @@ pub(super) fn record_denied(state: &Arc<State>, request: &Request, reason: &str)
             "state_after": state_after,
         }),
         at_ms,
-    );
+    ) {
+        eprintln!("trit-vcs: 鉴权拒绝事件无法落账：{err}");
+    }
 }

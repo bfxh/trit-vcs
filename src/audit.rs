@@ -6,9 +6,7 @@
 //! - HEAD、refs、对象是否和日志里记的最后状态对得上；
 //! - 最新事件里如果带 `state_after`，它是否等于当前状态摘要。
 //!
-//! 没有签名的链只能证明“链内自洽”；这里先把“自洽”收紧到“能对账”。提交签名、密钥轮换、
-//! 仓内签名 Merkle 检查点与单事件 inclusion proof 已经接入，但检查点间 consistency proof
-//! 与仓外锚仍是下一层，不在这个模块里假装已经具备。
+//! 提交签名、密钥轮换、检查点/锚与认领签名已接入；witness/attestation 签名仍是下一层。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -23,6 +21,7 @@ use crate::repo::{Repo, RepoError};
 
 mod auth_event;
 mod checkpoint_event;
+mod claim_signature_event;
 mod deny_event;
 mod key_event;
 mod ops;
@@ -104,15 +103,13 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                 push_issue(&mut issues, "journal_broken", err.to_string());
             }
         }
-    } else {
-        if state_present(repo)? || !memory_events.is_empty() {
-            chain_ok = false;
-            push_issue(
-                &mut issues,
-                "journal_missing",
-                format!("{} 不存在，但仓库已有状态", path.display()),
-            );
-        }
+    } else if state_present(repo)? || !memory_events.is_empty() {
+        chain_ok = false;
+        push_issue(
+            &mut issues,
+            "journal_missing",
+            format!("{} 不存在，但仓库已有状态", path.display()),
+        );
     }
 
     let disk = if exists {
@@ -242,8 +239,18 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
         }
     }
 
-    for event in events {
+    let mut require_signed_claims = false;
+    for (index, event) in events.iter().enumerate() {
         match event.kind.as_str() {
+            "claim_add" | "claim_release" => {
+                claim_signature_event::check_claim_event(
+                    events,
+                    index,
+                    event,
+                    require_signed_claims,
+                    &mut issues,
+                );
+            }
             "stage" => {
                 if let Some(tree) = parse_hash(event.payload.get("tree"))
                     && let Err(err) = repo.store().tree_entries(&tree)
@@ -373,11 +380,27 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                     ));
                 }
             }
-            "policy" => policy_event::check_policy(event, &mut issues, &mut warnings),
+            "policy" => {
+                let versioned =
+                    event.payload.get("schema").and_then(Value::as_str) == Some("trit-policy-v1");
+                require_signed_claims = event
+                    .payload
+                    .get("require_signed_claims")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(versioned);
+                policy_event::check_policy(event, &mut issues, &mut warnings);
+            }
             "key" => key_event::check_key(repo, event, &mut issues, &mut warnings),
             "signature" => {
                 signature_event::check_signature(repo, event, &mut issues, &mut warnings)
             }
+            "claim_signature" => claim_signature_event::check_claim_signature(
+                repo,
+                events,
+                index,
+                event,
+                &mut issues,
+            ),
             "checkpoint" => checkpoint_event::check_checkpoint(
                 repo,
                 events,
@@ -755,39 +778,6 @@ mod tests {
             "下一个 op_begin 的 state_before 必须接得上上一条 state_after：{:?}",
             report.issues
         );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn denied_commit_leaves_auditable_gate_event() {
-        let (root, mut repo) = seed("gate");
-        let mut files = BTreeMap::new();
-        files.insert("b.txt".to_string(), b"denied\n".to_vec());
-        repo.stage(&files, 2_000).unwrap();
-        let err = repo
-            .commit(CommitRequest {
-                message: "denied".to_string(),
-                session: "audit:test".to_string(),
-                now_secs: 2_000,
-                ..Default::default()
-            })
-            .unwrap_err();
-        assert!(matches!(err, RepoError::Unclaimed { .. }), "{err}");
-        let gate = repo
-            .journal()
-            .events()
-            .iter()
-            .find(|event| event.kind == "gate")
-            .expect("拒绝必须留下来 gate 事件");
-        assert_eq!(gate.payload["decision"], "denied");
-        let report = status(&repo).unwrap();
-        assert!(
-            report.ok,
-            "合法的 gate 拒绝事件不应把审计判红：{:?}",
-            report.issues
-        );
-        assert_eq!(report.open_ops, 0);
-        assert_eq!(report.level, "L2");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

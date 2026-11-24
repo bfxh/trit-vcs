@@ -13,6 +13,9 @@ use crate::keys::public_key_id;
 use crate::repo::{Repo, RepoError};
 use crate::signing::{KeyFile, public_key_bytes};
 
+pub mod anchor;
+pub mod consistency;
+
 /// 一次 checkpoint 的摘要，给 CLI 和测试用。
 #[derive(Clone, Debug, Serialize)]
 pub struct CheckpointOutcome {
@@ -36,6 +39,7 @@ impl Repo {
         if session.trim().is_empty() || session.chars().any(char::is_control) {
             return Err(RepoError::BadHead("session 不能为空".to_string()));
         }
+        let _guard = self.lock_state()?;
         let key = KeyFile::load(key_path)?;
         let store = self.keys()?;
         let Some(entry) = store.keys.get(&key.key_id) else {
@@ -81,8 +85,7 @@ impl Repo {
                     .find(|event| event.kind == "checkpoint")
                     .map(|event| event.hash);
                 let root = merkle_root(&events.iter().map(|event| event.hash).collect::<Vec<_>>());
-                let statement =
-                    checkpoint_statement(height, head, root, previous, at_ms, &key_id);
+                let statement = checkpoint_statement(height, head, root, previous, at_ms, &key_id);
                 let signature = key.sign_hex(&statement)?;
                 let before = repo.state_digest()?.to_hex();
                 let after = repo.state_digest()?.to_hex();
@@ -128,7 +131,8 @@ pub fn checkpoint_statement(
 ) -> Vec<u8> {
     format!(
         "trit-checkpoint-v1\n{height}\n{}\n{}\n{}\n{signed_at_ms}\n{key_id}\n",
-        head.map(|hash| hash.to_hex()).unwrap_or_else(|| "-".to_string()),
+        head.map(|hash| hash.to_hex())
+            .unwrap_or_else(|| "-".to_string()),
         merkle_root.to_hex(),
         previous
             .map(|hash| hash.to_hex())
@@ -185,10 +189,17 @@ pub fn verify_merkle_proof(
     index: usize,
     proof: &[Hash],
     root: Hash,
+    leaf_count: usize,
 ) -> bool {
+    if leaf_count == 0 || index >= leaf_count || proof.len() != tree_levels(leaf_count) {
+        return false;
+    }
     let mut current = leaf_hash(event_hash);
     let mut position = index;
-    for sibling in proof {
+    for (level, sibling) in proof.iter().enumerate() {
+        if position >= leaf_count.div_ceil(1usize << level) {
+            return false;
+        }
         current = if position.is_multiple_of(2) {
             node_hash(current, *sibling)
         } else {
@@ -197,6 +208,14 @@ pub fn verify_merkle_proof(
         position /= 2;
     }
     current == root
+}
+
+fn tree_levels(size: usize) -> usize {
+    if size <= 1 {
+        0
+    } else {
+        (usize::BITS - (size - 1).leading_zeros()) as usize
+    }
 }
 
 fn leaf_hash(hash: Hash) -> Hash {
@@ -215,9 +234,7 @@ fn node_hash(left: Hash, right: Hash) -> Hash {
 pub fn key_matches_public(key_id: &str, public_hex: &str) -> Result<(), RepoError> {
     let public = public_key_bytes(public_hex)?;
     if public_key_id(&public) != key_id {
-        return Err(RepoError::BadHead(
-            "key_id 与公钥指纹不一致".to_string(),
-        ));
+        return Err(RepoError::BadHead("key_id 与公钥指纹不一致".to_string()));
     }
     Ok(())
 }
@@ -311,9 +328,7 @@ mod tests {
     #[test]
     fn checkpoints_chain_and_audit_verifies_prefix() {
         let (_root, mut repo, _key, key_path) = setup("chain");
-        let first = repo
-            .checkpoint(&key_path, "qoder:auditor", 1_002)
-            .unwrap();
+        let first = repo.checkpoint(&key_path, "qoder:auditor", 1_002).unwrap();
         let first_report = crate::audit::status(&repo).unwrap();
         assert!(
             first_report.ok,
@@ -321,17 +336,11 @@ mod tests {
             first_report.issues
         );
 
-        let second = repo
-            .checkpoint(&key_path, "qoder:auditor", 1_003)
-            .unwrap();
+        let second = repo.checkpoint(&key_path, "qoder:auditor", 1_003).unwrap();
         assert_eq!(second.previous, Some(first.event));
         assert!(second.height > first.height);
         let report = crate::audit::status(&repo).unwrap();
-        assert!(
-            report.ok,
-            "第二个检查点应接上前一条：{:?}",
-            report.issues
-        );
+        assert!(report.ok, "第二个检查点应接上前一条：{:?}", report.issues);
     }
 
     #[test]
@@ -366,14 +375,8 @@ mod tests {
             .find(|event| event.kind == "checkpoint")
             .map(|event| event.hash);
         let expected_root = merkle_root(&events.iter().map(|event| event.hash).collect::<Vec<_>>());
-        let statement = checkpoint_statement(
-            height,
-            head,
-            expected_root,
-            previous,
-            1_004,
-            &key.key_id,
-        );
+        let statement =
+            checkpoint_statement(height, head, expected_root, previous, 1_004, &key.key_id);
         let signature = key.sign_hex(&statement).unwrap();
         append_fake(
             &mut repo,
@@ -408,14 +411,8 @@ mod tests {
             .find(|event| event.kind == "checkpoint")
             .map(|event| event.hash);
         let expected_root = merkle_root(&events.iter().map(|event| event.hash).collect::<Vec<_>>());
-        let statement = checkpoint_statement(
-            height,
-            head,
-            expected_root,
-            previous,
-            1_004,
-            &key.key_id,
-        );
+        let statement =
+            checkpoint_statement(height, head, expected_root, previous, 1_004, &key.key_id);
         let signature = key.sign_hex(&statement).unwrap();
         append_fake(
             &mut repo,
@@ -450,14 +447,7 @@ mod tests {
             .find(|event| event.kind == "checkpoint")
             .map(|event| event.hash);
         let root = merkle_root(&events.iter().map(|event| event.hash).collect::<Vec<_>>());
-        let statement = checkpoint_statement(
-            height,
-            head,
-            root,
-            previous,
-            1_004,
-            &key.key_id,
-        );
+        let statement = checkpoint_statement(height, head, root, previous, 1_004, &key.key_id);
         let signature = key.sign_hex(&statement).unwrap();
         append_fake(&mut repo, &key, signature, root, None, 1_004);
         let report = crate::audit::status(&repo).unwrap();
@@ -479,18 +469,40 @@ mod tests {
         for (index, leaf) in leaves.iter().enumerate() {
             let proof = merkle_proof(&leaves, index).unwrap();
             assert!(
-                verify_merkle_proof(*leaf, index, &proof, root),
+                verify_merkle_proof(*leaf, index, &proof, root, leaves.len()),
                 "第 {index} 个叶子应能证明"
             );
             if let Some(sibling) = proof.first() {
                 let mut bad = proof.clone();
                 bad[0] = Hash::of(sibling.as_bytes());
-                assert!(!verify_merkle_proof(*leaf, index, &bad, root));
+                assert!(!verify_merkle_proof(*leaf, index, &bad, root, leaves.len()));
             }
             if index + 1 < leaves.len() {
-                assert!(!verify_merkle_proof(*leaf, index + 1, &proof, root));
+                assert!(!verify_merkle_proof(
+                    *leaf,
+                    index + 1,
+                    &proof,
+                    root,
+                    leaves.len()
+                ));
             }
         }
+        let proof = merkle_proof(&leaves, 2).unwrap();
+        assert!(!verify_merkle_proof(
+            leaves[2],
+            3,
+            &proof,
+            root,
+            leaves.len()
+        ));
+        assert!(!verify_merkle_proof(leaves[2], 2, &proof, root, 2));
+        assert!(!verify_merkle_proof(
+            leaves[2],
+            2,
+            &proof[..1],
+            root,
+            leaves.len()
+        ));
         assert!(merkle_proof(&leaves, 3).is_none());
     }
 
@@ -506,4 +518,3 @@ mod tests {
         assert_ne!(merkle_root(&[a, b, c]), merkle_root(&[a, b, c, d]));
     }
 }
-

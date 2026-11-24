@@ -25,8 +25,7 @@ fn stderr(output: &Output) -> String {
 }
 
 fn temp(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("trit-vcs-keycli-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("trit-vcs-keycli-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -259,7 +258,12 @@ fn generated_key_rotation_is_audited_and_old_key_is_revoked() {
     let audit = run(&root, &["audit", "status", "--json"]);
     assert!(audit.status.success(), "{}", stderr(&audit));
     let audit_value: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
-    assert_eq!(audit_value["ok"], true, "轮换后审计必须绿：{}", stdout(&audit));
+    assert_eq!(
+        audit_value["ok"],
+        true,
+        "轮换后审计必须绿：{}",
+        stdout(&audit)
+    );
 
     let log = run(&root, &["audit", "log", "--json"]);
     assert!(log.status.success(), "{}", stderr(&log));

@@ -44,7 +44,10 @@ pub(super) fn check_signature(
     if payload.get("algorithm").and_then(Value::as_str) != Some("ed25519") {
         issues.push(AuditIssue::new(
             "signature_bad",
-            format!("第 {} 条 signature 事件的 algorithm 不是 ed25519", event.seq),
+            format!(
+                "第 {} 条 signature 事件的 algorithm 不是 ed25519",
+                event.seq
+            ),
         ));
         return;
     }
@@ -127,7 +130,10 @@ pub(super) fn check_signature(
     {
         warnings.push(AuditIssue::new(
             "signature_no_state",
-            format!("第 {} 条 signature 事件缺可解析的 state_before/state_after", event.seq),
+            format!(
+                "第 {} 条 signature 事件缺可解析的 state_before/state_after",
+                event.seq
+            ),
         ));
     }
 }

@@ -49,6 +49,9 @@ pub(super) fn check_key(
     if action == Some("rotate") {
         check_rotation(repo, event, issues);
     }
+    if action == Some("add") {
+        check_add(repo, event, issues);
+    }
     if parse_hash(payload.get("keystore_hash")).is_none() {
         issues.push(AuditIssue::new(
             "key_bad",
@@ -59,6 +62,82 @@ pub(super) fn check_key(
         warnings.push(AuditIssue::new(
             "key_no_state",
             format!("第 {} 条 key 事件没有可解析的 state_after", event.seq),
+        ));
+    }
+}
+
+fn check_add(repo: &Repo, event: &Event, issues: &mut Vec<AuditIssue>) {
+    let payload = &event.payload;
+    let Some(key_id) = text(payload, "key_id") else {
+        return;
+    };
+    let Some(public_value) = payload.get("public_key") else {
+        return;
+    };
+    if public_value.is_null() {
+        return;
+    }
+    let Some(public) = public_value.as_str().filter(|public| !public.is_empty()) else {
+        issues.push(AuditIssue::new(
+            "key_bad",
+            format!(
+                "第 {} 条 key add 事件的 public_key 不是非空字符串",
+                event.seq
+            ),
+        ));
+        return;
+    };
+    let public_bytes = match public_key_bytes(public) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            issues.push(AuditIssue::new(
+                "key_bad",
+                format!(
+                    "第 {} 条 key add 事件的 public_key 不合法：{err}",
+                    event.seq
+                ),
+            ));
+            return;
+        }
+    };
+    if public_key_id(&public_bytes) != key_id {
+        issues.push(AuditIssue::new(
+            "key_bad",
+            format!(
+                "第 {} 条 key add 事件的 key_id 与 public_key 指纹不一致",
+                event.seq
+            ),
+        ));
+        return;
+    }
+    let store = match repo.keys() {
+        Ok(store) => store,
+        Err(err) => {
+            issues.push(AuditIssue::new(
+                "key_bad",
+                format!("第 {} 条 key add 事件读不到信任表：{err}", event.seq),
+            ));
+            return;
+        }
+    };
+    let Some(entry) = store.keys.get(key_id) else {
+        issues.push(AuditIssue::new(
+            "key_bad",
+            format!("第 {} 条 key add 事件的 key_id 不在信任表", event.seq),
+        ));
+        return;
+    };
+    if entry
+        .public_key
+        .as_deref()
+        .is_none_or(|trusted| !trusted.eq_ignore_ascii_case(public))
+    {
+        issues.push(AuditIssue::new(
+            "key_bad",
+            format!(
+                "第 {} 条 key add 事件的 public_key 与信任表不一致",
+                event.seq
+            ),
         ));
     }
 }
@@ -136,10 +215,7 @@ fn check_rotation(repo: &Repo, event: &Event, issues: &mut Vec<AuditIssue>) {
         Err(err) => {
             issues.push(AuditIssue::new(
                 "key_rotation_mismatch",
-                format!(
-                    "第 {} 条 key rotate 的 old_public 不合法：{err}",
-                    event.seq
-                ),
+                format!("第 {} 条 key rotate 的 old_public 不合法：{err}", event.seq),
             ));
             return;
         }
@@ -158,10 +234,7 @@ fn check_rotation(repo: &Repo, event: &Event, issues: &mut Vec<AuditIssue>) {
         Err(err) => {
             issues.push(AuditIssue::new(
                 "key_rotation_mismatch",
-                format!(
-                    "第 {} 条 key rotate 的 new_public 不合法：{err}",
-                    event.seq
-                ),
+                format!("第 {} 条 key rotate 的 new_public 不合法：{err}", event.seq),
             ));
             return;
         }
@@ -184,10 +257,7 @@ fn check_rotation(repo: &Repo, event: &Event, issues: &mut Vec<AuditIssue>) {
         if verify_signature(public, signature, &statement).is_err() {
             issues.push(AuditIssue::new(
                 "key_rotation_mismatch",
-                format!(
-                    "第 {} 条 key rotate 的{label}签名验不过轮换声明",
-                    event.seq
-                ),
+                format!("第 {} 条 key rotate 的{label}签名验不过轮换声明", event.seq),
             ));
         }
     }
