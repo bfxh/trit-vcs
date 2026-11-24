@@ -19,7 +19,9 @@ use serde_json::json;
 use crate::gate::{ClaimSpec, Verdict};
 use crate::hash::Hash;
 use crate::journal::{Journal, JournalError};
+pub use crate::model::CommitFilter;
 use crate::model::{Commit, Hlc, Intent};
+pub use crate::policy::Policy;
 use crate::store::{PutStats, Store, StoreError};
 use crate::witness::{self, Witness, WitnessError};
 
@@ -78,6 +80,14 @@ pub enum RepoError {
     IntentInvalid(String),
     #[error("intent 基于的树 {declared} 与父提交的树 {actual} 不一致")]
     IntentBaseMismatch { declared: String, actual: String },
+    #[error("提交 {0} 没有 attestation；严格见证策略要求签名 sidecar")]
+    AttestationRequired(String),
+    #[error("attestation 不成立：{0}")]
+    AttestationInvalid(String),
+    #[error("attestation 签者 {0} 不受信任")]
+    AttestationUntrusted(String),
+    #[error("attestation 签者 {0} 在签名时已吊销")]
+    AttestationRevoked(String),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -110,17 +120,6 @@ pub struct CommitOutcome {
 pub struct Index {
     pub tree: String,
     pub paths: Vec<String>,
-}
-
-/// 仓库策略（`.tritvcs/policy.json`）。默认全关：不影响别项目，成熟后逐项目 opt-in。
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Policy {
-    #[serde(default)]
-    pub require_witness: bool,
-    #[serde(default)]
-    pub require_intent: bool,
-    #[serde(default)]
-    pub require_signed_claims: bool,
 }
 
 /// 认领范围已经覆盖的路径折叠成范围本身。
@@ -160,36 +159,6 @@ pub(crate) fn require_passing(witness: &Witness) -> Result<(), RepoError> {
         Ok(()) => Ok(()),
         Err(WitnessError::Failed(code)) => Err(RepoError::WitnessFailed(code)),
         Err(other) => Err(RepoError::Witness(other)),
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct CommitFilter {
-    pub tag: Option<String>,
-    /// 证据文本的子串
-    pub evidence: Option<String>,
-    pub session: Option<String>,
-    /// 提交说明的子串
-    pub grep: Option<String>,
-}
-
-impl CommitFilter {
-    pub fn matches(&self, commit: &Commit) -> bool {
-        self.tag
-            .as_ref()
-            .is_none_or(|tag| commit.tags.iter().any(|have| have == tag))
-            && self
-                .evidence
-                .as_ref()
-                .is_none_or(|needle| commit.evidence.iter().any(|line| line.contains(needle)))
-            && self
-                .session
-                .as_ref()
-                .is_none_or(|session| &commit.session == session)
-            && self
-                .grep
-                .as_ref()
-                .is_none_or(|needle| commit.message.contains(needle))
     }
 }
 
@@ -649,7 +618,15 @@ impl Repo {
             .ok_or_else(|| RepoError::Unwitnessed(id.short().to_string()))?;
         witness::check_file(recorded, witness_bytes)?;
         let parsed = witness::verify(witness_bytes, commit.tree)?;
+        let base = match commit.parents.first() {
+            Some(parent) => Some(self.commit_at(parent)?.tree),
+            None => None,
+        };
+        parsed.check_base(base)?;
         require_passing(&parsed)?;
+        if self.policy()?.require_signed_witness {
+            return self.admit_signed(id, witness_bytes).map(|_| parsed);
+        }
         Ok(parsed)
     }
 
@@ -735,6 +712,13 @@ impl Repo {
             let bytes = self.store.get_chunk(&digest)?;
             let parsed = witness::verify(&bytes, commit.tree).map_err(|e| {
                 RepoError::BadHead(format!("提交 {} 的 witness 不成立：{e}", id.short()))
+            })?;
+            let base = match commit.parents.first() {
+                Some(parent) => Some(self.commit_at(parent)?.tree),
+                None => None,
+            };
+            parsed.check_base(base).map_err(|e| {
+                RepoError::BadHead(format!("提交 {} 的 witness 父树不成立：{e}", id.short()))
             })?;
             parsed.check_passed().map_err(|e| {
                 RepoError::BadHead(format!("提交 {} 的 witness 不可用：{e}", id.short()))

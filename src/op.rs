@@ -86,15 +86,14 @@ impl Repo {
         )?)
     }
 
-    pub(crate) fn with_operation_locked<T>(
+    pub fn append_audit(
         &mut self,
-        op: &str,
-        args: Value,
+        kind: &str,
+        payload: Value,
         at_ms: u64,
-        body: impl FnOnce(&mut Self) -> Result<T, RepoError>,
-    ) -> Result<T, RepoError> {
+    ) -> Result<Event, RepoError> {
         let _guard = self.lock_state()?;
-        self.with_operation(op, args, at_ms, body)
+        self.append_audit_locked(kind, payload, at_ms)
     }
 
     pub(crate) fn append_audit_locked(
@@ -106,14 +105,15 @@ impl Repo {
         Ok(self.journal_mut().append(kind, payload, at_ms)?)
     }
 
-    pub fn append_audit(
+    pub(crate) fn with_operation_locked<T>(
         &mut self,
-        kind: &str,
-        payload: Value,
+        op: &str,
+        args: Value,
         at_ms: u64,
-    ) -> Result<Event, RepoError> {
+        body: impl FnOnce(&mut Self) -> Result<T, RepoError>,
+    ) -> Result<T, RepoError> {
         let _guard = self.lock_state()?;
-        self.append_audit_locked(kind, payload, at_ms)
+        self.with_operation(op, args, at_ms, body)
     }
 
     /// `begin_operation` + 执行 + `finish_operation` 的封闭骨架。
@@ -329,6 +329,16 @@ mod tests {
         ));
         assert!(matches!(
             repo.sign_commit(&Hash::of(b"missing"), &missing_key, "audit:test", 2_000),
+            Err(RepoError::StateLocked(_))
+        ));
+        assert!(matches!(
+            repo.attest_witness(
+                &Hash::of(b"missing"),
+                b"{}",
+                &missing_key,
+                "audit:test",
+                2_000,
+            ),
             Err(RepoError::StateLocked(_))
         ));
         assert!(matches!(

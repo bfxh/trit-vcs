@@ -61,6 +61,27 @@
   `checkpoint_revoked` / `checkpoint_no_state` / `checkpoint_state_change`，重算前缀根、核高度和前驱、
   用信任表公钥验签。新增 `audit proof --checkpoint --event`：生成单事件 inclusion proof（兄弟路径）
   并复算。检查点仍在仓内 journal，单靠 inclusion proof 不能发现整条尾巴连检查点一起被删。
+- 新增 witness 签名 attestation sidecar 与独立检查点外锚：`attest <commit> --witness FILE --key-file FILE
+  --owner <宿主:会话id>` 用 `trit-attestation-v1` 绑定提交 id、原始 witness 摘要、树、实际第一父树、
+  key_id、会话与签名时间；`admit --signed` 和 MCP `admit({signed:true})` 强制验签，普通 `admit` 默认
+  保持未签名兼容。`policy set --require-signed-witness` 让新提交先要求 witness，并让普通准入要求有效
+  attestation；旧无版本策略事件缺该字段按关闭处理，新版缺字段或显式非布尔值判红且重放按开启。
+  签署与验签都限 `author`/`auditor`/`release`，拒绝签名早于信任加入时间或晚于吊销时间；同毫秒吊销不追溯。
+  审计新增 `attestation_bad` /
+  `attestation_revoked` / `attestation_invalid` / `attestation_duplicate` / `attestation_state_mismatch` /
+  `attestation_missing`，复核事件/对象、op_begin 参数、成功 op_result、重复 sidecar、信任成员、公钥指纹、
+  角色、信任时点、吊销、签名与提交/树/父树/witness 绑定；attestation 前后状态必须与 op_begin/op_result
+  一致，严格策略下的无 witness 提交也判红。严格策略下提交后补签也被接受，不会因 sidecar
+  晚于 commit 事件而误报。提交 id、Commit/witness 对象形状、bundle 与 journal 既有事件格式不变。
+  `audit external-anchor` / `audit verify-external-anchor` 使用 `trit-external-anchor-v1`，由独立外部
+  私钥签署检查点事件哈希、高度、head、Merkle 根、previous、外部 key_id 与签名时间；验证只认调用方
+  明确传入且从仓外信任渠道钉住的公钥，不读仓内 `keys.json`，并重算当前前缀和到较新检查点的一致性。
+  外锚文件拒绝覆盖；错误外部钥、坏签名、错摘要、删尾、换链与伪造较新检查点均拒绝。边界：仓内文件锚
+  仍不是独立信任根；独立外锚的真实独立性取决于外部密钥保管与部署，不是透明日志、CA 或可信时间戳。
+  测试：`src/attestation.rs` 9 条、`src/checkpoint/external.rs` 6 条、`tests/trust_cli.rs` 2 条、
+  `tests/checkpoint_cli.rs` 新增 1 条，并补齐严格策略预检、审计旧策略兼容与共享状态锁接线断言；
+  登记 26 条变异（签名绑定/摘要/信任时点/角色/重复/锁、严格策略、审计、CLI/MCP 与外锚信任边界）。
+  本机分批复跑全部 281 条：280 条断言抓住、1 条登记死循环抓住，零存活、假杀、崩溃、超时、锁等待或无输出。
 - 新增检查点间 consistency proof v0 与文件锚 v0：`audit consistency --from --to [--out]` 针对现有
   “奇数末节点复制”的 Merkle 树生成旧→新证明，`audit verify-consistency --from --to --proof` 严格
   核对 size/root/节点坐标并独立重算两侧根；坐标必须按 `(level, index)` 规范升序，重复、缺失、额外、
@@ -100,8 +121,7 @@
   上一批 5 条写前/gate/失败状态变异仍保持 5/5，早先 3 条审计/锁变异仍全抓。随后认领签名新增
   29 条变异（签名门/CLI 策略/公钥指纹/主体/角色/吊销/声明绑定/事件引用/状态/成功收口/重复签名/
   缺 sidecar/策略重放/追溯信任/Ed25519 复验）；本机最小目标全量复跑 238 条：237 条断言抓住、
-  1 条登记死循环抓住，零存活、假杀、超时、锁等待或无输出。尚未做：witness/attestation 签名、
-  独立外部信任根、成功鉴权的 actor/request id。
+  1 条登记死循环抓住，零存活、假杀、超时、锁等待或无输出。本批尚未做：成功鉴权的 actor/request id。
 - 独立审查加固：inclusion proof 严格核叶数、事件下标、路径长度和每层节点存在性，幽灵叶与畸形路径
   拒绝；consistency proof 坐标必须规范升序且不重复；锚导出先核对当前仓库前缀；认领签名审计按
   `op_begin` 到 `op_result` 的日志顺序重建授权，拒绝操作前已吊销、操作中吊销或轮换，并核对签名状态与
@@ -116,7 +136,7 @@
   变异锚点的歧义。提交预检与写入共用同一把状态锁；本地及服务端 publish/pull 在快进检查、物化与事件
   追加期间持有对应仓库的状态锁，merge 从 op_begin 到事件收口全程持有状态锁，避免检查点或其他写者
   插入快照与追加之间。
-  255 条 Rust 变异全部声明最小 Cargo 目标（175 条库测试、80 条集成测试）；目标缺失或过滤后零测试
+  281 条 Rust 变异全部声明最小 Cargo 目标（190 条库测试、91 条集成测试）；目标缺失或过滤后零测试
   直接判红，避免每条变异都重编整包。
 - 跨机传输与鉴权（网络 v0）：`trit-vcs serve --dir <中央仓> --bind 127.0.0.1:7878 --token-file <文件>`，
   客户端 `publish/pull --remote http://host:port --token-file <文件>`。协议是自写的 HTTP/1.1 子集

@@ -130,7 +130,9 @@ pub(crate) fn preflight_run(repo: &Repo, request: &CommitRequest, args: &[String
             short(digest),
             facts.witness_exit
         ),
-        None if facts.require_witness => println!("  见证：本仓策略要求，但这次没带"),
+        None if facts.require_witness || facts.require_signed_witness => {
+            println!("  见证：本仓策略要求，但这次没带")
+        }
         None => {}
     }
     if let Some(intent) = &facts.intent {

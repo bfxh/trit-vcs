@@ -101,6 +101,7 @@ fn main() {
             require_witness: true,
             require_intent: false,
             require_signed_claims: false,
+            require_signed_witness: false,
         })
         .unwrap(),
     )

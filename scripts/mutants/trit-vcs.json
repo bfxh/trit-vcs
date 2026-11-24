@@ -212,8 +212,8 @@
  {
   "name": "vcs: 策略要求见证时也放行（require_witness 形同虚设）",
   "file": "src/preflight.rs",
-  "old": "        None if policy.require_witness => return Err(RepoError::WitnessRequired),",
-  "new": "            None if false => return Err(RepoError::WitnessRequired),",
+  "old": "        None if policy.require_witness || policy.require_signed_witness => {\n            return Err(RepoError::WitnessRequired);\n        }",
+  "new": "        None if false => {\n            return Err(RepoError::WitnessRequired);\n        }",
   "filter": "policy_can_require_a_witness",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -451,7 +451,7 @@
  },
  {
   "name": "vcs: --tag 过滤形同虚设（不匹配也返回）",
-  "file": "src/repo.rs",
+  "file": "src/model.rs",
   "old": "            .is_none_or(|tag| commit.tags.iter().any(|have| have == tag))",
   "new": "            .is_none_or(|_tag| true)",
   "filter": "query_filters_by_tag_evidence_session_and_message",
@@ -461,7 +461,7 @@
  },
  {
   "name": "vcs: --evidence 过滤形同虚设",
-  "file": "src/repo.rs",
+  "file": "src/model.rs",
   "old": "                .is_none_or(|needle| commit.evidence.iter().any(|line| line.contains(needle)))",
   "new": "                .is_none_or(|_needle| true)",
   "filter": "query_filters_by_tag_evidence_session_and_message",
@@ -471,7 +471,7 @@
  },
  {
   "name": "vcs: --grep 过滤形同虚设",
-  "file": "src/repo.rs",
+  "file": "src/model.rs",
   "old": "                .is_none_or(|needle| commit.message.contains(needle))",
   "new": "                .is_none_or(|_needle| true)",
   "filter": "query_filters_by_tag_evidence_session_and_message",
@@ -1913,7 +1913,7 @@
  {
   "name": "vcs: 仓外锚不核当前同高事件（换整条前缀仍绿）",
   "file": "src/checkpoint/anchor.rs",
-  "old": "    if anchored.hash != anchor.event.hash {",
+  "old": "    if anchored.hash != checkpoint_hash {",
   "new": "    if false {",
   "filter": "anchor_rejects_same_summary_checkpoint_with_different_event_hash",
   "pkg": "trit-vcs",
@@ -1923,8 +1923,8 @@
  {
   "name": "vcs: 仓外锚不核锚定前缀 head（错头仍绿）",
   "file": "src/checkpoint/anchor.rs",
-  "old": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
-  "new": "    if false\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
+  "old": "    if head != expected_head || previous != expected_previous || root != expected_root {",
+  "new": "    if false || previous != expected_previous || root != expected_root {",
   "filter": "anchor_rejects_validly_signed_wrong_prefix_summary",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -1933,8 +1933,8 @@
  {
   "name": "vcs: 仓外锚不核锚定前缀 previous（错前驱仍绿）",
   "file": "src/checkpoint/anchor.rs",
-  "old": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
-  "new": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || false\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
+  "old": "    if head != expected_head || previous != expected_previous || root != expected_root {",
+  "new": "    if head != expected_head || false || root != expected_root {",
   "filter": "anchor_rejects_validly_signed_wrong_prefix_summary",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -1943,8 +1943,8 @@
  {
   "name": "vcs: 仓外锚不核锚定前缀 Merkle 根（错根仍绿）",
   "file": "src/checkpoint/anchor.rs",
-  "old": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
-  "new": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || false\n    {",
+  "old": "    if head != expected_head || previous != expected_previous || root != expected_root {",
+  "new": "    if head != expected_head || previous != expected_previous || false {",
   "filter": "anchor_rejects_validly_signed_wrong_prefix_summary",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -1953,7 +1953,7 @@
  {
   "name": "vcs: 仓外锚不核锚定前缀摘要（有效签名错根仍绿）",
   "file": "src/checkpoint/anchor.rs",
-  "old": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
+  "old": "    if head != expected_head || previous != expected_previous || root != expected_root {",
   "new": "    if false {",
   "filter": "anchor_rejects_validly_signed_wrong_prefix_summary",
   "pkg": "trit-vcs",
@@ -1963,7 +1963,7 @@
  {
   "name": "vcs: 仓外锚不核旧到新一致性（伪造新 root 仍绿）",
   "file": "src/checkpoint/anchor.rs",
-  "old": "    if !valid\n        || proof.old_root.to_hex() != outcome.merkle_root\n        || proof.new_root != latest_data.root\n    {",
+  "old": "    if !valid || proof.old_root != root || proof.new_root != latest_data.root {",
   "new": "    if false {",
   "filter": "anchor_rejects_forged_newer_checkpoint_root",
   "pkg": "trit-vcs",
@@ -2549,5 +2549,265 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: 见证签名不核 schema/algorithm",
+  "file": "src/attestation.rs",
+  "old": "        if self.schema != SCHEMA || self.algorithm != ALGORITHM {",
+  "new": "        if false {",
+  "filter": "every_signed_statement_field_is_tamper_evident",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 见证签名不绑提交/树/基线",
+  "file": "src/attestation.rs",
+  "old": "        if self.commit != *id || self.tree != commit.tree || self.base != base {",
+  "new": "        if false {",
+  "filter": "every_signed_statement_field_is_tamper_evident",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 见证签名不核原始见证摘要",
+  "file": "src/attestation.rs",
+  "old": "        if self.witness != recorded || Hash::of(witness_bytes) != recorded {",
+  "new": "        if false {",
+  "filter": "tampered_witness_and_duplicate_sidecar_are_rejected",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 见证签名允许签名早于信任",
+  "file": "src/attestation.rs",
+  "old": "    if attestation.signed_at_ms < entry.added_at_ms {",
+  "new": "    if false {",
+  "filter": "signing_before_trust_admission_is_rejected",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 见证签名不核公钥指纹",
+  "file": "src/attestation.rs",
+  "old": "    if public_key_id(&bytes) != attestation.key_id {",
+  "new": "    if false {",
+  "filter": "signer_trust_role_and_public_key_are_checked",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 见证签名允许任意签名角色",
+  "file": "src/attestation.rs",
+  "old": "    if !matches!(entry.role.as_str(), \"author\" | \"auditor\" | \"release\") {\n        return Err(RepoError::AttestationUntrusted(attestation.key_id.clone()));",
+  "new": "    if false {",
+  "filter": "signer_trust_role_and_public_key_are_checked",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 见证签名允许手写重复 sidecar",
+  "file": "src/attestation.rs",
+  "old": "            .count()\n            > 1",
+  "new": "            .count()\n            > 2",
+  "filter": "manually_duplicated_sidecar_is_rejected",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 见证签名不抢共享状态锁",
+  "file": "src/attestation.rs",
+  "old": "        let _guard = self.lock_state()?;",
+  "new": "        let _guard = ();",
+  "filter": "repository_state_entry_points_respect_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 严格见证策略仍走未签名准入",
+  "file": "src/repo.rs",
+  "old": "        if self.policy()?.require_signed_witness {",
+  "new": "        if false {",
+  "filter": "strict_policy_requires_attestation_and_revocation_is_checked",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 严格见证策略不要求预检见证",
+  "file": "src/preflight.rs",
+  "old": "        None if policy.require_witness || policy.require_signed_witness => {",
+  "new": "        None if policy.require_witness => {",
+  "filter": "signed_witness_policy_requires_witness_and_is_reported",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不报严格策略缺失见证签名",
+  "file": "src/audit/attestation_event.rs",
+  "old": "            && candidate.kind == EVENT_KIND",
+  "new": "            && candidate.kind == EVENT_KIND\n            && false",
+  "filter": "strict_policy_defers_attestation_and_cli_mcp_enforce_it",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:trust_cli"
+ },
+ {
+  "name": "vcs: 审计不拒绝非布尔严格见证策略",
+  "file": "src/audit/policy_event.rs",
+  "old": "    if signed_witness.is_none()\n        && (versioned || event.payload.get(\"require_signed_witness\").is_some())\n    {",
+  "new": "    if false {",
+  "filter": "policy_event_accepts_legacy_shape_but_rejects_non_boolean_signed_witness",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_cli"
+ },
+ {
+  "name": "vcs: CLI 准入忽略 --signed",
+  "file": "src/bin/trit-vcs/main.rs",
+  "old": "        match if has(&args, \"--signed\") {",
+  "new": "        match if false {",
+  "filter": "signed_flag_is_opt_in_without_strict_policy",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:trust_cli"
+ },
+ {
+  "name": "vcs: MCP 准入忽略 signed",
+  "file": "src/mcp.rs",
+  "old": "        let (witness, attestation) = if effective_signed {",
+  "new": "        let (witness, attestation) = if false {",
+  "filter": "signed_flag_is_opt_in_without_strict_policy",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:trust_cli"
+ },
+ {
+  "name": "vcs: 仓外锚不核 key_id",
+  "file": "src/checkpoint/external.rs",
+  "old": "        if public_key_id(&public) != self.key_id {",
+  "new": "        if false {",
+  "filter": "wrong_key_and_bad_signature_are_rejected",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不验签名",
+  "file": "src/checkpoint/external.rs",
+  "old": "    value.verify_with_key(pinned_public)?;",
+  "new": "    let _ = pinned_public;",
+  "filter": "wrong_key_and_bad_signature_are_rejected",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核检查点事件哈希",
+  "file": "src/checkpoint/external.rs",
+  "old": "    if event.hash != value.checkpoint {",
+  "new": "    if false {",
+  "filter": "validly_signed_wrong_summary_and_checkpoint_are_rejected",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核检查点摘要",
+  "file": "src/checkpoint/external.rs",
+  "old": "    if data.height != value.height\n        || data.head != value.head\n        || data.root != value.merkle_root\n        || data.previous != value.previous\n    {",
+  "new": "    if false {",
+  "filter": "validly_signed_wrong_summary_and_checkpoint_are_rejected",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核前缀一致性",
+  "file": "src/checkpoint/external.rs",
+  "old": "    anchor::verify_repo_prefix(\n        repo,\n        value.checkpoint,\n        value.height,\n        value.head,\n        value.merkle_root,\n        value.previous,\n    )?;",
+  "new": "    ();",
+  "filter": "divergent_newer_checkpoint_breaks_consistency",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: MCP 准入把非布尔 signed 静默当 false",
+  "file": "src/mcp.rs",
+  "old": "                    Some(value) => value.as_bool().ok_or_else(|| {",
+  "new": "                    Some(value) => value.as_bool().or(Some(false)).ok_or_else(|| {",
+  "filter": "signed_flag_is_opt_in_without_strict_policy",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:trust_cli"
+ },
+ {
+  "name": "vcs: 见证签名允许吊销后回填签名时间",
+  "file": "src/attestation.rs",
+  "old": "    if entry.revoked_at_ms.is_some_and(|at| at_ms > at) {",
+  "new": "    if false {",
+  "filter": "signed_flag_is_opt_in_without_strict_policy",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:trust_cli"
+ },
+ {
+  "name": "vcs: 审计把非法严格见证策略当关闭",
+  "file": "src/audit/policy_event.rs",
+  "old": "        Some(_) => true,",
+  "new": "        Some(_) => false,",
+  "filter": "policy_event_accepts_legacy_shape_but_rejects_non_boolean_signed_witness",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_cli"
+ },
+ {
+  "name": "vcs: 审计把新版缺失严格见证策略当关闭",
+  "file": "src/audit/policy_event.rs",
+  "old": "        None => versioned,",
+  "new": "        None => false,",
+  "filter": "policy_event_accepts_legacy_shape_but_rejects_non_boolean_signed_witness",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_cli"
+ },
+ {
+  "name": "vcs: 审计漏掉严格策略下的无 witness 提交",
+  "file": "src/audit/attestation_event.rs",
+  "old": "    if commit.witness.is_some() {",
+  "new": "    if true {",
+  "filter": "policy_event_accepts_legacy_shape_but_rejects_non_boolean_signed_witness",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_cli"
+ },
+ {
+  "name": "vcs: 签名准入忽略 attestation 操作状态",
+  "file": "src/attestation.rs",
+  "old": "        crate::audit::attestation_event::operation_states_match(event, begin, result)\n            .map_err(RepoError::AttestationInvalid)?;",
+  "new": "        let _ = crate::audit::attestation_event::operation_states_match(event, begin, result);",
+  "filter": "strict_policy_defers_attestation_and_cli_mcp_enforce_it",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:trust_cli"
+ },
+ {
+  "name": "vcs: MCP 严格策略仍报告未签名",
+  "file": "src/mcp.rs",
+  "old": "                let effective_signed = signed\n                    || self",
+  "new": "                let effective_signed = signed\n                    && self",
+  "filter": "strict_policy_defers_attestation_and_cli_mcp_enforce_it",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:trust_cli"
  }
 ]

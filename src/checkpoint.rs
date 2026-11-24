@@ -15,6 +15,7 @@ use crate::signing::{KeyFile, public_key_bytes};
 
 pub mod anchor;
 pub mod consistency;
+pub mod external;
 
 /// 一次 checkpoint 的摘要，给 CLI 和测试用。
 #[derive(Clone, Debug, Serialize)]

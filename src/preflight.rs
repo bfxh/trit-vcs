@@ -49,6 +49,7 @@ pub struct Facts {
     pub witness_exit: Option<i32>,
     pub intent: Option<IntentFacts>,
     pub require_witness: bool,
+    pub require_signed_witness: bool,
     pub require_intent: bool,
     pub size: SizeFacts,
 }
@@ -89,18 +90,21 @@ pub(crate) fn decide(repo: &Repo, req: &CommitRequest) -> Result<Decision, RepoE
         _ => {}
     }
     let policy = repo.policy()?;
-    let witness: Option<(Hash, Witness)> = match req.witness.as_deref() {
-        Some(bytes) => {
-            let parsed = witness::verify(bytes, tree)?;
-            require_passing(&parsed)?;
-            Some((Hash::of(bytes), parsed))
-        }
-        None if policy.require_witness => return Err(RepoError::WitnessRequired),
-        None => None,
-    };
     let parent = req.parent_override.or(repo.head()?);
     let base_tree = match parent {
         Some(id) => Some(repo.commit_at(&id)?.tree),
+        None => None,
+    };
+    let witness: Option<(Hash, Witness)> = match req.witness.as_deref() {
+        Some(bytes) => {
+            let parsed = witness::verify(bytes, tree)?;
+            parsed.check_base(base_tree)?;
+            require_passing(&parsed)?;
+            Some((Hash::of(bytes), parsed))
+        }
+        None if policy.require_witness || policy.require_signed_witness => {
+            return Err(RepoError::WitnessRequired);
+        }
         None => None,
     };
     let intent = match req.intent.clone() {
@@ -193,6 +197,7 @@ fn project(d: &Decision, size: SizeFacts) -> Facts {
             base: intent.base.map(|base| base.to_hex()),
         }),
         require_witness: d.policy.require_witness,
+        require_signed_witness: d.policy.require_signed_witness,
         require_intent: d.policy.require_intent,
         size,
     }
@@ -350,6 +355,49 @@ mod tests {
         assert_eq!(facts.witness, None);
         assert_eq!(facts.witness_exit, None);
         assert!(!facts.require_witness);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn signed_witness_policy_requires_witness_and_is_reported() {
+        let root = temp("signed-witness");
+        let mut repo = repo_with(&root.join("r"), &files(&[("a.txt", "a\n")]));
+        repo.set_policy(
+            &Policy {
+                require_signed_witness: true,
+                ..Default::default()
+            },
+            "qoder:s1",
+            1_001,
+        )
+        .unwrap();
+        let missing = request(&["a.txt"], 9_000);
+        assert!(matches!(
+            repo.preflight(&missing),
+            Err(RepoError::WitnessRequired)
+        ));
+        assert!(matches!(
+            repo.commit(missing),
+            Err(RepoError::WitnessRequired)
+        ));
+
+        let tree = Hash::from_hex(&repo.index().unwrap().unwrap().tree).unwrap();
+        let witness = Witness::from_run(
+            tree,
+            None,
+            vec!["cargo".into(), "test".into()],
+            crate::witness::RunOutput::new(0, b"ok\n".to_vec(), Vec::new(), 1_000, 5),
+        )
+        .encode();
+        let facts = repo
+            .preflight(&CommitRequest {
+                witness: Some(witness),
+                ..request(&["a.txt"], 9_000)
+            })
+            .unwrap();
+        assert!(!facts.require_witness);
+        assert!(facts.require_signed_witness);
+        assert!(facts.witness.is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 

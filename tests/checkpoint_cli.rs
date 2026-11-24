@@ -590,3 +590,115 @@ fn proof_and_anchor_cli_reject_malformed_json() {
     let failure: serde_json::Value = serde_json::from_str(&stdout(&anchor)).unwrap();
     assert_eq!(failure["error"]["kind"], "anchor_bad");
 }
+
+#[test]
+fn external_anchor_cli_uses_pinned_key_and_refuses_overwrite() {
+    let root = temp("external-anchor");
+    let init = run(&root, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    trust_auditor(&root);
+    add_file(&root, "a.txt", "alpha");
+    let checkpoint = checkpoint(&root);
+    let seq = checkpoint["height"].as_u64().unwrap().to_string();
+
+    let external = run(&root, &["key", "init", "--out", "external.key", "--json"]);
+    assert!(external.status.success(), "{}", stderr(&external));
+    let external: serde_json::Value = serde_json::from_str(&stdout(&external)).unwrap();
+    let public = external["public"].as_str().unwrap().to_string();
+    let key_id = external["key_id"].as_str().unwrap().to_string();
+    let list = run(&root, &["key", "list", "--json"]);
+    let listed: serde_json::Value = serde_json::from_str(&stdout(&list)).unwrap();
+    assert!(
+        listed["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|key| key["key_id"] != key_id),
+        "外部锚密钥不应被加进仓内信任表"
+    );
+
+    let exported = run(
+        &root,
+        &[
+            "audit",
+            "external-anchor",
+            "--checkpoint",
+            &seq,
+            "--key-file",
+            "external.key",
+            "--anchor-public-key",
+            &public,
+            "--out",
+            "external-anchor.json",
+            "--json",
+        ],
+    );
+    assert!(exported.status.success(), "{}", stderr(&exported));
+    let exported: serde_json::Value = serde_json::from_str(&stdout(&exported)).unwrap();
+    assert_eq!(exported["anchor"]["key_id"], key_id);
+    let original = fs::read(root.join("external-anchor.json")).unwrap();
+
+    let verified = run(
+        &root,
+        &[
+            "audit",
+            "verify-external-anchor",
+            "--anchor",
+            "external-anchor.json",
+            "--anchor-public-key",
+            &public,
+            "--json",
+        ],
+    );
+    assert!(verified.status.success(), "{}", stderr(&verified));
+    let verified: serde_json::Value = serde_json::from_str(&stdout(&verified)).unwrap();
+    assert_eq!(verified["ok"], true);
+    assert_eq!(verified["checkpoint"].as_u64().unwrap().to_string(), seq);
+
+    let wrong = run(&root, &["key", "init", "--out", "wrong.key", "--json"]);
+    assert!(wrong.status.success(), "{}", stderr(&wrong));
+    let wrong: serde_json::Value = serde_json::from_str(&stdout(&wrong)).unwrap();
+    let wrong_public = wrong["public"].as_str().unwrap();
+    let rejected = run(
+        &root,
+        &[
+            "audit",
+            "verify-external-anchor",
+            "--anchor",
+            "external-anchor.json",
+            "--anchor-public-key",
+            wrong_public,
+            "--json",
+        ],
+    );
+    assert!(!rejected.status.success(), "错误外部公钥必须拒绝");
+    let failure: serde_json::Value = serde_json::from_str(&stdout(&rejected)).unwrap();
+    assert_eq!(failure["error"]["kind"], "anchor_untrusted");
+
+    fs::write(root.join("external-anchor.json"), b"keep-me\n").unwrap();
+    let overwrite = run(
+        &root,
+        &[
+            "audit",
+            "external-anchor",
+            "--checkpoint",
+            &seq,
+            "--key-file",
+            "external.key",
+            "--anchor-public-key",
+            &public,
+            "--out",
+            "external-anchor.json",
+            "--json",
+        ],
+    );
+    assert!(!overwrite.status.success(), "已有锚文件不得覆盖");
+    assert_eq!(
+        fs::read(root.join("external-anchor.json")).unwrap(),
+        b"keep-me\n"
+    );
+    let failure: serde_json::Value = serde_json::from_str(&stdout(&overwrite)).unwrap();
+    assert_eq!(failure["error"]["kind"], "cli_local_io");
+    fs::write(root.join("external-anchor.json"), original).unwrap();
+    let _ = fs::remove_dir_all(&root);
+}

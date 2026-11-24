@@ -47,9 +47,13 @@ pub(crate) fn audit_cmd(args: &[String]) -> ExitCode {
         "verify-consistency" => verify_consistency_cmd(&repo, args),
         "anchor" => anchor_cmd(&repo, args),
         "verify-anchor" => verify_anchor_cmd(&repo, args),
+        "external-anchor" => super::external_anchor_cli::external_anchor_cmd(&repo, args),
+        "verify-external-anchor" => {
+            super::external_anchor_cli::verify_external_anchor_cmd(&repo, args)
+        }
         other => {
             eprintln!(
-                "audit 未知子命令：{other}（可用：status / verify / reconcile / log / show / checkpoint / proof / consistency / verify-consistency / anchor / verify-anchor）"
+                "audit 未知子命令：{other}（可用：status / verify / reconcile / log / show / checkpoint / proof / consistency / verify-consistency / anchor / verify-anchor / external-anchor / verify-external-anchor）"
             );
             ExitCode::from(2)
         }
@@ -145,13 +149,13 @@ fn proof_cmd(repo: &Repo, args: &[String]) -> ExitCode {
 }
 
 #[derive(Clone, Copy)]
-struct CheckpointRef {
-    seq: usize,
-    height: usize,
-    root: Hash,
+pub(super) struct CheckpointRef {
+    pub(super) seq: usize,
+    pub(super) height: usize,
+    pub(super) root: Hash,
 }
 
-fn checkpoint_ref(
+pub(super) fn checkpoint_ref(
     repo: &Repo,
     args: &[String],
     flag_name: &str,
@@ -448,7 +452,7 @@ fn verify_anchor_cmd(repo: &Repo, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn write_new_json<T: Serialize>(path: &str, value: &T) -> Result<(), CliFail> {
+pub(super) fn write_new_json<T: Serialize>(path: &str, value: &T) -> Result<(), CliFail> {
     let bytes = serde_json::to_vec_pretty(value).map_err(|err| {
         CliFail::new(
             "audit_proof_bad",
@@ -496,14 +500,15 @@ fn read_json<T: DeserializeOwned>(path: &str) -> Result<T, CliFail> {
     })
 }
 
-fn fail_anchor(err: &anchor::AnchorError, repo: &Repo, args: &[String]) -> ExitCode {
+pub(super) fn fail_anchor(err: &anchor::AnchorError, repo: &Repo, args: &[String]) -> ExitCode {
     fail_err(
         &CliFail::new(
             err.kind(),
             err.to_string(),
             [
                 "先跑 `trit-vcs audit status --json` 确认日志、检查点和信任表",
-                "再跑 `trit-vcs audit verify-anchor --anchor <file> --json` 单独验锚",
+                "再跑 `trit-vcs audit verify-anchor --anchor <file> --json` 单独验仓内复制锚",
+                "独立外锚用 `trit-vcs audit verify-external-anchor --anchor <file> --anchor-public-key <hex> --json`",
             ],
         ),
         repo.root(),

@@ -1,6 +1,6 @@
 // 对象库 / 包 / 工作树 / 中央仓这四张判决面。
 //
-// 为什么单拆一个文件：`remediation` 的 RepoError 面已经有 19 条判决，再加进这四张面（6 + 7 + 4 + 3）
+// 为什么单拆一个文件：`remediation` 的 RepoError 判决面已经很大，再加进这四张面（6 + 7 + 4 + 3）
 // 就顶穿 800 行的上帝模块门。分文件不改公开路径 —— 调用方仍然 `trit_vcs::remediation::*`。
 //
 // 一条贯穿的口径：**转发性质的判决与里面那层共用同一个 kind**（`CentralError::Repo(NonFastForward)`
