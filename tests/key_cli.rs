@@ -125,6 +125,69 @@ fn key_add_and_revoke_are_audited_and_keyset_drift_is_red() {
 }
 
 #[test]
+fn generated_key_signs_commit_and_audit_verifies() {
+    let root = temp("sign");
+    let init = run(&root, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    fs::write(root.join("a.txt"), "alpha").unwrap();
+    let add = run(&root, &["add", "a.txt"]);
+    assert!(add.status.success(), "{}", stderr(&add));
+
+    let key_init = run(&root, &["key", "init", "--out", "key.json", "--json"]);
+    assert!(key_init.status.success(), "{}", stderr(&key_init));
+    let key: serde_json::Value = serde_json::from_str(&stdout(&key_init)).unwrap();
+    let key_id = key["key_id"].as_str().unwrap().to_string();
+    assert!(key["public"].as_str().unwrap().len() == 64);
+
+    let trust = run(
+        &root,
+        &[
+            "key",
+            "add",
+            "--key-file",
+            "key.json",
+            "--principal",
+            "qoder:sign",
+            "--owner",
+            "qoder:sign",
+        ],
+    );
+    assert!(trust.status.success(), "{}", stderr(&trust));
+
+    let commit = run(
+        &root,
+        &[
+            "commit",
+            "-m",
+            "签名提交",
+            "--owner",
+            "qoder:sign",
+            "--allow-unclaimed",
+            "--sign-key",
+            "key.json",
+        ],
+    );
+    assert!(commit.status.success(), "{}", stderr(&commit));
+
+    let audit = run(&root, &["audit", "status", "--json"]);
+    assert!(audit.status.success(), "{}", stderr(&audit));
+    let audit_value: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
+    assert_eq!(audit_value["ok"], true);
+
+    let log = run(&root, &["audit", "log", "--json"]);
+    assert!(log.status.success(), "{}", stderr(&log));
+    let events: serde_json::Value = serde_json::from_str(&stdout(&log)).unwrap();
+    let signature = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "signature")
+        .expect("签名提交必须留下 signature 事件");
+    assert_eq!(signature["payload"]["key_id"], key_id);
+    assert_eq!(signature["payload"]["algorithm"], "ed25519");
+}
+
+#[test]
 fn duplicate_and_unknown_key_are_rejected_without_new_event() {
     let root = temp("reject");
     let init = run(&root, &["init"]);

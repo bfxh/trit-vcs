@@ -1,21 +1,59 @@
-//! `key`：查看信任表，或用受审计方式 add/revoke 一个 key 指纹。
+//! `key`：生成 Ed25519 密钥、查看信任表、受审计 add/revoke 和查看公钥指纹。
 //!
-//! 这里管理的是“谁被信任”的元数据，不是签名工具；私钥生成/验签留给后续
-//! Ed25519 层。命令仍走写前/写后协议，所以每次信任变更都有可复算的账。
+//! 私钥文件由 `key init` 生成；`key add --key-file` 只把公钥和指纹写进信任表；
+//! 签名由 `commit --sign-key` 触发，信任表本身仍走写前/写后协议。
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::json;
 use trit_vcs::keys::TrustEntry;
 use trit_vcs::repo::Repo;
+use trit_vcs::signing::KeyFile;
 
 use super::verdict::fail_err;
 use super::{flag, has, now_secs, positionals, repo_path};
 
 const USAGE: &str = "key 用法：\n  \
      trit-vcs key [list] [--json] [--repo PATH]\n  \
+     trit-vcs key init --out <私钥文件> [--json]\n  \
      trit-vcs key add --key-id <指纹> --principal <主体> [--role author|auditor|release|reader] --owner <宿主:会话id> [--json] [--repo PATH]\n  \
+     trit-vcs key add --key-file <私钥文件> --principal <主体> [--role ...] --owner <宿主:会话id> [--json] [--repo PATH]\n  \
      trit-vcs key revoke --key-id <指纹> --reason <原因> --owner <宿主:会话id> [--json] [--repo PATH]";
+
+fn init(args: &[String]) -> ExitCode {
+    let Some(path) = flag(args, "--out") else {
+        eprintln!("key init 需要 --out <私钥文件>\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    let key = match KeyFile::generate() {
+        Ok(key) => key,
+        Err(err) => {
+            eprintln!("生成密钥失败：{err}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(err) = key.save_new(Path::new(path)) {
+        eprintln!("写密钥文件失败：{err}");
+        return ExitCode::from(1);
+    }
+    if has(args, "--json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "schema": key.schema,
+                "key_id": key.key_id,
+                "public": key.public,
+                "out": path,
+            }))
+            .unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        println!("已生成 {}（公钥 {}）", key.key_id, key.public);
+        println!("私钥文件：{path}（不要提交进仓库）");
+    }
+    ExitCode::SUCCESS
+}
 
 fn list(args: &[String]) -> ExitCode {
     let root = repo_path(args);
@@ -54,12 +92,26 @@ fn list(args: &[String]) -> ExitCode {
 
 fn add(args: &[String]) -> ExitCode {
     let root = repo_path(args);
-    let key_id = flag(args, "--key-id").unwrap_or("");
+    let mut key_id = flag(args, "--key-id").unwrap_or("").to_string();
     let principal = flag(args, "--principal").unwrap_or("");
     let owner = flag(args, "--owner").unwrap_or("");
     let role = flag(args, "--role").unwrap_or("author");
+    let key_path = flag(args, "--key-file");
+    let mut public_key = None;
+    if let Some(path) = key_path {
+        let key = match KeyFile::load(Path::new(path)) {
+            Ok(key) => key,
+            Err(err) => return fail_err(&err, &root, owner, args),
+        };
+        if !key_id.is_empty() && key_id != key.key_id {
+            eprintln!("--key-id 与 --key-file 的指纹不一致");
+            return ExitCode::from(2);
+        }
+        key_id = key.key_id;
+        public_key = Some(key.public);
+    }
     if key_id.is_empty() || principal.is_empty() || owner.is_empty() {
-        eprintln!("key add 需要 --key-id、--principal 和 --owner\n{USAGE}");
+        eprintln!("key add 需要 --key-id 或 --key-file，以及 --principal 和 --owner\n{USAGE}");
         return ExitCode::from(2);
     }
     let mut repo = match Repo::open(&root) {
@@ -67,10 +119,11 @@ fn add(args: &[String]) -> ExitCode {
         Err(err) => return fail_err(&err, &root, owner, args),
     };
     let entry = TrustEntry {
-        key_id: key_id.to_string(),
+        key_id: key_id.clone(),
         principal: principal.to_string(),
         role: role.to_string(),
         added_at_ms: now_secs() * 1000,
+        public_key,
         revoked_at_ms: None,
         revoke_reason: None,
     };
@@ -138,6 +191,8 @@ pub(crate) fn key_cmd(args: &[String]) -> ExitCode {
         &[
             "--repo",
             "--key-id",
+            "--key-file",
+            "--out",
             "--principal",
             "--role",
             "--owner",
@@ -146,6 +201,7 @@ pub(crate) fn key_cmd(args: &[String]) -> ExitCode {
     );
     match words.first().map(String::as_str) {
         None | Some("list") => list(args),
+        Some("init") => init(args),
         Some("add") => add(args),
         Some("revoke") => revoke(args),
         Some(other) => {

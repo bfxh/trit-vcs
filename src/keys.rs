@@ -1,8 +1,8 @@
 //! 受审计的信任表：`keys.json` 记录 key_id、principal、角色和吊销状态。
 //!
-//! 这里刻意不生成也不验证签名：它是 L3 之前的“谁被信任”账本，先保证每次
-//! add/revoke 都有写前状态、写后状态和操作结果。未来接入 Ed25519 验签时，
-//! key_id 仍是公钥指纹，事件格式不用推翻，只是多一条验签判据。
+//! 信任表本身不生成私钥，也不签提交；它记录“谁被信任”。私钥生成、提交签名与
+//! 验签在 `signing`。每次 add/revoke 都有写前状态、写后状态和操作结果；带公钥的
+//! 记录还要求 key_id 是公钥的 BLAKE3 指纹。
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -16,6 +16,11 @@ use crate::repo::{DIR, Repo, RepoError};
 
 pub const FILE: &str = "keys.json";
 
+/// 公钥指纹：`ed25519:` + BLAKE3(32 字节公钥) 的 hex。
+pub fn public_key_id(public: &[u8; 32]) -> String {
+    format!("ed25519:{}", Hash::of(public).to_hex())
+}
+
 /// 信任表里的一条 key。`revoked_at_ms` 有值即吊销，不删除历史。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrustEntry {
@@ -23,6 +28,9 @@ pub struct TrustEntry {
     pub principal: String,
     pub role: String,
     pub added_at_ms: u64,
+    /// Ed25519 公钥（32 字节 hex）；旧的纯 key_id 记录可以为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,7 +77,7 @@ impl TrustStore {
     }
 }
 
-/// key_id 是外部提供的公钥指纹；当前只做形状校验，不做密码学验证。
+/// key_id 先做形状校验；带 `public_key` 时，`add_key` 还要求它与公钥指纹一致。
 fn validate_key_id(key_id: &str) -> Result<(), RepoError> {
     let bad = key_id.len() < 8
         || key_id.len() > 256
@@ -108,7 +116,7 @@ impl Repo {
     /// 新增一条信任记录；重复 key_id 直接拒绝，不做静默覆盖。
     pub fn add_key(
         &mut self,
-        entry: TrustEntry,
+        mut entry: TrustEntry,
         session: &str,
         at_ms: u64,
     ) -> Result<Hash, RepoError> {
@@ -116,6 +124,15 @@ impl Repo {
         validate_text("principal", &entry.principal)?;
         validate_role(&entry.role)?;
         validate_text("session", session)?;
+        if let Some(public) = entry.public_key.as_mut() {
+            *public = public.to_ascii_lowercase();
+            let bytes = crate::signing::public_key_bytes(public)?;
+            if public_key_id(&bytes) != entry.key_id {
+                return Err(RepoError::BadHead(
+                    "key_id 与 Ed25519 公钥指纹不匹配".to_string(),
+                ));
+            }
+        }
         let mut store = self.keys()?;
         if store.keys.contains_key(&entry.key_id) {
             return Err(RepoError::BadHead(format!(
@@ -250,6 +267,7 @@ mod tests {
                     principal: "qoder:test".to_string(),
                     role: "author".to_string(),
                     added_at_ms: 1,
+                    public_key: None,
                     revoked_at_ms: None,
                     revoke_reason: None,
                 },

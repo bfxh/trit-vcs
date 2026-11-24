@@ -23,6 +23,8 @@ serde_json = "1.0.154"
 thiserror = "2.0.21"
 blake3 = "1.5"
 flate2 = "1.0"
+ed25519-dalek = "3.0.0"
+getrandom = "0.3"
 
 [[example]]
 name = "vcs_bench"

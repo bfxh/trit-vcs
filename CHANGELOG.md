@@ -41,10 +41,16 @@
   state_before/state_after）；重复 key、未知 key、已吊销 key 明确拒绝，不静默覆盖。`state_digest`
   在 `keys.json` 存在时纳入其原始字节：首次 add 的 state_before 是“文件不存在”的摘要，
   state_after 是“文件已存在”的摘要；之后手改/删 keyset 会被 `state_drift` 抓出。当前只做
-  key 元数据信任（key_id 形状校验），不做 Ed25519 验签，也不把 key_id 绑到提交。
-  测试：`src/audit.rs` / `src/audit/extra_tests.rs` 15 条、`tests/audit_cli.rs` 5 条、`tests/policy_cli.rs` 1 条、`tests/merge_cli.rs` 2 条、`tests/key_cli.rs` 2 条（干净仓 L2、删日志 L0、坏 JSON 仍可审计、手改
-  ref/HEAD 判红、accept 回执进链、开放操作/拒绝事件/失败操作改状态、策略变更进链与手改策略判红、合并事件与冲突后审计、错误 token 留 auth 事件、auth/deny 字段语义、非快进 publish 留 deny、publish 请求形状留 deny、脏工作树 pull 留 deny、服务端 pull 拒绝留 deny、key add/revoke 进链与手改 keyset 判红、重复/未知 key 拒绝）；新增 10 条变异（policy 事件不落链 / merge 事件不落链 / auth 事件不落链 / auth 不看 401 状态 / publish 拒绝不落 deny / deny 不看 reason / pull 拒绝不落 deny / publish 形状拒绝不落 deny / 服务端 pull 拒绝不落 deny / keyset 不进状态摘要），本机 auth 2/2、policy/merge/deny/pull/keyset 各自抽跑均抓住；
-  上一批 5 条写前/gate/失败状态变异仍保持 5/5，早先 3 条审计/锁变异仍全抓。尚未做：key 签名/轮换、Ed25519/Merkle/仓外锚。
+  key 元数据信任（重复/未知/已吊销 key 拒绝）；信任表本身不做签名，验签由下面的签名层负责。
+  新增 Ed25519 提交签名：`key init --out <私钥文件>` 生成 `trit-key-v1` JSON，`key add --key-file`
+  只把公钥和 `ed25519:<BLAKE3(公钥)>` 指纹写进信任表；`commit --sign-key FILE` 对提交 canonical 对象字节
+  做 `verify_strict` 可验的签名，落 `signature` 事件（commit/key_id/algorithm/signature/signed_at_ms/
+  state_before/state_after），签名是 sidecar，不改变提交 id，也不改提交事件。`audit` 新增
+  `signature_bad` / `signature_commit_missing` / `signer_untrusted` / `signer_revoked` / `signature_invalid`；
+  吊销按 `signed_at_ms` 判断，吊销前的历史签名仍可验。私钥不进 argv、不进日志、不进仓库事件。
+  测试：`src/audit.rs` / `src/audit/extra_tests.rs` 15 条、`tests/audit_cli.rs` 5 条、`tests/policy_cli.rs` 1 条、`tests/merge_cli.rs` 2 条、`tests/key_cli.rs` 3 条、`src/signing.rs` 2 条（干净仓 L2、删日志 L0、坏 JSON 仍可审计、手改
+  ref/HEAD 判红、accept 回执进链、开放操作/拒绝事件/失败操作改状态、策略变更进链与手改策略判红、合并事件与冲突后审计、错误 token 留 auth 事件、auth/deny 字段语义、非快进 publish 留 deny、publish 请求形状留 deny、脏工作树 pull 留 deny、服务端 pull 拒绝留 deny、key add/revoke 进链与手改 keyset 判红、重复/未知 key 拒绝、Ed25519 key init/add --key-file/commit --sign-key 进链与坏签名判红）；新增 12 条变异（policy 事件不落链 / merge 事件不落链 / auth 事件不落链 / auth 不看 401 状态 / publish 拒绝不落 deny / deny 不看 reason / pull 拒绝不落 deny / publish 形状拒绝不落 deny / 服务端 pull 拒绝不落 deny / keyset 不进状态摘要 / signature 事件不落链 / 审计不验签），本机 auth 2/2、policy/merge/deny/pull/keyset/signature 各自抽跑均抓住；
+  上一批 5 条写前/gate/失败状态变异仍保持 5/5，早先 3 条审计/锁变异仍全抓。尚未做：claim/witness/checkpoint 签名、key 轮换、Merkle/仓外锚。
 - 跨机传输与鉴权（网络 v0）：`trit-vcs serve --dir <中央仓> --bind 127.0.0.1:7878 --token-file <文件>`，
   客户端 `publish/pull --remote http://host:port --token-file <文件>`。协议是自写的 HTTP/1.1 子集
   （`GET`/`POST`、`Content-Length`、一请求一连接、拒 `chunked`），只用 `std`；对象流 `TVOB`

@@ -25,6 +25,7 @@ mod deny_event;
 mod key_event;
 mod ops;
 mod policy_event;
+mod signature_event;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AuditIssue {
@@ -372,6 +373,9 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
             }
             "policy" => policy_event::check_policy(event, &mut issues, &mut warnings),
             "key" => key_event::check_key(event, &mut issues, &mut warnings),
+            "signature" => {
+                signature_event::check_signature(repo, event, &mut issues, &mut warnings)
+            }
             "auth" => auth_event::check_auth(event, &mut issues, &mut warnings),
             "deny" => deny_event::check_deny(event, &mut issues, &mut warnings),
             "accept" => {

@@ -21,7 +21,7 @@
 | 写前准入 | Git 无对应面 | 未认领的提交默认拒；认领有 TTL、同名 id 判红；判决是三态（True/Unknown/False），"不知道"不等于"过" |
 | 被拒之后 | 更强 | 每条判决附**能直接跑的下一步命令**：`unclaimed` 负载 329→455 元（3 条命令）、`claim_conflict` 18→88 元、`witness_required` 26→73 元 |
 | 预检成本 | 有读数 | 60 文件 / 121 对象 / 9,400 字节的预检 **4.8 ms**，**写盘 0 个对象**（对象数、哈希链长度、HEAD 三样分别断言） |
-| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke 落 `key`；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；提交可带 `evidence`/`tags` |
+| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；提交可带 `evidence`/`tags` |
 | 时间 | 有面 | HLC（混合逻辑时钟）而非裸墙钟 |
 | 上下文预算 | 有面 | `--budget <元>` 对所有读数生效：只丢整行、从尾部丢，`truncation` 元数据自己算进预算；ASCII 4 字 = 1 元、非 ASCII 4 元 |
 | Git 生态 | 薄 | 双向桥只走第一父链：`git-export` / `git-import`（同步删除、防路径穿越、剥 `Trit-*` 尾注）；无 merge 图 / submodule / tag |
@@ -38,7 +38,8 @@
   两种形态都不删本地多余文件。
 - 认领账本放在**中央仓目录**里，多个工作树共享；但账本**没有走网络**：远程克隆仍要能读到同一个
   `--central` 目录，或 `claims export` 后把快照传给 `--claims FILE`。
-- v0 的 witness **不签名** ⇒ 防篡改、防绑错树，不防有人自己造一份。
+- v0 的 witness **不签名** ⇒ 防篡改、防绑错树，不防有人自己造一份。`commit --sign-key` 的
+  Ed25519 签名是**事件 sidecar**：覆盖提交对象字节，不改变提交 id；claim/witness/检查点仍未签名。
 - sparse 索引只记**一个前缀**（没有 git 的多前缀/cone 模式）；换范围就等于换一次前缀 checkout。
 - 三值逻辑只用在裁决处：全仓 `src` 实测三值 **4.5%**、二值 2.2%、中性 93.4%（`scripts/parity_scan.py`）。
 
@@ -97,7 +98,7 @@ trit-vcs policy set --owner qoder:s1 --require-witness --require-intent --json
 `policy` + `op_result`，事件里带 `session`、两个开关、`policy_hash`、`state_before`/`state_after`；
 绕过 CLI 直接改文件会被 `audit` 的 `state_drift` 或下一次 `op_state_gap` 抓出来。
 
-信任表也走同一套写前协议（当前只记主体/角色/指纹，不做 Ed25519 验签）：
+信任表也走同一套写前协议（表里存公钥/主体/角色；实际验签由下面的 `signing` 层负责）：
 
 ```sh
 trit-vcs key add --key-id ed25519:<指纹> --principal qoder:s1 --role author --owner qoder:s1
@@ -107,6 +108,18 @@ trit-vcs key list --json
 
 `key add/revoke` 落 `op_begin` + `key` + `op_result`；`keys.json` 存在时其原始字节进入
 `state_digest`，手改信任表会报 `state_drift`。重复 key、未知 key、已吊销 key 明确拒绝。
+
+Ed25519 提交签名（私钥不出仓、不进事件）：
+
+```sh
+trit-vcs key init --out ~/.trit/keys/author.key --json
+trit-vcs key add --key-file ~/.trit/keys/author.key --principal qoder:s1 --role author --owner qoder:s1
+trit-vcs commit -m "..." --owner qoder:s1 --sign-key ~/.trit/keys/author.key
+```
+
+`commit --sign-key` 签提交对象字节，落 `signature` 事件（commit/key_id/algorithm/signature/signed_at_ms）；
+`audit status` 用信任表公钥逐条 `verify_strict`，签名坏报 `signature_invalid`，未信任报 `signer_untrusted`，
+吊销后签的报 `signer_revoked`。签名是 sidecar，不改变提交 id。
 
 ## 持久 sparse 索引
 
@@ -143,7 +156,8 @@ python scripts/mutation_check.py --pkg trit-vcs                    # 150 条登�
 | `bundle` | `TVBD` 包 + 过滤后的**树清单** + 范围内传输（export 与 pull 共用同一条路） |
 | `claims` | 中央仓里的跨仓认领账本（单写者锁、冲突点名、`add/release/list/export`，变更进哈希链） |
 | `policy` | `policy set` 整份写入门禁开关，`policy` 事件记 session/开关/摘要/前后状态（手工改文件仍会被审计漂移抓到） |
-| `keys` | 受审计信任表：`key add/revoke/list` 写 `.tritvcs/keys.json`，每次变更落 `key` 事件；只记主体/角色/指纹，不做 Ed25519 验签 |
+| `keys` | 受审计信任表：`key add/revoke/list` 写 `.tritvcs/keys.json`，每次变更落 `key` 事件；可存 Ed25519 公钥，验签由 `signing` 层负责 |
+| `signing` | Ed25519 私钥文件、公钥指纹、提交签名；`commit --sign-key` 落 `signature` 事件，`audit` 用信任表公钥验提交字节 |
 | `central` | 命名 ref（`.tritvcs/refs/<name>`）、`publish`（闭包 + 父链 + 只准往前推）、`pull`（稀疏物化，脏则拒；全量落 HEAD+索引） |
 | `net` / `wire` / `remote` | 自写 HTTP/1.1 子集 + Bearer token（常量时间比较）、`TVOB` 对象流（收端重算 BLAKE3）、跨机 publish/pull 的快进与完整性闸门；鉴权失败落 `auth` 事件 |
 | `repo` / `journal` | 提交与查询、哈希链事件日志 |

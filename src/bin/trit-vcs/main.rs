@@ -46,7 +46,7 @@ fn usage() -> ExitCode {
          trit-vcs init [--repo PATH]\n  \
          trit-vcs add <文件>... [--repo PATH]\n  \
          trit-vcs commit -m <说明> --owner <宿主:会话id> [--claims FILE] [--evidence 文本]... \n                   \
-         [--tag 标签]... [--witness FILE] [--goal 目标] [--accept 判据]... [--allow-unclaimed] [--dry-run] [--json] [--repo PATH]\n  \
+         [--tag 标签]... [--witness FILE] [--goal 目标] [--accept 判据]... [--allow-unclaimed] [--dry-run] [--sign-key FILE] [--json] [--repo PATH]\n  \
          trit-vcs preflight -m <说明> --owner <宿主:会话id> [同 commit 的参数] [--budget N] [--json] [--repo PATH]\n   [--verify-accept --claims FILE [--accept-timeout 秒]]\
          trit-vcs witness [--out FILE] [--repo PATH] -- <命令>...\n  \
          trit-vcs admit <提交id> --witness FILE [--repo PATH]\n   [--verify-accept --claims FILE]\
@@ -220,8 +220,28 @@ fn main() -> ExitCode {
             }
             match repo.commit(request) {
                 Ok(outcome) => {
+                    let owner = flag(&args, "--owner").unwrap_or("");
+                    let signature = if let Some(path) = flag(&args, "--sign-key") {
+                        match repo.sign_commit(
+                            &outcome.id,
+                            std::path::Path::new(path),
+                            owner,
+                            now_secs() * 1000,
+                        ) {
+                            Ok(signature) => Some(signature),
+                            Err(err) => {
+                                eprintln!(
+                                    "提交 {} 已写入，但签名失败：{err}",
+                                    outcome.id.short()
+                                );
+                                return fail_repo(&err, repo.root(), owner, &args);
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     println!(
-                        "提交 {}（门禁 {}{}）",
+                        "提交 {}（门禁 {}{}{}）",
                         outcome.id.short(),
                         match outcome.verdict {
                             Verdict::Allowed => "allowed".to_string(),
@@ -230,6 +250,10 @@ fn main() -> ExitCode {
                         },
                         match witness_digest {
                             Some(digest) => format!("，见证 {}", digest.short()),
+                            None => String::new(),
+                        },
+                        match signature {
+                            Some(hash) => format!("，签名 {}", hash.short()),
                             None => String::new(),
                         }
                     );

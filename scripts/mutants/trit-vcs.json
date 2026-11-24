@@ -1536,5 +1536,25 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "test:key_cli"
+},
+{
+ "name": "vcs: 提交签名不落 signature 事件（签名无账）",
+ "file": "src/signing.rs",
+ "old": "                    \"signature\",\n                    json!({\n                        \"commit\": commit_hex,",
+ "new": "                    \"signature_changed\",\n                    json!({\n                        \"commit\": commit_hex,",
+ "filter": "generated_key_signs_commit_and_audit_verifies",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "test:key_cli"
+},
+{
+ "name": "vcs: 审计不验签（坏签名仍绿）",
+ "file": "src/signing.rs",
+ "old": "    key.verify_strict(message, &signature)\n        .map_err(|err| RepoError::BadHead(format!(\"签名不通过：{err}\")))",
+ "new": "    let _ = key.verify_strict(message, &signature);\n    Ok(())",
+ "filter": "signed_commit_is_audited_and_bad_signature_is_red",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
 }
 ]

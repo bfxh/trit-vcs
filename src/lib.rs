@@ -40,6 +40,7 @@ pub mod preflight;
 pub mod remediation;
 pub mod remote;
 pub mod repo;
+pub mod signing;
 pub mod sparse;
 pub mod status_cache;
 pub mod store;
