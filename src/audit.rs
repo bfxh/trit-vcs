@@ -6,8 +6,9 @@
 //! - HEAD、refs、对象是否和日志里记的最后状态对得上；
 //! - 最新事件里如果带 `state_after`，它是否等于当前状态摘要。
 //!
-//! 没有签名的链只能证明“链内自洽”；这里先把“自洽”收紧到“能对账”，
-//! 签名、Merkle 检查点和仓外锚是下一层，不在这个模块里假装已经具备。
+//! 没有签名的链只能证明“链内自洽”；这里先把“自洽”收紧到“能对账”。提交签名、密钥轮换和
+//! 仓内签名 Merkle 检查点已经接入，但仓外锚、inclusion/consistency proof 仍是下一层，
+//! 不在这个模块里假装已经具备。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ use crate::journal::{Event, Journal, JournalError};
 use crate::repo::{Repo, RepoError};
 
 mod auth_event;
+mod checkpoint_event;
 mod deny_event;
 mod key_event;
 mod ops;
@@ -376,6 +378,14 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
             "signature" => {
                 signature_event::check_signature(repo, event, &mut issues, &mut warnings)
             }
+            "checkpoint" => checkpoint_event::check_checkpoint(
+                repo,
+                events,
+                event.seq as usize,
+                event,
+                &mut issues,
+                &mut warnings,
+            ),
             "auth" => auth_event::check_auth(event, &mut issues, &mut warnings),
             "deny" => deny_event::check_deny(event, &mut issues, &mut warnings),
             "accept" => {

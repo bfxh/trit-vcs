@@ -22,6 +22,7 @@ pub mod bundle;
 pub mod central;
 pub mod chunk;
 pub mod claims;
+pub mod checkpoint;
 pub mod delta;
 pub mod gate;
 pub mod git_bridge;

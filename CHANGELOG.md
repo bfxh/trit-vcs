@@ -53,9 +53,17 @@
   `rotated_from`；`key` 事件新增 action=rotate、old_key_id、rotated_at_ms、双公钥、双签名。`audit`
   新增 `key_rotation_mismatch`，复验双签、指纹、吊销时间和信任表谱系；手改 `rotated_from` 或塞一条
   坏签名的 rotate 事件都会判红。轮换证明两把私钥参与，不把 `keys.json` 变成可信根。
-  测试：`src/audit.rs` / `src/audit/extra_tests.rs` 15 条、`tests/audit_cli.rs` 5 条、`tests/policy_cli.rs` 1 条、`tests/merge_cli.rs` 2 条、`tests/key_cli.rs` 4 条、`src/keys.rs` 5 条、`src/signing.rs` 2 条（干净仓 L2、删日志 L0、坏 JSON 仍可审计、手改
-  ref/HEAD 判红、accept 回执进链、开放操作/拒绝事件/失败操作改状态、策略变更进链与手改策略判红、合并事件与冲突后审计、错误 token 留 auth 事件、auth/deny 字段语义、非快进 publish 留 deny、publish 请求形状留 deny、脏工作树 pull 留 deny、服务端 pull 拒绝留 deny、key add/revoke 进链与手改 keyset 判红、重复/未知 key 拒绝、Ed25519 key init/add --key-file/commit --sign-key 进链与坏签名判红、key rotate 双签进链/旧钥吊销/新钥继承/二次轮换不回溯判红、抹 `rotated_from` 与坏轮换签名判红）；新增 14 条变异（policy 事件不落链 / merge 事件不落链 / auth 事件不落链 / auth 不看 401 状态 / publish 拒绝不落 deny / deny 不看 reason / pull 拒绝不落 deny / publish 形状拒绝不落 deny / 服务端 pull 拒绝不落 deny / keyset 不进状态摘要 / signature 事件不落链 / 审计不验签 / 轮换不验双签名 / 轮换不核对信任谱系），本机 auth 2/2、policy/merge/deny/pull/keyset/signature/rotation 各自抽跑均抓住；
-  上一批 5 条写前/gate/失败状态变异仍保持 5/5，早先 3 条审计/锁变异仍全抓。尚未做：claim/witness/checkpoint/attestation 签名、Merkle 检查点、仓外锚、成功鉴权的 actor/request id。
+  新增签名检查点 v0：`audit checkpoint --key-file --owner` 对当前 `op_begin` 之前的事件前缀做
+  Merkle 根，`checkpoint` 事件记 height/head/merkle_root/previous/key_id/algorithm/signature/
+  signed_at_ms；只有 auditor/release 角色能签。下一个检查点用 `previous` 接上一个检查点事件哈希。
+  `audit` 新增 `checkpoint_bad` / `checkpoint_head_mismatch` / `checkpoint_merkle_mismatch` /
+  `checkpoint_chain_mismatch` / `checkpoint_signature_invalid` / `checkpoint_untrusted` /
+  `checkpoint_revoked` / `checkpoint_no_state` / `checkpoint_state_change`，重算前缀根、核高度和前驱、
+  用信任表公钥验签。检查点仍在仓内 journal，删整条尾巴时可能连检查点一起删；仓外锚、
+  inclusion/consistency proof 仍未做。
+  测试：`src/audit.rs` / `src/audit/extra_tests.rs` 15 条、`tests/audit_cli.rs` 5 条、`tests/policy_cli.rs` 1 条、`tests/merge_cli.rs` 2 条、`tests/key_cli.rs` 4 条、`tests/checkpoint_cli.rs` 2 条、`src/keys.rs` 5 条、`src/checkpoint.rs` 6 条、`src/signing.rs` 2 条（干净仓 L2、删日志 L0、坏 JSON 仍可审计、手改
+  ref/HEAD 判红、accept 回执进链、开放操作/拒绝事件/失败操作改状态、策略变更进链与手改策略判红、合并事件与冲突后审计、错误 token 留 auth 事件、auth/deny 字段语义、非快进 publish 留 deny、publish 请求形状留 deny、脏工作树 pull 留 deny、服务端 pull 拒绝留 deny、key add/revoke 进链与手改 keyset 判红、重复/未知 key 拒绝、Ed25519 key init/add --key-file/commit --sign-key 进链与坏签名判红、key rotate 双签进链/旧钥吊销/新钥继承/二次轮换不回溯判红、抹 `rotated_from` 与坏轮换签名判红、checkpoint 双检查点链/高度与根/换根、换前驱、坏签名、无 op 链判红）；新增 18 条变异（policy 事件不落链 / merge 事件不落链 / auth 事件不落链 / auth 不看 401 状态 / publish 拒绝不落 deny / deny 不看 reason / pull 拒绝不落 deny / publish 形状拒绝不落 deny / 服务端 pull 拒绝不落 deny / keyset 不进状态摘要 / signature 事件不落链 / 审计不验签 / 轮换不验双签名 / 轮换不核对信任谱系 / checkpoint 不重算 Merkle 根 / checkpoint 不验签 / checkpoint 不核 previous 链 / checkpoint 不核对 op 链），本机 auth 2/2、policy/merge/deny/pull/keyset/signature/rotation/checkpoint 各自抽跑均抓住；
+  上一批 5 条写前/gate/失败状态变异仍保持 5/5，早先 3 条审计/锁变异仍全抓。尚未做：claim/witness/attestation 签名、inclusion/consistency proof、仓外锚、成功鉴权的 actor/request id。
 - 跨机传输与鉴权（网络 v0）：`trit-vcs serve --dir <中央仓> --bind 127.0.0.1:7878 --token-file <文件>`，
   客户端 `publish/pull --remote http://host:port --token-file <文件>`。协议是自写的 HTTP/1.1 子集
   （`GET`/`POST`、`Content-Length`、一请求一连接、拒 `chunked`），只用 `std`；对象流 `TVOB`

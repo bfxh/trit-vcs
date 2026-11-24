@@ -1576,5 +1576,45 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "lib"
+},
+{
+ "name": "vcs: checkpoint 不重算 Merkle 根（换根仍绿）",
+ "file": "src/audit/checkpoint_event.rs",
+ "old": "    if root != expected_root {",
+ "new": "    if false {",
+ "filter": "checkpoint_wrong_root_is_red_even_if_signature_is_valid",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: checkpoint 不验签（坏签名仍绿）",
+ "file": "src/audit/checkpoint_event.rs",
+ "old": "    if verify_signature(public, signature, &statement).is_err() {",
+ "new": "    if false {",
+ "filter": "checkpoint_bad_signature_is_red",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: checkpoint 不核 previous 链（换前驱仍绿）",
+ "file": "src/audit/checkpoint_event.rs",
+ "old": "    if previous != expected_previous {",
+ "new": "    if false {",
+ "filter": "checkpoint_wrong_previous_is_red_even_if_signature_is_valid",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: checkpoint 不核对 op 链（伪造检查点仍绿）",
+ "file": "src/audit/checkpoint_event.rs",
+ "old": "    let _ = check_operation_link(events, height_usize, event, key_id, issues);",
+ "new": "    let _ = true;",
+ "filter": "checkpoint_without_operation_is_red",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
 }
 ]

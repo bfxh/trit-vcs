@@ -3,6 +3,7 @@
 //! 这里不重复实现对账逻辑，只做三件事：打开仓库、调 `trit_vcs::audit`、把结果按
 //! “人读的一屏 / `--json` 的机器可分支对象”两种出口打出来。
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use trit_vcs::audit::{self, AuditError, AuditReport};
@@ -10,7 +11,7 @@ use trit_vcs::repo::Repo;
 
 use crate::cli_fail::CliFail;
 use crate::verdict::{fail_err, fail_repo, print_json};
-use crate::{flag, has, repo_path};
+use crate::{flag, has, now_secs, repo_path};
 
 pub(crate) fn audit_cmd(args: &[String]) -> ExitCode {
     let root = repo_path(args);
@@ -20,10 +21,10 @@ pub(crate) fn audit_cmd(args: &[String]) -> ExitCode {
         .map(String::as_str)
         .unwrap_or("status");
     let repo = match sub {
-        "log" | "show" => Repo::open(&root),
+        "log" | "show" | "checkpoint" => Repo::open(&root),
         _ => Repo::open_for_audit(&root),
     };
-    let repo = match repo {
+    let mut repo = match repo {
         Ok(repo) => repo,
         Err(err) => return fail_repo(&err, &root, "", args),
     };
@@ -31,12 +32,58 @@ pub(crate) fn audit_cmd(args: &[String]) -> ExitCode {
         "status" | "verify" | "reconcile" => status_cmd(&repo, args),
         "log" => log_cmd(&repo, args),
         "show" => show_cmd(&repo, args),
+        "checkpoint" => checkpoint_cmd(&mut repo, args),
         other => {
             eprintln!(
-                "audit 未知子命令：{other}（可用：status / verify / reconcile / log / show）"
+                "audit 未知子命令：{other}（可用：status / verify / reconcile / log / show / checkpoint）"
             );
             ExitCode::from(2)
         }
+    }
+}
+
+fn checkpoint_cmd(repo: &mut Repo, args: &[String]) -> ExitCode {
+    let key_path = flag(args, "--key-file").unwrap_or("");
+    let owner = flag(args, "--owner").unwrap_or("");
+    if key_path.is_empty() || owner.is_empty() {
+        eprintln!("audit checkpoint 需要 --key-file <私钥文件> 和 --owner <宿主:会话id>");
+        return ExitCode::from(2);
+    }
+    let at_ms = now_secs() * 1000;
+    match repo.checkpoint(Path::new(key_path), owner, at_ms) {
+        Ok(outcome) => {
+            if has(args, "--json") {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "event": outcome.event.to_hex(),
+                        "height": outcome.height,
+                        "head": outcome.head.map(|hash| hash.to_hex()),
+                        "merkle_root": outcome.merkle_root.to_hex(),
+                        "previous": outcome.previous.map(|hash| hash.to_hex()),
+                        "key_id": outcome.key_id,
+                        "signature": outcome.signature,
+                    }))
+                    .unwrap_or_else(|_| "{}".to_string())
+                );
+            } else {
+                println!(
+                    "已写检查点 {}：前缀 {} 条，root {}",
+                    outcome.event.short(),
+                    outcome.height,
+                    outcome.merkle_root.short()
+                );
+                println!(
+                    "  previous：{}",
+                    outcome
+                        .previous
+                        .map(|hash| hash.to_hex())
+                        .unwrap_or_else(|| "（首个检查点）".to_string())
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail_err(&err, repo.root(), owner, args),
     }
 }
 
@@ -155,7 +202,9 @@ fn render(report: &AuditReport) {
         println!("  说明：L1 只证明链内自洽；要 L2 需要最新事件带 state_after 且对账无问题");
     }
     if report.level == "L2" {
-        println!("  说明：L2 已把日志对到当前状态；签名检查点/仓外锚（L3）还没做");
+        println!(
+            "  说明：L2 已把日志对到当前状态；仓内签名检查点用 `audit checkpoint` 生成，仓外锚/一致性证明（L3）还没做"
+        );
     }
 }
 
