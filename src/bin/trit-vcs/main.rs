@@ -15,13 +15,19 @@ use trit_vcs::witness::{RunOutput, Witness};
 use trit_vcs::worktree;
 
 mod accept_cli;
+mod audit_cli;
 mod bridge;
 mod central_sync;
+mod claims_cli;
 mod cli_args;
 mod cli_fail;
 mod handoff_cli;
+mod key_cli;
 mod mcp_serve;
+mod policy_cli;
 mod query;
+mod remote_cli;
+mod sparse_cli;
 mod transport;
 mod verdict;
 use cli_args::{collect, commit_request, current_tree};
@@ -34,20 +40,30 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn usage() -> ExitCode {
     eprintln!(
         "用法：\n  \
          trit-vcs init [--repo PATH]\n  \
          trit-vcs add <文件>... [--repo PATH]\n  \
          trit-vcs commit -m <说明> --owner <宿主:会话id> [--claims FILE] [--evidence 文本]... \n                   \
-         [--tag 标签]... [--witness FILE] [--goal 目标] [--accept 判据]... [--allow-unclaimed] [--dry-run] [--json] [--repo PATH]\n  \
+         [--tag 标签]... [--witness FILE] [--goal 目标] [--accept 判据]... [--allow-unclaimed] [--dry-run] [--sign-key FILE] [--json] [--repo PATH]\n  \
          trit-vcs preflight -m <说明> --owner <宿主:会话id> [同 commit 的参数] [--budget N] [--json] [--repo PATH]\n   [--verify-accept --claims FILE [--accept-timeout 秒]]\
          trit-vcs witness [--out FILE] [--repo PATH] -- <命令>...\n  \
          trit-vcs admit <提交id> --witness FILE [--repo PATH]\n   [--verify-accept --claims FILE]\
          trit-vcs export <树id> --out FILE [--prefix DIR] [--dest REPO] [--repo SRC]\n  \
          trit-vcs import <包文件> [--repo DEST]\n  \
          trit-vcs publish <ref> --central PATH [--commit ID] [--force] [--repo SRC]\n  \
+         trit-vcs publish <ref> --remote http://host:port --token-file FILE [--commit ID] [--repo SRC]\n  \
          trit-vcs pull <ref> --central PATH [--prefix DIR] [--force] [--repo DEST]\n  \
+         trit-vcs pull <ref> --remote http://host:port --token-file FILE [--prefix DIR] [--repo DEST]\n  \
+         trit-vcs serve --dir PATH [--bind 127.0.0.1:7878] --token-file FILE [--max-body-mb N] [--max-object-mb N] [--max-conn N] [--read-timeout 秒]\n  \
          trit-vcs git-export <git目录> [--map FILE] [--repo PATH]\n  \
          trit-vcs mcp [--repo PATH]\n  \
          trit-vcs git-import <git目录> [--map FILE] [--repo PATH]\n  \
@@ -55,12 +71,32 @@ fn usage() -> ExitCode {
          trit-vcs handoff <提交id> --out <包目录|FILE.tvhp> [--bundle] [--repo PATH]\n  \
          trit-vcs handoff-verify <包目录|FILE.tvhp> [--repo PATH]\n  \
          trit-vcs status [--prefix DIR] [--json] [--budget N] [--repo PATH]\n  \
+         trit-vcs sparse [--json] [--repo PATH]\n  \
+         trit-vcs sparse --clear [--repo PATH]\n  \
+         trit-vcs claims add --central PATH --id ID --owner <宿主:会话id> --path P... [--ttl 秒] [--sign-key FILE]\n  \
+         trit-vcs claims release --central PATH --id ID --owner <宿主:会话id> [--sign-key FILE]\n  \
+         trit-vcs claims list --central PATH [--all] [--json]\n  \
+         trit-vcs claims export --central PATH --out FILE\n  \
+         trit-vcs policy [--json] [--repo PATH]\n  \
+         trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--json] [--repo PATH]\n  \
+         trit-vcs key [list] [--json] [--repo PATH]\n  \
+         trit-vcs key add --key-id <指纹> --principal <主体> [--role author|auditor|release|reader] --owner <宿主:会话id> [--json] [--repo PATH]\n  \
+         trit-vcs key revoke --key-id <指纹> --reason <原因> --owner <宿主:会话id> [--json] [--repo PATH]\n  \
          trit-vcs checkout <提交id> [--prefix DIR] [--force] [--repo PATH]\n  \
          trit-vcs log [--json] [--budget N] [--tag T] [--evidence 文本] [--session S] [--grep 文本] [--repo PATH]\n  \
          trit-vcs where <路径/测试/标签> --techmap FILE [--json]\n  \
          trit-vcs tests <路径/测试/标签> --techmap FILE\n  \
          trit-vcs explain <提交id> [--techmap FILE] [--json] [--repo PATH]\n  \
          trit-vcs verify [--repo PATH]\n  \
+         trit-vcs audit [status|verify|reconcile] [--anchor FILE] [--json] [--repo PATH]\n  \
+         trit-vcs audit checkpoint --key-file <私钥文件> --owner <宿主:会话id> [--json] [--repo PATH]\n  \
+         trit-vcs audit proof --checkpoint <seq> --event <seq> [--json] [--repo PATH]\n  \
+         trit-vcs audit consistency --from <seq> --to <seq> [--out FILE] [--json] [--repo PATH]\n  \
+         trit-vcs audit verify-consistency --from <seq> --to <seq> --proof FILE [--json] [--repo PATH]\n  \
+         trit-vcs audit anchor --checkpoint <seq> --out FILE [--json] [--repo PATH]\n  \
+         trit-vcs audit verify-anchor --anchor FILE [--json] [--repo PATH]\n  \
+         trit-vcs audit log [事件类型] [--from N] [--to N] [--json] [--repo PATH]\n  \
+         trit-vcs audit show <序号> [--json] [--repo PATH]\n  \
          trit-vcs stats [--repo PATH]"
     );
     ExitCode::from(2)
@@ -129,6 +165,9 @@ fn main() -> ExitCode {
                 Err(err) => fail_err(&err, &root, "", &args),
             }
         }
+        "serve" => remote_cli::serve_cmd(&args),
+        "policy" => policy_cli::policy_cmd(&args),
+        "key" => key_cli::key_cmd(&args),
         "add" => {
             let root = repo_path(&args);
             // 目标 = 位置参数；跳过 `--repo` 及其值
@@ -194,8 +233,25 @@ fn main() -> ExitCode {
             }
             match repo.commit(request) {
                 Ok(outcome) => {
+                    let owner = flag(&args, "--owner").unwrap_or("");
+                    let signature = if let Some(path) = flag(&args, "--sign-key") {
+                        match repo.sign_commit(
+                            &outcome.id,
+                            std::path::Path::new(path),
+                            owner,
+                            now_secs() * 1000,
+                        ) {
+                            Ok(signature) => Some(signature),
+                            Err(err) => {
+                                eprintln!("提交 {} 已写入，但签名失败：{err}", outcome.id.short());
+                                return fail_repo(&err, repo.root(), owner, &args);
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     println!(
-                        "提交 {}（门禁 {}{}）",
+                        "提交 {}（门禁 {}{}{}）",
                         outcome.id.short(),
                         match outcome.verdict {
                             Verdict::Allowed => "allowed".to_string(),
@@ -204,6 +260,10 @@ fn main() -> ExitCode {
                         },
                         match witness_digest {
                             Some(digest) => format!("，见证 {}", digest.short()),
+                            None => String::new(),
+                        },
+                        match signature {
+                            Some(hash) => format!("，签名 {}", hash.short()),
                             None => String::new(),
                         }
                     );
@@ -290,7 +350,7 @@ fn main() -> ExitCode {
         }
         "admit" => {
             let root = repo_path(&args);
-            let repo = match Repo::open(&root) {
+            let mut repo = match Repo::open(&root) {
                 Ok(repo) => repo,
                 Err(err) => return fail_repo(&err, &root, "", &args),
             };
@@ -315,7 +375,7 @@ fn main() -> ExitCode {
                 Err(err) => return fail_err(&err, &root, "", &args),
             };
             if let Err(err) = accept_cli::verify(
-                &repo,
+                &mut repo,
                 commit.intent.as_ref(),
                 &commit.tree,
                 commit.parents.first(),
@@ -349,7 +409,7 @@ fn main() -> ExitCode {
                 Ok(request) => request,
                 Err(err) => return fail_err(&err, &root, "", &args),
             };
-            let repo = match Repo::open(&root) {
+            let mut repo = match Repo::open(&root) {
                 Ok(repo) => repo,
                 Err(err) => return fail_repo(&err, &root, "", &args),
             };
@@ -358,7 +418,7 @@ fn main() -> ExitCode {
                 Err(err) => return fail_err(&err, &root, "", &args),
             };
             if let Err(err) = accept_cli::verify(
-                &repo,
+                &mut repo,
                 request.intent.as_ref(),
                 &tree,
                 base.as_ref(),
@@ -376,7 +436,7 @@ fn main() -> ExitCode {
         "mcp" => mcp_serve::serve_cmd(&args),
         "merge" => {
             let root = repo_path(&args);
-            let repo = match Repo::open(&root) {
+            let mut repo = match Repo::open(&root) {
                 Ok(repo) => repo,
                 Err(err) => return fail_repo(&err, &root, "", &args),
             };
@@ -398,7 +458,7 @@ fn main() -> ExitCode {
                 },
                 None => None,
             };
-            match merge::merge(&repo, &ours, &theirs, base.as_ref()) {
+            match merge::merge_audited(&mut repo, &ours, &theirs, base.as_ref()) {
                 Ok(outcome) => {
                     if has(&args, "--json") {
                         let conflicts: Vec<serde_json::Value> = outcome
@@ -492,6 +552,7 @@ fn main() -> ExitCode {
                             "message": commit.message,
                             "hlc": [commit.hlc.wall_ms, commit.hlc.counter],
                             "witness": commit.witness.map(|w| w.to_hex()),
+                            "claim_set": commit.claim_set.map(|c| c.to_hex()),
                             "intent": commit.intent.as_ref().map(|intent| serde_json::json!({
                                 "goal": intent.goal,
                                 "accept": intent.accept,
@@ -525,6 +586,8 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        "sparse" => sparse_cli::sparse_cmd(&args),
+        "claims" => claims_cli::claims_cmd(&args),
         "status" => {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {
@@ -649,11 +712,13 @@ fn main() -> ExitCode {
             match repo.verify() {
                 Ok(report) => {
                     println!(
-                        "绿：事件 {} 条，对象 {} 个，提交 {} 条（带见证 {} 条），HEAD {}",
+                        "绿：事件 {} 条，对象 {} 个，提交 {} 条（带见证 {} 条，带认领快照 {} 条，判据回执 {} 条），HEAD {}",
                         report.events,
                         report.objects,
                         report.commits,
                         report.witnessed,
+                        report.claim_sets,
+                        report.receipts,
                         report.head.unwrap_or_else(|| "-".to_string())
                     );
                     ExitCode::SUCCESS
@@ -661,6 +726,7 @@ fn main() -> ExitCode {
                 Err(err) => fail_err(&err, &root, "", &args),
             }
         }
+        "audit" => audit_cli::audit_cmd(&args),
         "stats" => {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {

@@ -35,6 +35,8 @@ pub enum RepoError {
     Journal(#[from] JournalError),
     #[error("仓库没初始化（找不到 {0}）")]
     NotInitialized(String),
+    #[error("仓库状态写入被锁：{0}")]
+    StateLocked(String),
     #[error("暂存区是空的：先 `add`")]
     NothingStaged,
     #[error("未认领：{paths:?} 没有在效认领覆盖（默认拒绝；要放行加 --allow-unclaimed）")]
@@ -117,6 +119,8 @@ pub struct Policy {
     pub require_witness: bool,
     #[serde(default)]
     pub require_intent: bool,
+    #[serde(default)]
+    pub require_signed_claims: bool,
 }
 
 /// 认领范围已经覆盖的路径折叠成范围本身。
@@ -191,7 +195,7 @@ impl CommitFilter {
 
 pub struct Repo {
     root: PathBuf,
-    store: Store,
+    pub(crate) store: Store,
     journal: Journal,
 }
 
@@ -228,6 +232,25 @@ impl Repo {
         })
     }
 
+    /// 审计入口：日志坏了不能在这里就放弃，否则 `audit` 永远只能报“io 错”。
+    /// 空壳日志会让 `audit status` 的 `journal_broken` 分支接手；普通命令仍走 `open`。
+    pub fn open_for_audit(root: impl Into<PathBuf>) -> Result<Self, RepoError> {
+        let root = root.into();
+        if !Self::dir(&root).is_dir() {
+            return Err(RepoError::NotInitialized(
+                Self::dir(&root).display().to_string(),
+            ));
+        }
+        let store = Store::open(Self::dir(&root))?;
+        let path = Self::dir(&root).join("journal.jsonl");
+        let journal = Journal::open(&path).unwrap_or_else(|_| Journal::empty(path));
+        Ok(Self {
+            root,
+            store,
+            journal,
+        })
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -238,6 +261,10 @@ impl Repo {
 
     pub fn journal(&self) -> &Journal {
         &self.journal
+    }
+
+    pub(crate) fn journal_mut(&mut self) -> &mut Journal {
+        &mut self.journal
     }
 
     pub fn head(&self) -> Result<Option<Hash>, RepoError> {
@@ -281,21 +308,114 @@ impl Repo {
     /// 命名 ref：`.tritvcs/refs/<名字>` 存一个提交 id。
     pub fn set_ref(&mut self, name: &str, commit: &Hash) -> Result<(), RepoError> {
         Self::validate_ref(name)?;
+        let _guard = self.lock_state()?;
+        self.set_ref_audited_locked(name, commit)
+    }
+
+    pub(crate) fn set_ref_audited_locked(
+        &mut self,
+        name: &str,
+        commit: &Hash,
+    ) -> Result<(), RepoError> {
+        Self::validate_ref(name)?;
         let path = Self::dir(&self.root).join("refs").join(name);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&path, format!("{commit}\n"))?;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        self.journal.append(
-            "ref",
+        self.with_operation(
+            "set_ref",
             json!({"name": name, "commit": commit.to_hex()}),
             now_ms,
-        )?;
-        Ok(())
+            |repo| {
+                fs::write(&path, format!("{commit}\n"))?;
+                let state_after = repo.state_digest()?.to_hex();
+                repo.journal.append(
+                    "ref",
+                    json!({"name": name, "commit": commit.to_hex(), "state_after": state_after}),
+                    now_ms,
+                )?;
+                Ok(())
+            },
+        )
+    }
+
+    /// pull 收尾：把 HEAD 与索引一起落到 `commit/tree`（**全量**拉取专用）。
+    ///
+    /// 只该在"快进已判过或显式 `force`"之后调用。索引写的是这次物化的清单（全量时就是
+    /// 提交的树），这样 `status` 与下一次 `commit` 从同一棵树出发，不会把刚拉下来的文件
+    /// 全算成"新增未暂存"。
+    pub fn adopt(&mut self, commit: &Hash, tree: &Hash, paths: &[String]) -> Result<(), RepoError> {
+        let _guard = self.lock_state()?;
+        self.adopt_audited_locked(commit, tree, paths)
+    }
+
+    pub(crate) fn adopt_audited_locked(
+        &mut self,
+        commit: &Hash,
+        tree: &Hash,
+        paths: &[String],
+    ) -> Result<(), RepoError> {
+        let index = Index {
+            tree: tree.to_hex(),
+            paths: paths.to_vec(),
+        };
+        let path = Self::dir(&self.root).join("index.json");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.with_operation(
+            "adopt",
+            json!({"commit": commit.to_hex(), "tree": tree.to_hex(), "paths": paths.len()}),
+            now_ms,
+            |repo| {
+                fs::write(
+                    &path,
+                    serde_json::to_vec_pretty(&index)
+                        .map_err(|e| RepoError::BadHead(e.to_string()))?,
+                )?;
+                repo.write_head(commit)?;
+                // 全量落 HEAD 之后，工作树就是完整检出：sparse 索引（如果之前有）不再成立。
+                crate::sparse::SparseIndex::clear(&repo.root)
+                    .map_err(|err| RepoError::Io(std::io::Error::other(err.to_string())))?;
+                let state_after = repo.state_digest()?.to_hex();
+                repo.journal.append(
+                    "adopt",
+                    json!({
+                        "commit": commit.to_hex(),
+                        "tree": tree.to_hex(),
+                        "paths": paths.len(),
+                        "path_list": paths,
+                        "state_after": state_after,
+                    }),
+                    now_ms,
+                )?;
+                Ok(())
+            },
+        )
+    }
+
+    /// 暂存区与 HEAD 是否不一致：不一致就说明有"已 add 未 commit"的改动，
+    /// 全量 pull 会把它覆盖掉 ⇒ 调用方要先挡（或显式 `--force`）。
+    pub fn staged_paths(&self) -> Result<Option<Vec<String>>, RepoError> {
+        let Some(index) = self.index()? else {
+            return Ok(None);
+        };
+        match self.head()? {
+            Some(head) => {
+                let tree = self.commit_at(&head)?.tree;
+                if index.tree == tree.to_hex() {
+                    Ok(None)
+                } else {
+                    Ok(Some(index.paths))
+                }
+            }
+            None => Ok(Some(index.paths)),
+        }
     }
 
     pub fn ref_commit(&self, name: &str) -> Result<Option<Hash>, RepoError> {
@@ -350,112 +470,168 @@ impl Repo {
         serde_json::from_str(&text).map_err(|e| RepoError::BadHead(format!("policy.json: {e}")))
     }
 
+    pub(crate) fn lock_state(&self) -> Result<crate::claims::LockGuard, RepoError> {
+        crate::claims::lock(self.root()).map_err(|err| match err {
+            crate::claims::ClaimsError::Locked(path) => RepoError::StateLocked(path),
+            crate::claims::ClaimsError::Io(err) => RepoError::Io(err),
+            other => RepoError::BadHead(other.to_string()),
+        })
+    }
+
     /// 暂存：把给定文件内容入库并写 index（不提交）。
     pub fn stage(
         &mut self,
         files: &BTreeMap<String, Vec<u8>>,
         now_secs: u64,
     ) -> Result<(Hash, PutStats), RepoError> {
-        // 上一版的树：同路径文件的新块会拿"上一版同位置块"做增量
-        let prev_files: BTreeMap<String, Hash> = match self.head()? {
-            Some(head) => self
-                .commit_at(&head)
-                .ok()
-                .and_then(|commit| self.store.tree_entries(&commit.tree).ok())
-                .unwrap_or_default(),
-            None => BTreeMap::new(),
-        };
-        let mut put = PutStats::default();
-        let mut entries = BTreeMap::new();
-        for (path, bytes) in files {
-            let prev = prev_files.get(path).copied();
-            let (id, detail) = self.store.put_file_with_prev(bytes, prev)?;
-            put.new_chunks += detail.new_chunks;
-            put.reused_chunks += detail.reused_chunks;
-            put.bytes_written += detail.bytes_written;
-            entries.insert(path.clone(), id);
-        }
-        let encoded =
-            serde_json::to_vec(&entries).map_err(|e| RepoError::BadHead(e.to_string()))?;
-        let (tree, _) = self.store.put_chunk(&encoded)?;
-        let index = Index {
-            tree: tree.to_hex(),
-            paths: files.keys().cloned().collect(),
-        };
-        fs::write(
-            Self::dir(&self.root).join("index.json"),
-            serde_json::to_vec_pretty(&index).map_err(|e| RepoError::BadHead(e.to_string()))?,
-        )?;
-        self.journal.append(
+        let at_ms = now_secs.saturating_mul(1000);
+        self.with_operation_locked(
             "stage",
-            json!({"tree": tree.to_hex(), "paths": index.paths}),
-            now_secs * 1000,
-        )?;
-        Ok((tree, put))
+            json!({"paths": files.keys().cloned().collect::<Vec<_>>()}),
+            at_ms,
+            |repo| {
+                // 上一版的树：同路径文件的新块会拿"上一版同位置块"做增量
+                let prev_files: BTreeMap<String, Hash> = match repo.head()? {
+                    Some(head) => repo
+                        .commit_at(&head)
+                        .ok()
+                        .and_then(|commit| repo.store.tree_entries(&commit.tree).ok())
+                        .unwrap_or_default(),
+                    None => BTreeMap::new(),
+                };
+                let mut put = PutStats::default();
+                let mut entries = BTreeMap::new();
+                for (path, bytes) in files {
+                    let prev = prev_files.get(path).copied();
+                    let (id, detail) = repo.store.put_file_with_prev(bytes, prev)?;
+                    put.new_chunks += detail.new_chunks;
+                    put.reused_chunks += detail.reused_chunks;
+                    put.bytes_written += detail.bytes_written;
+                    entries.insert(path.clone(), id);
+                }
+                let encoded = serde_json::to_vec(&entries)
+                    .map_err(|e| RepoError::BadHead(e.to_string()))?;
+                let (tree, _) = repo.store.put_chunk(&encoded)?;
+                let index = Index {
+                    tree: tree.to_hex(),
+                    paths: files.keys().cloned().collect(),
+                };
+                fs::write(
+                    Self::dir(&repo.root).join("index.json"),
+                    serde_json::to_vec_pretty(&index)
+                        .map_err(|e| RepoError::BadHead(e.to_string()))?,
+                )?;
+                let state_after = repo.state_digest()?.to_hex();
+                repo.journal.append(
+                    "stage",
+                    json!({"tree": tree.to_hex(), "paths": index.paths, "state_after": state_after}),
+                    at_ms,
+                )?;
+                Ok((tree, put))
+            },
+        )
     }
 
     /// 提交：判决走 `preflight::decide()`（与 `preflight()` 同一条路），之后才写盘。
     pub fn commit(&mut self, req: CommitRequest) -> Result<CommitOutcome, RepoError> {
-        let decision = crate::preflight::decide(self, &req)?;
+        let _guard = self.lock_state()?;
+        let decision = match crate::preflight::decide(self, &req) {
+            Ok(decision) => decision,
+            Err(err) => {
+                self.record_gate_denied_locked(&req, &err);
+                return Err(err);
+            }
+        };
         let tree = decision.tree;
-        let verdict = decision.verdict;
-        let parent = decision.parent;
-        let intent = decision.intent;
-        // 判决里已经逐字校验过见证并算出摘要；这里只负责把见证字节落进对象库。
-        if let Some(bytes) = req.witness.as_deref() {
-            self.store.put_chunk(bytes)?;
-        }
-        let witness = decision.witness;
-        let last_ms = self.journal.events().last().map(|e| e.at_ms).unwrap_or(0);
-        let hlc = Hlc::zero().tick((req.now_secs * 1000).max(last_ms));
-        let mut commit = Commit::new(tree, req.session.clone(), req.message.clone(), hlc);
-        if let Some((digest, _)) = &witness {
-            commit = commit.with_witness(*digest);
-        }
-        if let Some(intent) = &intent {
-            commit = commit.with_intent(intent.clone());
-        }
-        if let Some(parent) = parent {
-            commit = commit.with_parent(parent);
-        }
-        for claim in &req.claims {
-            commit = commit.with_claim(claim.id.clone());
-        }
-        for evidence in &req.evidence {
-            commit = commit.with_evidence(evidence.clone());
-        }
-        for tag in &req.tags {
-            commit = commit.with_tag(tag.clone());
-        }
-        let encoded = commit
-            .encode()
-            .map_err(|e| RepoError::BadHead(e.to_string()))?;
-        let (id, _) = self.store.put_chunk(&encoded)?;
-        self.journal.append(
-            "commit",
-            json!({
-                "id": id.to_hex(),
-                "tree": tree.to_hex(),
-                "session": commit.session,
-                "claims": commit.claims,
-                "evidence": commit.evidence,
-                "tags": commit.tags,
-                "verdict": verdict.label(),
-                "witness": witness.as_ref().map(|(digest, _)| digest.to_hex()),
-                "intent": intent.as_ref().map(|intent| json!({
-                    "goal": intent.goal,
-                    "accept": intent.accept.len(),
-                    "base": intent.base.map(|base| base.to_hex()),
-                })),
-                "message": commit.message,
-            }),
-            hlc.wall_ms,
-        )?;
-        self.write_head(&id)?;
-        Ok(CommitOutcome {
-            id,
-            verdict,
-            put: PutStats::default(),
+        let at_ms = req.now_secs.saturating_mul(1000);
+        let args = json!({
+            "tree": tree.to_hex(),
+            "session": req.session.clone(),
+            "message": req.message.clone(),
+            "claims": req.claims.len(),
+            "evidence": req.evidence.len(),
+            "tags": req.tags.len(),
+        });
+        self.with_operation("commit", args, at_ms, |repo| {
+            let verdict = decision.verdict;
+            let parent = decision.parent;
+            let intent = decision.intent;
+            // 判决里已经逐字校验过见证并算出摘要；这里只负责把见证字节落进对象库。
+            if let Some(bytes) = req.witness.as_deref() {
+                repo.store.put_chunk(bytes)?;
+            }
+            let witness = decision.witness;
+            // 授权快照也落成不可变对象：账本之后怎么变，都能复核"当时授权了哪些路径"。
+            let claim_set = if req.claims.is_empty() {
+                None
+            } else {
+                let set = crate::claims::ClaimSet::from_claims(&req.claims, req.now_secs)
+                    .map_err(|e| RepoError::BadHead(e.to_string()))?;
+                let bytes = set
+                    .encode()
+                    .map_err(|e| RepoError::BadHead(e.to_string()))?;
+                let (id, _) = repo.store.put_chunk(&bytes)?;
+                Some((id, set))
+            };
+            let last_ms = repo.journal.events().last().map(|e| e.at_ms).unwrap_or(0);
+            let hlc = Hlc::zero().tick((req.now_secs * 1000).max(last_ms));
+            let mut commit = Commit::new(tree, req.session.clone(), req.message.clone(), hlc);
+            if let Some((digest, _)) = &witness {
+                commit = commit.with_witness(*digest);
+            }
+            if let Some((digest, _)) = &claim_set {
+                commit = commit.with_claim_set(*digest);
+            }
+            if let Some(intent) = &intent {
+                commit = commit.with_intent(intent.clone());
+            }
+            if let Some(parent) = parent {
+                commit = commit.with_parent(parent);
+            }
+            for claim in &req.claims {
+                commit = commit.with_claim(claim.id.clone());
+            }
+            for evidence in &req.evidence {
+                commit = commit.with_evidence(evidence.clone());
+            }
+            for tag in &req.tags {
+                commit = commit.with_tag(tag.clone());
+            }
+            let encoded = commit
+                .encode()
+                .map_err(|e| RepoError::BadHead(e.to_string()))?;
+            let (id, _) = repo.store.put_chunk(&encoded)?;
+            // 先落 HEAD 再记 commit 事件：崩在两步之间会留下"状态变了、账没记"，
+            // 由 `op_begin`/`op_result` 与 audit 对账抓出来；不静默。
+            repo.write_head(&id)?;
+            let state_after = repo.state_digest()?.to_hex();
+            repo.journal.append(
+                "commit",
+                json!({
+                    "id": id.to_hex(),
+                    "tree": tree.to_hex(),
+                    "session": commit.session,
+                    "claims": commit.claims,
+                    "evidence": commit.evidence,
+                    "tags": commit.tags,
+                    "verdict": verdict.label(),
+                    "witness": witness.as_ref().map(|(digest, _)| digest.to_hex()),
+                    "claim_set": claim_set.as_ref().map(|(digest, _)| digest.to_hex()),
+                    "intent": intent.as_ref().map(|intent| json!({
+                        "goal": intent.goal,
+                        "accept": intent.accept.len(),
+                        "base": intent.base.map(|base| base.to_hex()),
+                    })),
+                    "message": commit.message,
+                    "state_after": state_after,
+                }),
+                hlc.wall_ms,
+            )?;
+            Ok(CommitOutcome {
+                id,
+                verdict,
+                put: PutStats::default(),
+            })
         })
     }
 
@@ -533,7 +709,25 @@ impl Repo {
         })?;
         let commits = self.log()?;
         let mut witnessed = 0usize;
+        let mut claim_sets = 0usize;
+        let mut receipts = 0usize;
         for (id, commit) in &commits {
+            if let Some(digest) = commit.claim_set {
+                claim_sets += 1;
+                let bytes = self.store.get_chunk(&digest)?;
+                let set = crate::claims::ClaimSet::decode(&bytes).map_err(|e| {
+                    RepoError::BadHead(format!("提交 {} 的 claim_set 不成立：{e}", id.short()))
+                })?;
+                let actual = set
+                    .id()
+                    .map_err(|e| RepoError::BadHead(format!("claim_set 编码失败：{e}")))?;
+                if actual != digest {
+                    return Err(RepoError::BadHead(format!(
+                        "提交 {} 的 claim_set 摘要对不上：记录 {digest}，实际 {actual}",
+                        id.short()
+                    )));
+                }
+            }
             let Some(digest) = commit.witness else {
                 continue;
             };
@@ -546,11 +740,43 @@ impl Repo {
                 RepoError::BadHead(format!("提交 {} 的 witness 不可用：{e}", id.short()))
             })?;
         }
+        for event in self.journal.events() {
+            if event.kind != "accept" {
+                continue;
+            }
+            let Some(digest) = event
+                .payload
+                .get("receipt")
+                .and_then(|value| value.as_str())
+                .and_then(Hash::from_hex)
+            else {
+                return Err(RepoError::BadHead(format!(
+                    "第 {} 条 accept 事件缺 receipt 摘要",
+                    event.seq
+                )));
+            };
+            receipts += 1;
+            let bytes = self.store.get_chunk(&digest)?;
+            let receipt = crate::accept::AcceptReceipt::decode(&bytes).map_err(|e| {
+                RepoError::BadHead(format!("第 {} 条 accept 回执解不开：{e}", event.seq))
+            })?;
+            let actual = receipt
+                .id()
+                .map_err(|e| RepoError::BadHead(format!("accept 回执编码失败：{e}")))?;
+            if actual != digest {
+                return Err(RepoError::BadHead(format!(
+                    "第 {} 条 accept 回执摘要对不上：记录 {digest}，实际 {actual}",
+                    event.seq
+                )));
+            }
+        }
         Ok(VerifyReport {
             events,
             objects: checked,
             commits: commits.len(),
             witnessed,
+            claim_sets,
+            receipts,
             head: commits.first().map(|(id, _)| id.to_hex()),
         })
     }
@@ -562,8 +788,12 @@ pub struct VerifyReport {
     pub objects: usize,
     pub commits: usize,
     pub witnessed: usize,
+    pub claim_sets: usize,
+    pub receipts: usize,
     pub head: Option<String>,
 }
+
+mod state;
 
 #[cfg(test)]
 mod tests;

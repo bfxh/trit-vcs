@@ -8,6 +8,13 @@ use crate::hash::Hash;
 use crate::repo::{Repo, RepoError};
 use crate::worktree::{self, WorktreeError};
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CentralError {
     #[error("仓库: {0}")]
@@ -61,18 +68,37 @@ pub fn publish(
         ANCESTOR_CAP,
     )?);
     let transfer = bundle::transfer(client.store(), central.store(), &objects)?;
-    if let Some(current) = central.ref_commit(name)? {
+    let _guard = central.lock_state()?;
+    let previous = central.ref_commit(name)?;
+    let mut forced = false;
+    if let Some(current) = previous {
         let descendant =
             current == resolved || central.merge_base(&resolved, &current)? == Some(current);
-        if !descendant && !force {
-            return Err(CentralError::Repo(RepoError::NonFastForward {
-                name: name.to_string(),
-                current: current.short(),
-                incoming: resolved.short(),
-            }));
+        if !descendant {
+            if !force {
+                return Err(CentralError::Repo(RepoError::NonFastForward {
+                    name: name.to_string(),
+                    current: current.short(),
+                    incoming: resolved.short(),
+                }));
+            }
+            forced = true;
         }
     }
-    central.set_ref(name, &resolved)?;
+    central.set_ref_audited_locked(name, &resolved)?;
+    central
+        .journal_mut()
+        .append(
+            "publish",
+            serde_json::json!({
+                "name": name,
+                "commit": resolved.to_hex(),
+                "previous": previous.map(|id| id.to_hex()),
+                "forced": forced,
+            }),
+            now_ms(),
+        )
+        .map_err(|err| CentralError::Repo(RepoError::Journal(err)))?;
     Ok(PublishStats {
         commit: resolved,
         transfer,
@@ -94,10 +120,61 @@ pub fn pull(
     let commit_obj = central.commit_at(&commit)?;
     // 走和包传输同一条路：发"过滤后的树清单"，原树整体不进客户端。
     let list = bundle::manifest(central.store(), commit_obj.tree, prefix)?;
+    let _guard = client.lock_state()?;
+    if prefix.is_none() {
+        // 全量 pull 会动 HEAD 与索引：先判快进、再判"有没有 add 了没 commit 的东西"，
+        // 两件都过了才开始写工作树（失败时一个字节都不该动）。
+        if let Some(head) = client.head()?
+            && head != commit
+        {
+            let base = client.merge_base(&commit, &head)?;
+            if !force && base != Some(head) {
+                return Err(CentralError::Repo(RepoError::NonFastForward {
+                    name: name.to_string(),
+                    current: head.short(),
+                    incoming: commit.short(),
+                }));
+            }
+        }
+        if !force && let Some(paths) = client.staged_paths()? {
+            return Err(CentralError::Worktree(WorktreeError::Dirty(
+                paths.len(),
+                paths,
+            )));
+        }
+    }
     let mut objects = vec![commit];
     objects.extend(bundle::entries_closure(central.store(), &list.entries)?);
     let transfer = bundle::transfer_scoped(central.store(), client.store(), &objects, &list)?;
-    let stats = worktree::materialize(client.store(), &list.id, client.root(), None, force)?;
+    let stats = worktree::materialize(client.store(), &list.id, client.root(), prefix, force)?;
+    match prefix {
+        None => {
+            let paths: Vec<String> = list.entries.keys().cloned().collect();
+            client.adopt_audited_locked(&commit, &list.id, &paths)?;
+        }
+        Some(prefix) => {
+            // 前缀 pull 不挪 HEAD，但要把"只检出了这个范围、基准是这棵树"记下来：
+            // 下一次 `status` 才有得比，范围外的文件也不会被算成新增/删除。
+            let index = crate::sparse::SparseIndex::new(prefix, list.id, Some(commit))
+                .map_err(WorktreeError::Sparse)?;
+            index.save(client.root()).map_err(WorktreeError::Sparse)?;
+        }
+    }
+    client
+        .journal_mut()
+        .append(
+            "pull",
+            serde_json::json!({
+                "name": name,
+                "commit": commit.to_hex(),
+                "prefix": prefix,
+                "forced": force,
+                "written": stats.written,
+                "skipped": stats.skipped,
+            }),
+            now_ms(),
+        )
+        .map_err(|err| CentralError::Repo(RepoError::Journal(err)))?;
     Ok(PullStats {
         commit,
         transfer,
@@ -160,6 +237,33 @@ mod tests {
     fn open_repo(path: &std::path::Path) -> Repo {
         std::fs::create_dir_all(path).unwrap();
         Repo::init(path).unwrap()
+    }
+
+    #[test]
+    fn state_lock_blocks_publish_and_pull() {
+        let root = temp("state-lock");
+        let files = corpus(1, 1);
+        let mut src = open_repo(&root.join("src"));
+        commit_all(&mut src, &files, 1_000);
+        let mut central = open_repo(&root.join("central"));
+        publish(&src, &mut central, "main", None, false).unwrap();
+        let mut client = open_repo(&root.join("client"));
+
+        let guard = crate::claims::lock(central.root()).unwrap();
+        assert!(matches!(
+            publish(&src, &mut central, "main", None, false),
+            Err(CentralError::Repo(RepoError::StateLocked(_)))
+        ));
+        drop(guard);
+
+        let guard = crate::claims::lock(client.root()).unwrap();
+        assert!(matches!(
+            pull(&central, &mut client, "main", Some("gen/d00"), false),
+            Err(CentralError::Repo(RepoError::StateLocked(_)))
+        ));
+        drop(guard);
+        assert!(pull(&central, &mut client, "main", Some("gen/d00"), false).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

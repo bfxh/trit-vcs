@@ -83,6 +83,9 @@ pub struct Commit {
     /// 绑定了本次树的测试见证（对象库里的摘要）；老提交没有这个字段。
     #[serde(default)]
     pub witness: Option<Hash>,
+    /// 提交当时解析出的认领快照（`claims::ClaimSet` 的对象 id）；老提交没有这个字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_set: Option<Hash>,
     /// 改动意图；老提交没有这个字段。
     #[serde(default)]
     pub intent: Option<Intent>,
@@ -108,12 +111,18 @@ impl Commit {
             message: message.into(),
             hlc,
             witness: None,
+            claim_set: None,
             intent: None,
         }
     }
 
     pub fn with_witness(mut self, witness: Hash) -> Self {
         self.witness = Some(witness);
+        self
+    }
+
+    pub fn with_claim_set(mut self, claim_set: Hash) -> Self {
+        self.claim_set = Some(claim_set);
         self
     }
 

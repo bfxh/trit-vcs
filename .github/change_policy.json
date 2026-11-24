@@ -44,7 +44,7 @@
     {
       "path": "Cargo.toml",
       "why": "MSRV 与依赖正本（trit-core/trit-orch 的 pin rev）：换 pin 就是换语义来源",
-      "must_contain": ["rust-version = \"1.88\"", "rev = \"2400fb9d2de751cab358455e3bf622b7a3288f1c\""]
+      "must_contain": ["rust-version = \"1.88\"", "rev = \"79542df8ad3ffbf598f90cfdc09dc8df0018c144\""]
     }
   ],
   "limits": {"max_l2_files": 25, "max_added_lines": 2500},

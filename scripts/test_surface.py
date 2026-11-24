@@ -172,7 +172,7 @@ def units(root: pathlib.Path) -> dict[str, dict]:
     """每个 crate / 每个脚本一个计数单位。"""
     result: dict[str, dict] = {}
     paths = (
-        sorted(root.glob("src/**/*.rs")) + sorted(root.glob("tests/*.rs"))
+        sorted(root.glob("src/**/*.rs")) + sorted(root.glob("tests/**/*.rs"))
         + sorted(root.glob("crates/*/src/**/*.rs")) + sorted(root.glob("crates/*/tests/*.rs"))
     )
     own = root_package(root)
@@ -329,6 +329,11 @@ def self_test() -> int:
         (solo / "src" / "lib.rs").write_text(
             "#[test]" + chr(10) + "fn real() { assert_eq!(1, 1); }" + chr(10), encoding="utf-8")
         check("根布局按包名归键", sorted(units(solo)), ["crate/solo"])
+        nested = solo / "tests" / "claims_cli"
+        nested.mkdir(parents=True)
+        (nested / "flow.rs").write_text(
+            "#[test]" + chr(10) + "fn nested() { assert_eq!(1, 1); }" + chr(10), encoding="utf-8")
+        check("tests 子模块也计入测试面", units(solo)["crate/solo"]["tests"], 2)
         (solo / "Cargo.toml").write_text('[package]' + chr(10), encoding="utf-8")
         check("读不到包名时不冒充真名", sorted(units(solo)), ["crate/root"])
         check("crates/* 布局仍按目录名归键", "crate/demo" in sorted(units(root)), True)

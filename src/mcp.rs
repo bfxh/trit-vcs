@@ -547,7 +547,7 @@ impl Mcp {
                     Some(value) => Some(hex(value, "base")?),
                     None => None,
                 };
-                let outcome = merge::merge(&self.repo, &ours, &theirs, base.as_ref())
+                let outcome = merge::merge_audited(&mut self.repo, &ours, &theirs, base.as_ref())
                     .map_err(|err| McpFail::from_error(&err, self.ctx()))?;
                 let conflicts: Vec<Value> = outcome
                     .conflicts

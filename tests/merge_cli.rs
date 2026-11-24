@@ -104,6 +104,14 @@ fn structured_conflict_has_no_markers_and_clean_merge_reports_tree() {
         object_bytes * 3 < raw_bytes,
         "冲突对象应远小于全文：object={object_bytes} raw={raw_bytes}"
     );
+    let audit = run(
+        &repo_root,
+        &["audit", "status", "--json", "--repo", &repo_text],
+    );
+    assert!(audit.status.success(), "有冲突但合并已完成，审计不应判红");
+    let audit_value: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
+    assert_eq!(audit_value["ok"], true);
+    assert_eq!(audit_value["open_ops"], 0);
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -134,5 +142,21 @@ fn non_overlapping_edits_merge_clean_via_cli() {
         "应报告干净合并：{}",
         stdout(&output)
     );
+    let audit = run(&repo_root, &["audit", "status", "--json"]);
+    assert!(audit.status.success(), "干净合并后审计应通过");
+    let audit_value: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
+    assert_eq!(audit_value["ok"], true);
+    assert_eq!(audit_value["open_ops"], 0);
+    let log = run(&repo_root, &["audit", "log", "--json"]);
+    assert!(log.status.success());
+    let events: serde_json::Value = serde_json::from_str(&stdout(&log)).unwrap();
+    let merge_event = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "merge")
+        .expect("合并必须留下 merge 事件");
+    assert_eq!(merge_event["payload"]["conflicts"], 0);
+    assert!(merge_event["payload"]["tree"].is_string());
     let _ = std::fs::remove_dir_all(&root);
 }

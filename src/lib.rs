@@ -12,14 +12,17 @@
 //! | 提交元数据 | 会话身份 + 认领 id + 证据 + 标签进对象内容 | 只有 author/committer 字符串 |
 //! | 时间 | 混合逻辑时钟（墙上倒退也全序） | 墙上时钟，可乱 |
 //! | 证据 | **测试见证绑定树；合并准入离线复核，改一个字节就拒** | 无内建证据，CI 结论在外部、可被重跑改写 |
-//! | 传输 | **块级闭包 + 目录级部分拉取 + 断点续传**（本地包；网络协议未做） | pack 协议成熟；我们只做离线包，不宣称网络面 |
+//! | 传输 | **块级闭包 + 目录级部分拉取 + 断点续传**；网络 v0：`serve` + Bearer token + 快进判定（无 TLS，见 README） | pack 协议成熟；我们不宣称 TLS/多租户 |
 //!
 //! 合并、Git 兼容桥在 M4–M6；没做的维度不在这里宣称。
 
 pub mod accept;
+pub mod audit;
 pub mod bundle;
 pub mod central;
+pub mod checkpoint;
 pub mod chunk;
+pub mod claims;
 pub mod delta;
 pub mod gate;
 pub mod git_bridge;
@@ -27,16 +30,24 @@ pub mod handoff;
 pub mod handoff_bundle;
 pub mod hash;
 pub mod journal;
+pub mod keys;
 pub mod mcp;
 pub mod merge;
 pub mod model;
+pub mod net;
+pub mod op;
+pub mod policy;
 pub mod preflight;
 pub mod remediation;
+pub mod remote;
 pub mod repo;
+pub mod signing;
+pub mod sparse;
 pub mod status_cache;
 pub mod store;
 pub mod techmap;
 pub mod tokens;
+pub mod wire;
 pub mod witness;
 pub mod worktree;
 

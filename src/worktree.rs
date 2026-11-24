@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hash::Hash;
 use crate::repo::{Repo, RepoError};
+use crate::sparse::SparseIndex;
 use crate::status_cache::{CachedFile, StatusCache};
 use crate::store::StoreError;
 
@@ -38,6 +39,8 @@ pub enum WorktreeError {
     Store(#[from] StoreError),
     #[error("工作树里有 {0} 个未提交改动（会挡着 checkout）：{1:?}；确认要覆盖请加 --force")]
     Dirty(usize, Vec<String>),
+    #[error("sparse 索引: {0}")]
+    Sparse(#[from] crate::sparse::SparseError),
 }
 
 /// 扫工作树（跳过 `.tritvcs` 与 `.git`），返回 `路径 → 内容`。
@@ -66,12 +69,17 @@ pub fn scan(root: &Path) -> Result<BTreeMap<String, Vec<u8>>, WorktreeError> {
     Ok(out)
 }
 
-fn head_tree(repo: &Repo) -> Result<BTreeMap<String, Hash>, WorktreeError> {
-    match repo.head()? {
-        Some(head) => {
-            let commit = repo.commit_at(&head)?;
-            Ok(repo.store().tree_entries(&commit.tree)?)
-        }
+/// 基准树：有 HEAD 就用 HEAD；没有 HEAD 时用 sparse 索引记下的树（前缀 pull 的场景）。
+fn base_tree(
+    repo: &Repo,
+    sparse: Option<&SparseIndex>,
+) -> Result<BTreeMap<String, Hash>, WorktreeError> {
+    if let Some(head) = repo.head()? {
+        let commit = repo.commit_at(&head)?;
+        return Ok(repo.store().tree_entries(&commit.tree)?);
+    }
+    match sparse {
+        Some(index) => Ok(repo.store().tree_entries(&index.expect_tree()?)?),
         None => Ok(BTreeMap::new()),
     }
 }
@@ -116,10 +124,16 @@ pub fn status_scoped(
     repo: &Repo,
     prefix: Option<&str>,
 ) -> Result<(Vec<Change>, StatusStats), WorktreeError> {
-    let all = head_tree(repo)?;
+    let sparse = SparseIndex::load(repo.root());
+    let requested = prefix
+        .map(str::to_string)
+        .filter(|p| !p.trim_matches('/').is_empty())
+        .or_else(|| sparse.as_ref().map(|index| index.prefix.clone()));
+    let scope = requested.as_deref();
+    let all = base_tree(repo, sparse.as_ref())?;
     let tree: BTreeMap<String, Hash> = all
         .into_iter()
-        .filter(|(path, _)| in_scope(path, prefix))
+        .filter(|(path, _)| in_scope(path, scope))
         .collect();
     let cache_file = crate::status_cache::cache_path(repo.root());
     let old = StatusCache::load(&cache_file);
@@ -127,7 +141,24 @@ pub fn status_scoped(
     let mut stats = StatusStats::default();
     let mut changes = Vec::new();
 
-    let mut stack = vec![(repo.root().to_path_buf(), String::new())];
+    // 只扫范围内：前缀是目录就从该目录起步；是单个文件就只扫它的父目录再按范围过滤。
+    // 范围外的目录根本不进 `read_dir`，稀疏检出的意义才落在 IO 上，而不只是"不报告"。
+    let mut stack = Vec::new();
+    match scope {
+        Some(prefix) => {
+            let full = repo.root().join(prefix);
+            if full.is_dir() {
+                stack.push((full, prefix.to_string()));
+            } else if full.is_file() {
+                let parent = Path::new(prefix)
+                    .parent()
+                    .and_then(|path| path.to_str())
+                    .unwrap_or("");
+                stack.push((repo.root().join(parent), parent.to_string()));
+            }
+        }
+        None => stack.push((repo.root().to_path_buf(), String::new())),
+    }
     while let Some((dir, rel_dir)) = stack.pop() {
         cache
             .dirs
@@ -151,7 +182,7 @@ pub fn status_scoped(
             if !meta.is_file() {
                 continue;
             }
-            if !in_scope(&rel, prefix) {
+            if !in_scope(&rel, scope) {
                 continue;
             }
             let size = meta.len();
@@ -196,7 +227,7 @@ pub fn status_scoped(
         }
     }
     changes.sort_by(|a, b| a.path.cmp(&b.path));
-    if prefix.is_none() {
+    if scope.is_none() {
         cache.save(&cache_file)?;
     }
     Ok((changes, stats))
@@ -244,6 +275,12 @@ pub fn checkout_scoped(
             fs::write(&target, &bytes)?;
             stats.written += 1;
         }
+    }
+    match prefix {
+        Some(prefix) => {
+            SparseIndex::new(prefix, commit.tree, Some(*commit_id))?.save(repo.root())?
+        }
+        None => SparseIndex::clear(repo.root())?,
     }
     Ok(stats)
 }
@@ -571,6 +608,8 @@ mod tests {
         fs::write(root.join("skip/b.txt"), b"b").unwrap();
         let mut repo = Repo::init(&root).unwrap();
         let id = commit_all(&mut repo, "base", 1_000);
+        let (baseline, _) = status_with_cache(&repo).unwrap();
+        assert!(baseline.is_empty(), "先让全量 status 把两棵子树都写进缓存");
 
         fs::remove_dir_all(root.join("keep")).unwrap();
         fs::remove_dir_all(root.join("skip")).unwrap();
@@ -582,7 +621,22 @@ mod tests {
         let (scoped, _) = status_scoped(&repo, Some("keep")).unwrap();
         assert!(scoped.is_empty(), "范围内应干净");
         let (whole, _) = status_scoped(&repo, None).unwrap();
-        assert_eq!(whole.len(), 1, "范围外缺失仍要如实报告");
+        assert!(
+            whole.is_empty(),
+            "持久 sparse 索引：范围外没检出不算删除（否则每次 status 都报一堆假删除）"
+        );
+        let cache = StatusCache::load(&crate::status_cache::cache_path(&root));
+        assert!(
+            cache.files.contains_key("skip/b.txt"),
+            "范围化 status 不能把范围外的 stat 缓存抹掉（否则下次全量退回全读）"
+        );
+        crate::sparse::SparseIndex::clear(&root).unwrap();
+        let (reset, _) = status_scoped(&repo, None).unwrap();
+        assert_eq!(
+            reset.len(),
+            1,
+            "清掉 sparse 索引再按全量判，范围外缺失才如实报告"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

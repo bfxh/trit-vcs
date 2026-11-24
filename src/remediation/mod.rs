@@ -44,6 +44,7 @@ pub fn kind(err: &RepoError) -> &'static str {
         RepoError::Store(inner) => kind_store(inner),
         RepoError::Journal(_) => "journal",
         RepoError::NotInitialized(_) => "not_initialized",
+        RepoError::StateLocked(_) => "state_locked",
         RepoError::NothingStaged => "nothing_staged",
         RepoError::Unclaimed { .. } => "unclaimed",
         RepoError::Conflict { .. } => "claim_conflict",
@@ -76,6 +77,10 @@ pub fn commands(err: &RepoError, ctx: Context<'_>) -> Vec<String> {
     let session = ctx.session;
     match err {
         RepoError::NotInitialized(dir) => vec![format!("{VCS} init --repo {dir}")],
+        RepoError::StateLocked(_) => vec![
+            format!("{VCS} claims list --central {repo}"),
+            "在持锁的仓库状态写入结束后重试；锁文件是正在写入的证据，别删".to_string(),
+        ],
         RepoError::NothingStaged => vec![format!("{VCS} add <文件或目录> --repo {repo}")],
         RepoError::Unclaimed { paths } => {
             let listed = join_paths(paths);
@@ -218,6 +223,7 @@ mod tests {
     fn every_variant() -> Vec<RepoError> {
         vec![
             RepoError::NotInitialized("/x/.tritvcs".to_string()),
+            RepoError::StateLocked("/x/.tritvcs/claims.lock".to_string()),
             RepoError::NothingStaged,
             RepoError::Unclaimed {
                 paths: vec!["a/src".to_string(), "b/src".to_string()],

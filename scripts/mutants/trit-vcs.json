@@ -6,7 +6,8 @@
   "new": "        if false {",
   "filter": "index_pointing_at_another_chunk_is_corrupt",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 不检查 pack 越界（截断的库照常当好的）",
@@ -15,7 +16,8 @@
   "new": "            if false {",
   "filter": "truncated_pack_is_reported",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 已存在的块不再复用（每次都写新块，去重失效）",
@@ -24,7 +26,8 @@
   "new": "        if false {\n            return Ok((hash, false));",
   "filter": "identical_content_writes_nothing_new",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 事件哈希不重算（改过的日志也判绿）",
@@ -33,7 +36,8 @@
   "new": "            if false {",
   "filter": "tampering_with_a_middle_event_is_detected",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: prev 链接不检查（删掉一条历史也看不出来）",
@@ -42,7 +46,8 @@
   "new": "            if false {",
   "filter": "wrong_prev_with_self_consistent_hash_is_caught",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 认领门不看别人（撞车照写）",
@@ -51,7 +56,8 @@
   "new": "    if false {",
   "filter": "other_live_claim_conflicts_and_is_named",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 没人认领也放行（默认拒绝形同虚设）",
@@ -60,16 +66,18 @@
   "new": "        _ => Verdict::Allowed,",
   "filter": "no_claim_is_unclaimed_not_allowed",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 提交不推 HEAD（前端一直看不到新提交）",
   "file": "src/repo.rs",
-  "old": "        self.write_head(&id)?;",
-  "new": "        let _ = &id;",
+  "old": "            repo.write_head(&id)?;",
+  "new": "            let _ = &id;",
   "filter": "stage_commit_and_log",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 第二条提交不记父提交（历史断成散点）",
@@ -78,7 +86,8 @@
   "new": "        if let Some(parent) = None::<Hash> {",
   "filter": "second_commit_links_to_first",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: HLC 退化（墙上时钟回拨就乱序）",
@@ -87,7 +96,8 @@
   "new": "        if false {",
   "filter": "hlc_is_monotonic_under_skew",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 增量不比大小就用（无关内容也硬套 delta，越存越大）",
@@ -96,7 +106,8 @@
   "new": "        if false {",
   "filter": "delta_is_not_used_for_unrelated_content",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 重建增量时丢掉前缀（读出来少一截）",
@@ -105,7 +116,8 @@
   "new": "    let _ = prefix;",
   "filter": "delta_is_used_for_a_local_edit",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: status 看不到修改（只报新增/删除）",
@@ -114,7 +126,8 @@
   "new": "            Some(known) if false => changes.push(Change {",
   "filter": "status_sees_added_modified_deleted",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: checkout 覆盖未提交改动（不打招呼就冲掉别人的文件）",
@@ -123,7 +136,8 @@
   "new": "    if false {",
   "filter": "checkout_restores_and_refuses_dirty_without_force",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: checkout 不防路径穿越（树里的 ../ 能写到仓库外）",
@@ -132,7 +146,8 @@
   "new": "    if false {",
   "filter": "checkout_rejects_path_escape",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: witness 不检查 statement 类型（随便什么 JSON 都算见证）",
@@ -141,7 +156,8 @@
   "new": "    if false {",
   "filter": "wrong_statement_or_predicate_type_is_rejected",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: witness 不检查 schema 版本（未来格式也当 v1 用）",
@@ -150,7 +166,8 @@
   "new": "    if false {",
   "filter": "unsupported_schema_is_rejected",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: witness 不要求恰好一个 subject（多棵树的见证也接受）",
@@ -159,7 +176,8 @@
   "new": "        if false {",
   "filter": "bad_digest_and_subject_count_are_rejected",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: witness 不校验树绑定（见证能盖到任意树）",
@@ -168,7 +186,8 @@
   "new": "        if false {",
   "filter": "binding_to_the_wrong_tree_is_rejected",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: witness 不校验退出码（红测试也能过）",
@@ -177,7 +196,8 @@
   "new": "        if false {",
   "filter": "failed_run_is_not_a_passing_witness",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 准入不校验见证文件摘要（改一个字节照过）",
@@ -186,7 +206,8 @@
   "new": "    if false {",
   "filter": "admission_rejects_a_tampered_witness_or_another_tree",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 策略要求见证时也放行（require_witness 形同虚设）",
@@ -195,7 +216,8 @@
   "new": "            None if false => return Err(RepoError::WitnessRequired),",
   "filter": "policy_can_require_a_witness",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 失败见证按通过处理（WitnessFailed 永久不触发）",
@@ -204,7 +226,8 @@
   "new": "        Err(WitnessError::Failed(_)) => Ok(()),",
   "filter": "failing_witness_cannot_be_committed",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 不读 stat 缓存（每次都重读全部文件）",
@@ -213,7 +236,8 @@
   "new": "                Some(cached) if false => {",
   "filter": "status_reuses_stat_cache_for_unchanged_files",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: stat 缓存只看大小不看 mtime（同大小改写漏掉）",
@@ -222,7 +246,8 @@
   "new": "        self.size == size",
   "filter": "same_size_rewrite_is_detected",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: status 不落缓存（第二次仍然全读）",
@@ -231,7 +256,8 @@
   "new": "    let _ = &cache_file;",
   "filter": "status_reuses_stat_cache_for_unchanged_files",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: status 看不到删除（缓存里有的就当存在）",
@@ -240,7 +266,8 @@
   "new": "        if false {",
   "filter": "status_sees_added_modified_deleted",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 认领范围不折叠（>256 个文件的提交永远判未认领）",
@@ -249,7 +276,8 @@
   "new": "            .any(|_claim| false)",
   "filter": "commit_with_many_files_uses_claim_scopes",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 策略要求 intent 时也放行",
@@ -258,7 +286,8 @@
   "new": "            None if false => return Err(RepoError::IntentRequired),",
   "filter": "policy_can_require_an_intent",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: intent 不要求 goal",
@@ -267,7 +296,8 @@
   "new": "                if false {",
   "filter": "intent_needs_a_goal_and_accept",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: intent 不要求 accept",
@@ -276,7 +306,8 @@
   "new": "                if false {",
   "filter": "intent_needs_a_goal_and_accept",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: intent 基线错配也放行",
@@ -285,7 +316,8 @@
   "new": "                    (Some(declared), Some(actual)) if false => {",
   "filter": "intent_base_must_match_parent_tree",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: intent 不自动填父树（基线永远空着）",
@@ -294,7 +326,8 @@
   "new": "                    (None, Some(_actual)) => {}",
   "filter": "intent_base_must_match_parent_tree",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 部分拉取不过滤路径（单目录包和全量一样大）",
@@ -303,7 +336,8 @@
   "new": "        .filter(|(_path, _)| true)",
   "filter": "partial_pull_sends_well_under_a_tenth",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 收包不校验哈希（坏块也写进去）",
@@ -312,7 +346,8 @@
   "new": "        if false {",
   "filter": "tampered_payload_is_rejected_before_storing",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 导出不看目标已有对象（全量重传）",
@@ -321,7 +356,8 @@
   "new": "        if false {",
   "filter": "export_skips_objects_the_destination_already_has",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 收包不跳过已有块（重复导入重复写）",
@@ -330,7 +366,8 @@
   "new": "        if false {",
   "filter": "truncated_bundle_resumes_and_ends_byte_identical",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 包头仍声明原树（部分包因此缺树对象）",
@@ -339,7 +376,8 @@
   "new": "    out.write_all(tree.as_bytes())?;",
   "filter": "partial_pull_sends_well_under_a_tenth",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 重叠编辑也当干净（冲突永不出现）",
@@ -348,7 +386,8 @@
   "new": "        } else if true\n        {",
   "filter": "overlapping_edits_become_one_structured_conflict",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 同窗口两侧只差空白也判冲突（伪冲突回来了）",
@@ -357,7 +396,8 @@
   "new": "        } else if only_ours || ours_out == theirs_out\n        {",
   "filter": "formatting_only_difference_is_not_a_conflict",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 一侧只做格式化也照 diff（格式噪音变成改动）",
@@ -366,7 +406,8 @@
   "new": "    if false {",
   "filter": "formatting_only_difference_is_not_a_conflict",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 删除 vs 未变也判争用（单边删除合不了）",
@@ -375,7 +416,8 @@
   "new": "            if false {",
   "filter": "delete_on_one_side_only_is_clean",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 不自动找公共祖先（两侧都当新增）",
@@ -384,7 +426,8 @@
   "new": "        None => None,",
   "filter": "non_overlapping_edits_merge_clean_via_cli",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:merge_cli"
  },
  {
   "name": "vcs: 二进制当文本合（NUL 也按行切）",
@@ -393,7 +436,8 @@
   "new": "    if false {",
   "filter": "binary_files_are_conflicts_not_line_merges",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 双方新增不标 add_add（当普通 content）",
@@ -402,7 +446,8 @@
   "new": "                let kind = if false {",
   "filter": "two_different_additions_are_structured_add_add",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: --tag 过滤形同虚设（不匹配也返回）",
@@ -411,7 +456,8 @@
   "new": "            .is_none_or(|_tag| true)",
   "filter": "query_filters_by_tag_evidence_session_and_message",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: --evidence 过滤形同虚设",
@@ -420,7 +466,8 @@
   "new": "                .is_none_or(|_needle| true)",
   "filter": "query_filters_by_tag_evidence_session_and_message",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: --grep 过滤形同虚设",
@@ -429,7 +476,8 @@
   "new": "                .is_none_or(|_needle| true)",
   "filter": "query_filters_by_tag_evidence_session_and_message",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: techmap 反查永远命中（空查询也返回全部）",
@@ -438,7 +486,8 @@
   "new": "                true || entry.id.to_lowercase().contains(&needle)",
   "filter": "where_matches_paths_tests_and_tags",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 提交 tags 映射不过滤（任意标签都列出条目）",
@@ -447,7 +496,8 @@
   "new": "                    .any(|_tag| true)",
   "filter": "tags_map_commits_to_entries",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 测试命令不认 crates/ 前缀（脚本路径也拼 cargo test）",
@@ -456,7 +506,8 @@
   "new": "    let crate_name = path.strip_prefix(\"\")?.split('/').next()?;",
   "filter": "test_specs_turn_into_runnable_commands",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: Git 导出不同步删除（上一版文件留在镜像里）",
@@ -465,7 +516,8 @@
   "new": "            if false {",
   "filter": "export_then_import_roundtrip_keeps_content_and_order",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: Git 导出按新→旧写（父链反了）",
@@ -474,7 +526,8 @@
   "new": "    for (id, commit) in log.iter() {",
   "filter": "export_then_import_roundtrip_keeps_content_and_order",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: Git 导入不剥 trit 尾注（提交说明被污染）",
@@ -483,7 +536,8 @@
   "new": "        .is_some_and(|_line| false)",
   "filter": "export_then_import_roundtrip_keeps_content_and_order",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: Git 导入不倒序（提交逆序）",
@@ -492,7 +546,8 @@
   "new": "        &[\"log\", \"--first-parent\", \"--format=%H\"],",
   "filter": "export_then_import_roundtrip_keeps_content_and_order",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 导出不防路径穿越（树里的 ../ 能写出镜像目录）",
@@ -501,7 +556,8 @@
   "new": "        || false",
   "filter": "export_paths_cannot_escape_the_git_worktree",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: MCP token 估算除数翻倍（少报一半）",
@@ -510,7 +566,8 @@
   "new": "    units.div_ceil(8)",
   "filter": "token_estimate_is_ascii_quarter_and_cjk_one",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: MCP commit 默认放行未认领",
@@ -519,7 +576,8 @@
   "new": "                        .get(\"allow_unclaimed\")\n                        .and_then(Value::as_bool)\n                        .unwrap_or(true),",
   "filter": "commit_without_allowance_is_a_tool_error",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: MCP 通知也回响应（协议错）",
@@ -528,7 +586,8 @@
   "new": "        let id = request\n            .get(\"id\")\n            .cloned()\n            .unwrap_or_else(|| Value::Null);",
   "filter": "initialize_reports_protocol",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 未知方法不报 -32601",
@@ -537,7 +596,8 @@
   "new": "                \"error\": {\"code\": 0, \"message\": format!(\"未知方法：{other}\")}",
   "filter": "unknown_method_and_tool_are_reported",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 稀疏检出不按前缀过滤（整棵树都物化）",
@@ -546,7 +606,8 @@
   "new": "    true || path == prefix",
   "filter": "sparse_checkout_writes_only_the_requested_prefix",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 把\"范围内缺失\"也当脏（checkout 补不回被删文件）",
@@ -555,7 +616,8 @@
   "new": "        .filter(|_change| true)",
   "filter": "sparse_checkout_writes_only_the_requested_prefix",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 搬运不跳过目标已有对象（重复 pull 重传全量）",
@@ -564,7 +626,8 @@
   "new": "        if false {",
   "filter": "publish_then_pull_prefix_sends_only_that_closure",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 树清单不看目标已有（第二次 pull 又写一遍）",
@@ -573,7 +636,8 @@
   "new": "    if false {",
   "filter": "publish_then_pull_prefix_sends_only_that_closure",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 树清单挂原树 id（客户端里没有这个对象）",
@@ -582,7 +646,8 @@
   "new": "        id: tree,",
   "filter": "publish_then_pull_prefix_sends_only_that_closure",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 发布不带树对象（中央仓凑不齐闭包）",
@@ -591,16 +656,18 @@
   "new": "    let _ = parsed.tree;",
   "filter": "publish_then_pull_prefix_sends_only_that_closure",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 发布不写命名 ref（中央仓没有可拉的分支）",
   "file": "src/central.rs",
-  "old": "    central.set_ref(name, &resolved)?;",
+  "old": "    central.set_ref_audited_locked(name, &resolved)?;",
   "new": "    let _ = (name, &resolved);",
   "filter": "refs_are_named_and_listed",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: publish 先搬对象再校验名字（非法名在中央仓留下块）",
@@ -609,7 +676,8 @@
   "new": "    let resolved = match commit {",
   "filter": "bad_names_and_missing_refs_are_loud",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: pull 的目录范围不生效（清单按全量造）",
@@ -618,16 +686,18 @@
   "new": "    let list = bundle::manifest(central.store(), commit_obj.tree, None)?;",
   "filter": "publish_then_pull_prefix_sends_only_that_closure",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: pull 总是强推（本地改动被静默盖掉）",
   "file": "src/central.rs",
-  "old": "client.root(), None, force)?;",
-  "new": "client.root(), None, true)?;",
+  "old": "client.root(), prefix, force)?;",
+  "new": "client.root(), prefix, true)?;",
   "filter": "pull_refuses_to_overwrite_local_changes",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 物化的脏判断反了（干净也挡、脏也不挡）",
@@ -636,7 +706,8 @@
   "new": "        if force\n            && let Ok(existing) = fs::read(&target)\n            && existing != bytes",
   "filter": "pull_refuses_to_overwrite_local_changes",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 脏清单为空也报错（pull 永远失败）",
@@ -645,7 +716,8 @@
   "new": "    if true {",
   "filter": "pull_without_prefix_materializes_everything",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: CLI pull 不接 --prefix（只拉一个目录失效）",
@@ -654,7 +726,8 @@
   "new": "    let prefix: Option<&str> = None;",
   "filter": "publish_then_sparse_pull",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:central_cli"
  },
  {
   "name": "vcs: CLI pull 不接 --force（没法覆盖本地改动）",
@@ -663,7 +736,8 @@
   "new": "        prefix,\n        false,",
   "filter": "publish_then_sparse_pull",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:central_cli"
  },
  {
   "name": "vcs: ref 名长度不设限（64 位的墙形同虚设）",
@@ -672,7 +746,8 @@
   "new": "        if name.is_empty() || name.len() > 6400 {",
   "filter": "bad_names_and_missing_refs_are_loud",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: ref 名字符不限制（空格名也能当分支）",
@@ -681,7 +756,8 @@
   "new": "                .all(|_ch| true)",
   "filter": "bad_names_and_missing_refs_are_loud",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: ref 名允许点开头（隐藏文件当分支）",
@@ -690,25 +766,28 @@
   "new": "        if false",
   "filter": "bad_names_and_missing_refs_are_loud",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 写 ref 不进哈希链（改分支不留痕）",
   "file": "src/repo.rs",
-  "old": "        self.journal.append(\n            \"ref\",",
-  "new": "        self.journal.append(\n            \"stage\",",
+  "old": "                repo.journal.append(\n                    \"ref\",",
+  "new": "                repo.journal.append(\n                    \"stage\",",
   "filter": "refs_are_named_and_listed",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 中央仓 ref 随便后退（甩掉别人的历史）",
   "file": "src/central.rs",
-  "old": "        if !descendant && !force {",
+  "old": "        if !descendant {",
   "new": "        if false {",
   "filter": "publish_only_moves_a_ref_forwards",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 后代判定比错了端点（父提交被当成后代）",
@@ -717,7 +796,8 @@
   "new": "            current == resolved || central.merge_base(&resolved, &current)? == Some(resolved);",
   "filter": "publish_only_moves_a_ref_forwards",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 发布不补父链（中央仓判不了分叉）",
@@ -726,7 +806,8 @@
   "new": "const ANCESTOR_CAP: usize = 0;",
   "filter": "publish_only_moves_a_ref_forwards",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: CLI publish 不接 --force（改写 ref 无入口）",
@@ -735,7 +816,8 @@
   "new": "        commit.as_ref(),\n        false,",
   "filter": "publish_then_sparse_pull",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:central_cli"
  },
  {
   "name": "vcs: 预检与提交判的不是同一条路（未认领被放行）",
@@ -744,7 +826,8 @@
   "new": "        Verdict::Unclaimed if false => {",
   "filter": "preflight_and_commit_share_one_verdict",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 预检不算这次提交的字节规模",
@@ -753,7 +836,8 @@
   "new": "        bytes += 0;",
   "filter": "preflight_reports_collapsed_scope_and_size",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 预算形同虚设（一条行都不丢）",
@@ -762,7 +846,8 @@
   "new": "    while false {",
   "filter": "over_budget_trims_tail_rows_and_reports_the_count",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 没超预算也挂 truncation（元数据白占上下文）",
@@ -771,7 +856,8 @@
   "new": "    if false {\n        return 0;\n    }",
   "filter": "budget_big_enough_drops_nothing_and_says_so",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 丢到空数组还在计数",
@@ -781,7 +867,8 @@
   "filter": "over_budget_trims_tail_rows_and_reports_the_count",
   "pkg": "trit-vcs",
   "runner": "cargo",
-  "hang_secs": 300
+  "hang_secs": 300,
+  "target": "lib"
  },
  {
   "name": "vcs: 撞车判决的 kind 改名（智能体按名字分支失效）",
@@ -790,7 +877,8 @@
   "new": "        RepoError::Conflict { .. } => \"conflict\",",
   "filter": "rejection_ships_the_command_that_clears_it",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:agent_ergonomics"
  },
  {
   "name": "vcs: 撞车时教智能体替别人撤销认领",
@@ -799,7 +887,8 @@
   "new": "                    \"{CLAIMS} release --who {other}\"",
   "filter": "conflict_names_the_other_side_but_never_tells_me_to_release_it",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: CLI 不认 --dry-run（预检变成真提交）",
@@ -808,7 +897,8 @@
   "new": "            if false {",
   "filter": "rejection_ships_the_command_that_clears_it",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:agent_ergonomics"
  },
  {
   "name": "vcs: CLI 不读 --budget（读数不设上限灌上下文）",
@@ -817,7 +907,8 @@
   "new": "    let budget: Option<u64> = None;",
   "filter": "budget_caps_rows_and_says_how_many_it_dropped",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:agent_ergonomics"
  },
  {
   "name": "vcs: 数组型读数压完不喊丢了几行（静默截断）",
@@ -826,7 +917,8 @@
   "new": "    if false {",
   "filter": "budget_caps_rows_and_says_how_many_it_dropped",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:agent_ergonomics"
  },
  {
   "name": "vcs: --budget 0 也照收（0 到底是全给还是全不给）",
@@ -835,7 +927,8 @@
   "new": "        if false {",
   "filter": "budget_caps_rows_and_says_how_many_it_dropped",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:agent_ergonomics"
  },
  {
   "name": "vcs: MCP 不吃 budget 参数",
@@ -844,7 +937,8 @@
   "new": "args.get(\"budgets\").and_then(Value::as_u64)",
   "filter": "dry_run_writes_nothing_and_budget_caps_the_reading",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: MCP 不认 dry_run（预检直接落提交）",
@@ -853,7 +947,8 @@
   "new": "                if false {",
   "filter": "dry_run_writes_nothing_and_budget_caps_the_reading",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 工具清单不声明 budget 参数",
@@ -862,7 +957,8 @@
   "new": "    .into_iter()\n    .collect()",
   "filter": "every_tool_advertises_budget_and_commit_advertises_dry_run",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 对象库的坏法又并回一个 store（六条判决没法分支）",
@@ -871,7 +967,8 @@
   "new": "        RepoError::Store(_) => \"store\",",
   "filter": "remediation::faces::tests::every_store_verdict_has_its_own_snake_case_kind",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: RepoError 套一层就不转命令了（退回两句老话）",
@@ -880,7 +977,8 @@
   "new": "        RepoError::Store(_) => vec![\n            format!(\"{VCS} verify --repo {repo}\"),\n            format!(\"{VCS} stats --repo {repo}\"),\n        ],",
   "filter": "remediation::faces::tests::every_store_verdict_has_its_own_snake_case_kind",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 库被占与对象缺失共用一个 kind",
@@ -889,7 +987,8 @@
   "new": "        StoreError::Locked(_) => \"store\",",
   "filter": "remediation::faces::tests::every_store_verdict_has_its_own_snake_case_kind",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 锁的下一步教我删掉别人的锁",
@@ -898,7 +997,8 @@
   "new": "            format!(\"删掉 {lock} 再重来\"),",
   "filter": "remediation::faces::tests::a_locked_store_never_tells_me_to_delete_someone_elses_lock",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 重取对象不说明只补差异（听起来像整库重写）",
@@ -907,7 +1007,8 @@
   "new": "        format!(\"{VCS} import <包文件> --repo {repo}\"),",
   "filter": "remediation::faces::tests::a_missing_object_is_refetched_from_a_peer_not_hand_edited",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 截断的包先教人整包重导（白丢续传这一条）",
@@ -916,7 +1017,8 @@
   "new": "                \"{VCS} export <树id> --out <包文件> --repo <源仓>   # 整包重导一次\"",
   "filter": "remediation::faces::tests::a_truncated_bundle_retries_import_before_reexporting",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 工作树脏了不点名条数与路径",
@@ -925,7 +1027,8 @@
   "new": "                format!(\"{VCS} status --repo {repo}\"),",
   "filter": "remediation::faces::tests::worktree_dirty_orders_status_commit_then_force_last",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 覆盖性工作选项不再排在最后",
@@ -934,7 +1037,8 @@
   "new": "                    \"{VCS} pull <ref> --central <仓目录> --repo {repo}   # 确定这些改动可以丢时才覆盖\"",
   "filter": "remediation::faces::tests::worktree_dirty_orders_status_commit_then_force_last",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 工作树面的 kind 退回成通用值",
@@ -943,7 +1047,8 @@
   "new": "        WorktreeError::Dirty(..) => \"dirty\",",
   "filter": "remediation::faces::tests::worktree_dirty_orders_status_commit_then_force_last",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 中央仓的判决不转发（里面什么都看不出来）",
@@ -952,7 +1057,8 @@
   "new": "        CentralError::Worktree(_) => \"central\",",
   "filter": "remediation::faces::tests::worktree_and_central_verdicts_delegate_to_the_layer_inside",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: git 桥红了不带回外部 stderr",
@@ -961,7 +1067,8 @@
   "new": "                \"外部 git 跑红了   # 先确认这台机器上的 git 能跑：git --version\"",
   "filter": "remediation::faces::tests::the_git_bridge_face_returns_the_external_failure_and_a_way_around_it",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: git 桥失败不指出原生包这条退路",
@@ -970,7 +1077,8 @@
   "new": "                \"{VCS} verify --repo {repo}   # 只会让人再看一次库\"",
   "filter": "remediation::faces::tests::the_git_bridge_face_returns_the_external_failure_and_a_way_around_it",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: git_command_failed 并成一个 git 值",
@@ -979,7 +1087,8 @@
   "new": "        GitError::Git { .. } => \"git\",",
   "filter": "remediation::faces::tests::the_git_bridge_face_returns_the_external_failure_and_a_way_around_it",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: 空仓导出不给「先提交」这一步",
@@ -988,7 +1097,8 @@
   "new": "                \"{VCS} log --json --repo {repo}   # 只会让人再看一次空日志\"",
   "filter": "remediation::faces::tests::the_git_bridge_face_returns_the_external_failure_and_a_way_around_it",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: JSON 出口的 kind 写死成 error（分支失效）",
@@ -997,7 +1107,8 @@
   "new": "            \"kind\": \"error\",",
   "filter": "remediation::faces::tests::every_face_explains_with_kind_message_and_runnable_steps",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: CLI 的失败行不再带 kind（只能回去抠文案）",
@@ -1006,7 +1117,8 @@
   "new": "    let mut line = format!(\"FAIL {err}\");",
   "filter": "publish_then_sparse_pull",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:central_cli"
  },
  {
   "name": "vcs: --json 下的非 RepoError 失败不吐对象",
@@ -1015,7 +1127,8 @@
   "new": "    if false {\n        println!(\n            \"{}\",\n            serde_json::to_string_pretty(&remediation::explain_json_any(err, ctx))",
   "filter": "publish_then_sparse_pull",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:central_cli"
  },
  {
   "name": "vcs: CLI 透传库层错误时改掉档位（两份规则分叉）",
@@ -1024,7 +1137,8 @@
   "new": "            Self::Repo(_) => \"cli_usage\",",
   "filter": "every_cli_failure_names_its_kind_and_next_step",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:cli_fail_kinds"
  },
  {
   "name": "vcs: CLI 透传库层错误时丢掉下一步",
@@ -1033,7 +1147,8 @@
   "new": "            Self::Repo(_) => Vec::new(),",
   "filter": "every_cli_failure_names_its_kind_and_next_step",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:cli_fail_kinds"
  },
  {
   "name": "vcs: cli_usage 这一档不给下一步（等于让智能体去猜参数）",
@@ -1042,7 +1157,8 @@
   "new": "        Self::new(\"cli_usage\", message, std::iter::empty::<String>())",
   "filter": "every_cli_failure_names_its_kind_and_next_step",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:cli_fail_kinds"
  },
  {
   "name": "vcs: cli_local_io 的档位写成别的（按档分支会分错）",
@@ -1051,7 +1167,8 @@
   "new": "        Self::new(\"cli_claims_unreadable\", format!(\"{path}: {reason}\"), next)",
   "filter": "every_cli_failure_names_its_kind_and_next_step",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:cli_fail_kinds"
  },
  {
   "name": "vcs: 路径不存在与不在仓库内混成一档",
@@ -1060,7 +1177,8 @@
   "new": "                \"cli_path_outside_repo\",",
   "filter": "every_cli_failure_names_its_kind_and_next_step",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:cli_fail_kinds"
  },
  {
   "name": "vcs: 坏 index 的树 id 不再单列（和没暂存分不开）",
@@ -1069,7 +1187,8 @@
   "new": "                \"cli_usage\",",
   "filter": "every_cli_failure_names_its_kind_and_next_step",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:cli_fail_kinds"
  },
  {
   "name": "vcs: 认领表读不到不再单列（当成普通 IO，解锁动作就丢了）",
@@ -1078,7 +1197,8 @@
   "new": "                \"cli_local_io\",",
   "filter": "every_cli_failure_names_its_kind_and_next_step",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:cli_fail_kinds"
  },
  {
   "name": "vcs: techmap 读不到不再单列",
@@ -1087,7 +1207,8 @@
   "new": "            \"cli_local_io\",",
   "filter": "every_cli_failure_names_its_kind_and_next_step",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:cli_fail_kinds"
  },
  {
   "name": "vcs: MCP 失败不再报档位（智能体只能抠文案）",
@@ -1096,7 +1217,8 @@
   "new": "            \"kind\": \"\",",
   "filter": "mcp_failures_carry_kind_and_next_steps",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:mcp_fail_kinds"
  },
  {
   "name": "vcs: MCP 失败不再给下一步",
@@ -1105,7 +1227,8 @@
   "new": "            \"next_steps\": Vec::<String>::new(),",
   "filter": "mcp_failures_carry_kind_and_next_steps",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:mcp_fail_kinds"
  },
  {
   "name": "vcs: MCP 正文里不写编号命令（只看 content 的客户端拿不到动作）",
@@ -1114,7 +1237,8 @@
   "new": "        let _ = (index, command);",
   "filter": "mcp_failures_carry_kind_and_next_steps",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:mcp_fail_kinds"
  },
  {
   "name": "vcs: MCP 透传库层错误时改掉档位（两份规则分叉）",
@@ -1123,7 +1247,8 @@
   "new": "            kind: \"mcp_bad_args\".to_string(),",
   "filter": "mcp_failures_carry_kind_and_next_steps",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:mcp_fail_kinds"
  },
  {
   "name": "vcs: MCP 透传库层错误时丢掉解锁命令",
@@ -1132,7 +1257,8 @@
   "new": "            next: Vec::new(),",
   "filter": "mcp_failures_carry_kind_and_next_steps",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:mcp_fail_kinds"
  },
  {
   "name": "vcs: MCP 本地文件失败混成别的档（按档分支会分错）",
@@ -1141,7 +1267,8 @@
   "new": "            \"mcp_bad_args\",",
   "filter": "mcp_failures_carry_kind_and_next_steps",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:mcp_fail_kinds"
  },
  {
   "name": "vcs: accept 默认就开（不带开关也执行提交里的命令）",
@@ -1150,7 +1277,8 @@
   "new": "pub(crate) fn enabled(args: &[String]) -> bool {\n    let _ = args;\n    true\n}",
   "filter": "accept_is_off_by_default_and_failures_stop_the_preflight",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:accept_cli"
  },
  {
   "name": "vcs: accept 不看认领覆盖（陌生提交的命令照跑）",
@@ -1159,7 +1287,8 @@
   "new": "    if false {",
   "filter": "accept_refuses_to_run_without_claim_coverage",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:accept_cli"
  },
  {
   "name": "vcs: accept 不认 shell 元字符（判据当脚本跑）",
@@ -1168,7 +1297,8 @@
   "new": "command.chars().find(|_| false)",
   "filter": "accept_refuses_to_run_without_claim_coverage",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:accept_cli"
  },
  {
   "name": "vcs: accept 超时不杀（跑多久算多久）",
@@ -1177,7 +1307,8 @@
   "new": "        if false {",
   "filter": "accept_timeout_is_a_failure_not_a_skip",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:accept_cli"
  },
  {
   "name": "vcs: accept 输出里的密钥不打码",
@@ -1186,7 +1317,8 @@
   "new": "        out.push_str(prefix);",
   "filter": "secrets_are_masked_in_excerpts",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: accept 输出不截断（一把灌满上下文）",
@@ -1195,7 +1327,8 @@
   "new": "                kept.extend_from_slice(&buf[..read]);",
   "filter": "output_is_capped_and_truncation_is_declared",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: accept 不查仓库有没有被写坏",
@@ -1204,7 +1337,8 @@
   "new": "    let after = verify_fresh(repo)?;\n    if false && (before.events",
   "filter": "a_judgement_that_writes_the_repo_is_red",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:accept_cli"
  },
  {
   "name": "vcs: handoff 篡改部件不校验 hash（verify 放行）",
@@ -1213,7 +1347,8 @@
   "new": "        if false {",
   "filter": "handoff_verify_rejects_tampered_component",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:handoff_cli"
  },
  {
   "name": "vcs: handoff 缺件报成 io 档（而不是 missing 档）",
@@ -1222,7 +1357,8 @@
   "new": "                .map_err(HandoffError::Io),",
   "filter": "handoff_round_trip_and_delete_each_component_is_red",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:handoff_cli"
  },
  {
   "name": "vcs: handoff 包 id 不校验（清单可改）",
@@ -1231,7 +1367,8 @@
   "new": "    if false {",
   "filter": "handoff_verify_rejects_tampered_package_id",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:handoff_cli"
  },
  {
   "name": "vcs: handoff 悬空引用不判红（树引用缺对象也绿）",
@@ -1240,7 +1377,8 @@
   "new": "        if false {",
   "filter": "handoff_verify_rejects_dangling_reference",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:handoff_cli"
  },
  {
   "name": "vcs: handoff diff 不看树（语义篡改也绿）",
@@ -1249,7 +1387,8 @@
   "new": "    if false {",
   "filter": "handoff_verify_rejects_tampered_diff",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:handoff_cli"
  },
  {
   "name": "vcs: handoff 单文件不校验 magic（传输包 TVBD 也收）",
@@ -1258,7 +1397,8 @@
   "new": "    if false {",
   "filter": "handoff_single_file_bad_magic_is_red",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "test:handoff_cli"
  },
  {
   "name": "vcs: handoff 单文件部件不重算 hash（篡改放行）",
@@ -1267,7 +1407,8 @@
   "new": "        if false {",
   "filter": "corrupt_payload_is_rejected_before_use",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: handoff 单文件部件数不对账（缺件/多件放行）",
@@ -1276,7 +1417,8 @@
   "new": "    if false {",
   "filter": "blob_count_must_match_manifest",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
  },
  {
   "name": "vcs: handoff 单文件不校验 schema（坏版本也收）",
@@ -1285,6 +1427,1127 @@
   "new": "    if false {",
   "filter": "unsupported_schema_is_rejected",
   "pkg": "trit-vcs",
-  "runner": "cargo"
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: token 比较恒真（错 token 也放行）",
+  "file": "src/net/mod.rs",
+  "old": "        diff |= a ^ b;",
+  "new": "        diff |= 0;",
+  "filter": "ct_eq_is_length_safe_and_exact",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 对象流不看 magic（随便一段字节都当对象流）",
+  "file": "src/wire.rs",
+  "old": "        if &magic != MAGIC {",
+  "new": "        if false {",
+  "filter": "wrong_magic_and_schema_are_rejected",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 收端不重算对象哈希（被改的载荷照常入库）",
+  "file": "src/wire.rs",
+  "old": "        let actual = Hash::of(&payload);\n        if actual != id {",
+  "new": "        let actual = Hash::of(&payload);\n        if false {",
+  "filter": "truncated_and_tampered_streams_are_loud",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 服务端不判快进（退历史也照收）",
+  "file": "src/remote.rs",
+  "old": "        if base != Some(current) {",
+  "new": "        if false {",
+  "filter": "wrong_token_and_non_fast_forward_are_loud",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 认领不查相交（别人的在效认领照收）",
+  "file": "src/claims.rs",
+  "old": "    if !others.is_empty() {",
+  "new": "    if false {",
+  "filter": "shared_claim_ledger_gates_two_worktrees",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: release 不核对 owner（谁都能释放别人的认领）",
+  "file": "src/claims.rs",
+  "old": "    if claims[index].owner != owner {",
+  "new": "    if false {",
+  "filter": "shared_claim_ledger_gates_two_worktrees",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: status 不采用持久 sparse 范围（范围外全报删除）",
+  "file": "src/worktree.rs",
+  "old": "        .or_else(|| sparse.as_ref().map(|index| index.prefix.clone()));",
+  "new": "        .or_else(|| None);",
+  "filter": "sparse_checkout_writes_only_the_requested_prefix",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 日志锁超时立刻放弃（并发追加开始丢事件）",
+  "file": "src/journal.rs",
+  "old": "    started.elapsed() >= LOCK_TIMEOUT",
+  "new": "    true",
+  "filter": "concurrent_appends_keep_one_chain",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 不比对 HEAD 与日志最后提交（手改 HEAD 仍绿）",
+  "file": "src/audit.rs",
+  "old": "        (Some(actual), Some(expected)) if actual != expected => push_issue(",
+  "new": "        (Some(actual), Some(expected)) if false => push_issue(",
+  "filter": "manual_head_write_without_event_is_caught",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 不比对最新 state_after（状态漂移仍绿）",
+  "file": "src/audit.rs",
+  "old": "        if expected != digest.to_hex() {",
+  "new": "        if false {",
+  "filter": "manual_head_write_without_event_is_caught",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: op_begin 不带 state_before（写前状态不可复核）",
+  "file": "src/op.rs",
+  "old": "                \"state_before\": state_before,",
+  "new": "                \"state_before\": null,",
+  "filter": "clean_commit_reaches_l2_and_verify_sees_claim_set",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: op_result 不带 state_after（写后状态不可复核）",
+  "file": "src/op.rs",
+  "old": "                \"state_after\": state_after,",
+  "new": "                \"state_after\": null,",
+  "filter": "clean_commit_reaches_l2_and_verify_sees_claim_set",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: gate 拒绝写成 allowed（拒绝无账）",
+  "file": "src/op.rs",
+  "old": "                \"action\": \"commit\",\n                \"decision\": \"denied\",",
+  "new": "                \"action\": \"commit\",\n                \"decision\": \"allowed\",",
+  "filter": "unclaimed_commit_is_rejected_by_default",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 不检查 op_begin 的 state_before 接续（中间漏账被覆盖）",
+  "file": "src/audit/ops.rs",
+  "old": "                        if let Some(last) = &last_state\n                            && last != &before.to_hex()",
+  "new": "                        if let Some(last) = &last_state\n                            && false",
+  "filter": "unlogged_state_between_ops_is_caught_by_next_begin",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 失败操作改了状态不判红（半截写盘被放过）",
+  "file": "src/audit/ops.rs",
+  "old": "                        if status == Some(\"failed\") && after.to_hex() != begin_state {",
+  "new": "                        if status == Some(\"failed\") && after.to_hex() == begin_state {",
+  "filter": "failed_operation_that_changed_state_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: policy 变更不落 policy 事件（策略改动无账）",
+  "file": "src/policy.rs",
+  "old": "                \"policy\",",
+  "new": "                \"policy_changed\",",
+  "filter": "policy_set_is_audited_and_manual_edit_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:policy_cli"
+ },
+ {
+  "name": "vcs: 合并不落 merge 事件（合并没有账）",
+  "file": "src/merge.rs",
+  "old": "                    \"merge\",",
+  "new": "                    \"merge_changed\",",
+  "filter": "non_overlapping_edits_merge_clean_via_cli",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:merge_cli"
+ },
+ {
+  "name": "vcs: 鉴权失败不落 auth 事件（错 token 无账）",
+  "file": "src/net/auth.rs",
+  "old": "        \"auth\",",
+  "new": "        \"auth_changed\",",
+  "filter": "wrong_token_and_non_fast_forward_are_loud",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: auth 事件不看 401 状态（200 也当鉴权失败）",
+  "file": "src/audit/auth_event.rs",
+  "old": "    if event.payload.get(\"status\").and_then(Value::as_u64) != Some(401) {",
+  "new": "    if false {",
+  "filter": "auth_event_without_401_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: publish 被拒后不落 deny 事件（非快进无账）",
+  "file": "src/op.rs",
+  "old": "            \"deny\",",
+  "new": "            \"deny_changed\",",
+  "filter": "wrong_token_and_non_fast_forward_are_loud",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: deny 事件不看 reason（拒绝原因可缺）",
+  "file": "src/audit/deny_event.rs",
+  "old": "    if event\n        .payload\n        .get(\"reason\")\n        .and_then(Value::as_str)\n        .is_none_or(str::is_empty)\n    {",
+  "new": "    if false {",
+  "filter": "deny_event_without_reason_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 客户端 pull 被拒后不落 deny 事件（脏工作树无账）",
+  "file": "src/remote.rs",
+  "old": "                \"pull\",",
+  "new": "                \"pull_changed\",",
+  "filter": "dirty_worktree_pull_is_denied_and_audited",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: publish 请求形状拒绝不落 deny 事件（400 无账）",
+  "file": "src/net/deny.rs",
+  "old": "        \"publish\",",
+  "new": "        \"publish_changed\",",
+  "filter": "publish_shape_rejections_are_denied_and_audited",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 服务端 pull 拒绝不落 deny 事件（未知 ref 无账）",
+  "file": "src/net/deny.rs",
+  "old": "        \"pull\",",
+  "new": "        \"pull_changed\",",
+  "filter": "pull_shape_and_unknown_ref_are_denied_and_audited",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: keyset 不进状态摘要（手改信任表仍绿）",
+  "file": "src/repo/state.rs",
+  "old": "        if let Some(keyset) = keyset {\n            state[\"keyset\"] = json!(keyset);",
+  "new": "        if false {\n            state[\"keyset\"] = json!(keyset);",
+  "filter": "key_add_and_revoke_are_audited_and_keyset_drift_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:key_cli"
+ },
+ {
+  "name": "vcs: 提交签名不落 signature 事件（签名无账）",
+  "file": "src/signing.rs",
+  "old": "                    \"signature\",\n                    json!({\n                        \"commit\": commit_hex,",
+  "new": "                    \"signature_changed\",\n                    json!({\n                        \"commit\": commit_hex,",
+  "filter": "generated_key_signs_commit_and_audit_verifies",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:key_cli"
+ },
+ {
+  "name": "vcs: 审计不验签（坏签名仍绿）",
+  "file": "src/signing.rs",
+  "old": "    key.verify_strict(message, &signature)\n        .map_err(|err| RepoError::BadHead(format!(\"签名不通过：{err}\")))",
+  "new": "    let _ = key.verify_strict(message, &signature);\n    Ok(())",
+  "filter": "signed_commit_is_audited_and_bad_signature_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 轮换不验双签名（坏签名也绿）",
+  "file": "src/audit/key_event.rs",
+  "old": "        if verify_signature(public, signature, &statement).is_err() {",
+  "new": "        if false {",
+  "filter": "rotate_event_with_bad_signer_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 轮换不核对信任谱系（抹掉 rotated_from 仍绿）",
+  "file": "src/audit/key_event.rs",
+  "old": "        || new_entry.rotated_from.as_deref() != Some(old_key_id)",
+  "new": "        || false",
+  "filter": "rotate_event_is_checked_against_trust_lineage",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: checkpoint 不重算 Merkle 根（换根仍绿）",
+  "file": "src/audit/checkpoint_event.rs",
+  "old": "    if root != expected_root {",
+  "new": "    if false {",
+  "filter": "checkpoint_wrong_root_is_red_even_if_signature_is_valid",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: checkpoint 不验签（坏签名仍绿）",
+  "file": "src/audit/checkpoint_event.rs",
+  "old": "    if verify_signature(public, signature, &statement).is_err() {",
+  "new": "    if false {",
+  "filter": "checkpoint_bad_signature_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: checkpoint 不核 previous 链（换前驱仍绿）",
+  "file": "src/audit/checkpoint_event.rs",
+  "old": "    if previous != expected_previous {",
+  "new": "    if false {",
+  "filter": "checkpoint_wrong_previous_is_red_even_if_signature_is_valid",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: checkpoint 不核对 op 链（伪造检查点仍绿）",
+  "file": "src/audit/checkpoint_event.rs",
+  "old": "    let _ = check_operation_link(events, height_usize, event, key_id, issues);",
+  "new": "    let _ = true;",
+  "filter": "checkpoint_without_operation_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Merkle proof 取错兄弟节点（inclusion proof 失效）",
+  "file": "src/checkpoint.rs",
+  "old": "        let sibling = level.get(sibling_index).copied().unwrap_or(level[current]);",
+  "new": "        let sibling = level[current];",
+  "filter": "merkle_inclusion_proofs_verify_and_reject_tampering",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Merkle proof 不核叶数、下标和路径长度（幽灵叶仍绿）",
+  "file": "src/checkpoint.rs",
+  "old": "    if leaf_count == 0 || index >= leaf_count || proof.len() != tree_levels(leaf_count) {\n        return false;\n    }\n    let mut current = leaf_hash(event_hash);\n    let mut position = index;\n    for (level, sibling) in proof.iter().enumerate() {\n        if position >= leaf_count.div_ceil(1usize << level) {\n            return false;\n        }",
+  "new": "    if false && (leaf_count == 0 || index >= leaf_count || proof.len() != tree_levels(leaf_count)) {\n        return false;\n    }\n    let mut current = leaf_hash(event_hash);\n    let mut position = index;\n    for (level, sibling) in proof.iter().enumerate() {\n        if false && position >= leaf_count.div_ceil(1usize << level) {\n            return false;\n        }",
+  "filter": "merkle_inclusion_proofs_verify_and_reject_tampering",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: consistency proof 取自己当兄弟（旧到新证明失效）",
+  "file": "src/checkpoint/consistency.rs",
+  "old": "            let sibling = (level, index ^ 1);",
+  "new": "            let sibling = (level, index);",
+  "filter": "consistency_proofs_verify_for_all_small_prefixes",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: consistency proof 折叠左右颠倒（根算错）",
+  "file": "src/checkpoint/consistency.rs",
+  "old": "                node_hash(hash, sibling_hash)",
+  "new": "                node_hash(sibling_hash, hash)",
+  "filter": "consistency_proofs_verify_for_all_small_prefixes",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: consistency proof 不核兄弟坐标（塞额外节点仍绿）",
+  "file": "src/checkpoint/consistency.rs",
+  "old": "    if actual_siblings != expected_siblings.into_iter().collect::<Vec<_>>() {",
+  "new": "    if false {",
+  "filter": "consistency_proof_rejects_tampering_and_wrong_shapes",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: consistency proof 接受重排和重复坐标（规范顺序失效）",
+  "file": "src/checkpoint/consistency.rs",
+  "old": "fn node_coords(nodes: &[ProofNode]) -> Result<Vec<(usize, usize)>, ConsistencyError> {\n    let mut out = Vec::with_capacity(nodes.len());\n    for node in nodes {\n        let coord = (node.level, node.index);\n        if out.contains(&coord) {\n            return Err(ConsistencyError::Invalid(format!(\n                \"节点坐标 ({}, {}) 重复\",\n                node.level, node.index\n            )));\n        }\n        if out.last().is_some_and(|previous| *previous >= coord) {\n            return Err(ConsistencyError::Invalid(format!(\n                \"节点坐标 ({}, {}) 未按规范顺序排列\",\n                node.level, node.index\n            )));\n        }\n        out.push(coord);\n    }\n    Ok(out)\n}",
+  "new": "fn node_coords(nodes: &[ProofNode]) -> Result<Vec<(usize, usize)>, ConsistencyError> {\n    Ok(nodes\n        .iter()\n        .map(|node| (node.level, node.index))\n        .collect::<BTreeSet<_>>()\n        .into_iter()\n        .collect())\n}",
+  "filter": "consistency_proof_rejects_reordered_and_foreign_subtrees",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: consistency proof 空前缀不核新根（伪造新 root 仍绿）",
+  "file": "src/checkpoint/consistency.rs",
+  "old": "    let decomposed_size = if from_size == 0 { to_size } else { from_size };",
+  "new": "    let decomposed_size = from_size;",
+  "filter": "empty_old_prefix_still_verifies_new_root",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不重算事件哈希（改信封仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    if expected_hash != event.hash {",
+  "new": "    if false {",
+  "filter": "anchor_checks_event_hash_and_signature_separately",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不验签（坏签名仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    verify_signature(public, &data.signature, &statement).map_err(|err| {\n        AnchorError::invalid(\n            \"anchor_signature_invalid\",\n            format!(\"检查点签名验不过：{err}\"),\n        )\n    })?;",
+  "new": "    let _ = verify_signature(public, &data.signature, &statement);",
+  "filter": "anchor_checks_event_hash_and_signature_separately",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核签者信任表成员（陌生人仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    let entry = store.keys.get(&data.key_id).ok_or_else(|| {\n        AnchorError::invalid(\n            \"anchor_untrusted\",\n            format!(\"签者 {} 不在信任表\", data.key_id),\n        )\n    })?;",
+  "new": "    let entry = store.keys.values().next().ok_or_else(|| {\n        AnchorError::invalid(\n            \"anchor_untrusted\",\n            format!(\"签者 {} 不在信任表\", data.key_id),\n        )\n    })?;",
+  "filter": "anchor_rejects_untrusted_signer",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核签者公钥存在（缺钥仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    let public = entry\n        .public_key\n        .as_deref()\n        .ok_or_else(|| AnchorError::invalid(\"anchor_untrusted\", \"签者在信任表里没有公钥\"))?;",
+  "new": "    let public = entry.public_key.as_deref().unwrap_or_default();",
+  "filter": "anchor_rejects_signer_without_public_key",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核公钥指纹（错钥仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    key_matches_public(&data.key_id, public)\n        .map_err(|err| AnchorError::invalid(\"anchor_untrusted\", err.to_string()))?;",
+  "new": "    let _ = key_matches_public(&data.key_id, public);",
+  "filter": "anchor_rejects_public_key_fingerprint_mismatch",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核签者角色（author 仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    if !matches!(entry.role.as_str(), \"auditor\" | \"release\") {",
+  "new": "    if false {",
+  "filter": "anchor_rejects_non_auditor_role",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核签名时吊销（吊销后仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    if entry\n        .revoked_at_ms\n        .is_some_and(|revoked_at| data.signed_at_ms > revoked_at)\n    {",
+  "new": "    if false {",
+  "filter": "anchor_checks_revocation_at_signature_time",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚把同毫秒吊销当成追溯（旧签名假红）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "        .is_some_and(|revoked_at| data.signed_at_ms > revoked_at)",
+  "new": "        .is_some_and(|revoked_at| data.signed_at_ms >= revoked_at)",
+  "filter": "anchor_checks_revocation_at_signature_time",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核当前同高事件（换整条前缀仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    if anchored.hash != anchor.event.hash {",
+  "new": "    if false {",
+  "filter": "anchor_rejects_same_summary_checkpoint_with_different_event_hash",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核锚定前缀 head（错头仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
+  "new": "    if false\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
+  "filter": "anchor_rejects_validly_signed_wrong_prefix_summary",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核锚定前缀 previous（错前驱仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
+  "new": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || false\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
+  "filter": "anchor_rejects_validly_signed_wrong_prefix_summary",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核锚定前缀 Merkle 根（错根仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
+  "new": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || false\n    {",
+  "filter": "anchor_rejects_validly_signed_wrong_prefix_summary",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核锚定前缀摘要（有效签名错根仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    if outcome.head != expected_head.map(|hash| hash.to_hex())\n        || outcome.previous != expected_previous.map(|hash| hash.to_hex())\n        || outcome.merkle_root != expected_root.to_hex()\n    {",
+  "new": "    if false {",
+  "filter": "anchor_rejects_validly_signed_wrong_prefix_summary",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚不核旧到新一致性（伪造新 root 仍绿）",
+  "file": "src/checkpoint/anchor.rs",
+  "old": "    if !valid\n        || proof.old_root.to_hex() != outcome.merkle_root\n        || proof.new_root != latest_data.root\n    {",
+  "new": "    if false {",
+  "filter": "anchor_rejects_forged_newer_checkpoint_root",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 仓外锚输出覆盖已有文件（拒覆盖失效）",
+  "file": "src/bin/trit-vcs/audit_cli.rs",
+  "old": "        .create_new(true)",
+  "new": "        .create(true)",
+  "filter": "file_anchor_rejects_envelope_tampering_and_refuses_overwrite",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:checkpoint_cli"
+ },
+ {
+  "name": "vcs: 锚导出只验信封不核当前前缀（错根检查点仍落盘）",
+  "file": "src/bin/trit-vcs/audit_cli.rs",
+  "old": "    let (value, outcome) = match anchor::from_repo(repo, checkpoint.seq)\n        .and_then(|value| anchor::verify_against_repo(repo, &value).map(|outcome| (value, outcome)))\n    {",
+  "new": "    let (value, outcome) = match anchor::from_repo(repo, checkpoint.seq)\n        .and_then(|value| anchor::verify(repo, &value).map(|outcome| (value, outcome)))\n    {",
+  "filter": "anchor_export_rejects_validly_signed_wrong_prefix",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:checkpoint_cli"
+ },
+ {
+  "name": "vcs: CLI 不验 consistency proof（坏证明仍绿）",
+  "file": "src/bin/trit-vcs/audit_cli.rs",
+  "old": "        && consistency::verify_consistency(&proof).unwrap_or(false);",
+  "new": "        && true;",
+  "filter": "consistency_cli_generates_verifies_and_rejects_tampering",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:checkpoint_cli"
+ },
+ {
+  "name": "vcs: audit verify 不因坏锚判红（删尾仍绿）",
+  "file": "src/bin/trit-vcs/audit_cli.rs",
+  "old": "                report.ok = false;",
+  "new": "                report.ok = true;",
+  "filter": "file_anchor_checks_extension_and_detects_deleted_anchored_tail",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:checkpoint_cli"
+ },
+ {
+  "name": "vcs: 策略写入不抢共享状态锁（可与认领并发改状态）",
+  "file": "src/policy.rs",
+  "old": "        let _guard = self.lock_state()?;",
+  "new": "        let _guard = ();",
+  "filter": "repository_state_entry_points_respect_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 新增信任不抢共享状态锁（可与认领并发改状态）",
+  "file": "src/keys.rs",
+  "old": "        let _guard = self.lock_state()?;\n        let mut store = self.keys()?;\n        if store.keys.contains_key(&entry.key_id) {",
+  "new": "        let _guard = ();\n        let mut store = self.keys()?;\n        if store.keys.contains_key(&entry.key_id) {",
+  "filter": "repository_state_entry_points_respect_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 吊销信任不抢共享状态锁（可与认领并发改状态）",
+  "file": "src/keys.rs",
+  "old": "        let _guard = self.lock_state()?;\n        let mut store = self.keys()?;\n        let Some(entry) = store.keys.get_mut(key_id) else {",
+  "new": "        let _guard = ();\n        let mut store = self.keys()?;\n        let Some(entry) = store.keys.get_mut(key_id) else {",
+  "filter": "repository_state_entry_points_respect_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 轮换信任不抢共享状态锁（可与认领并发改状态）",
+  "file": "src/keys.rs",
+  "old": "        let _guard = self.lock_state()?;\n        let mut store = self.keys()?;\n        let Some(old_entry) = store.keys.get(&old_key.key_id) else {",
+  "new": "        let _guard = ();\n        let mut store = self.keys()?;\n        let Some(old_entry) = store.keys.get(&old_key.key_id) else {",
+  "filter": "repository_state_entry_points_respect_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 提交签名不抢共享状态锁（可与认领并发改状态）",
+  "file": "src/signing.rs",
+  "old": "        let _guard = self.lock_state()?;",
+  "new": "        let _guard = ();",
+  "filter": "repository_state_entry_points_respect_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 检查点写入不抢共享状态锁（可与认领并发改状态）",
+  "file": "src/checkpoint.rs",
+  "old": "        let _guard = self.lock_state()?;",
+  "new": "        let _guard = ();",
+  "filter": "repository_state_entry_points_respect_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 中央策略不再强制认领签名（裸写照过）",
+  "file": "src/claims.rs",
+  "old": "    if repo.policy()?.require_signed_claims && key_path.is_none() {",
+  "new": "    if false {",
+  "filter": "signed_claim_policy_rejects_unsigned_writes_before_ledger_change",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: CLI 认领策略开关不写入 require_signed_claims",
+  "file": "src/bin/trit-vcs/policy_cli.rs",
+  "old": "        require_signed_claims: has(args, \"--require-signed-claims\"),",
+  "new": "        require_signed_claims: false,",
+  "filter": "signed_claim_policy_rejects_unsigned_writes_before_ledger_change",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 信任表缺公钥时拿私钥文件公钥顶替",
+  "file": "src/claims/signing.rs",
+  "old": "        let public = entry\n            .public_key\n            .as_deref()\n            .ok_or_else(|| rejected(format!(\"key {} 没有公钥\", key.key_id)))?;",
+  "new": "        let public = entry.public_key.as_deref().unwrap_or(&key.public);",
+  "filter": "claim_signer_requires_matching_author_principal_and_public_key",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名不核对信任表公钥与私钥指纹",
+  "file": "src/claims/signing.rs",
+  "old": "        if public_key_id(&public_bytes) != key.key_id\n            || public_bytes\n                != key\n                    .public_bytes()\n                    .map_err(|err| rejected(err.to_string()))?\n        {",
+  "new": "        if false {",
+  "filter": "claim_signer_requires_matching_author_principal_and_public_key",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名不核对 principal 与 owner",
+  "file": "src/claims/signing.rs",
+  "old": "        if entry.principal != owner {",
+  "new": "        if false {",
+  "filter": "claim_signer_requires_matching_author_principal_and_public_key",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 非 author 角色也能签认领",
+  "file": "src/claims/signing.rs",
+  "old": "        if entry.role != \"author\" {",
+  "new": "        if false {",
+  "filter": "claim_signer_requires_matching_author_principal_and_public_key",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 已吊销密钥仍能签新认领",
+  "file": "src/claims/signing.rs",
+  "old": "        if entry.is_revoked() {",
+  "new": "        if false {",
+  "filter": "revoked_key_cannot_sign_but_historical_signature_stays_valid",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名不落 claim_signature 事件",
+  "file": "src/claims.rs",
+  "old": "        repo.journal_mut()\n            .append(signing::EVENT_KIND, signature.clone(), at_ms)?;",
+  "new": "        repo.journal_mut()\n            .append(\"claim_signature_changed\", signature.clone(), at_ms)?;",
+  "filter": "signed_claim_add_and_release_are_auditable_sidecars",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 已签认领事件仍标记为未签",
+  "file": "src/claims.rs",
+  "old": "            \"signed\": signer.is_some(),",
+  "new": "            \"signed\": false,",
+  "filter": "signed_claim_add_and_release_are_auditable_sidecars",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名事件写错操作绑定",
+  "file": "src/claims/signing.rs",
+  "old": "            \"operation\": begin.hash.to_hex(),",
+  "new": "            \"operation\": Hash::of(b\"wrong-operation\").to_hex(),",
+  "filter": "signed_claim_add_and_release_are_auditable_sidecars",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名事件写错状态绑定",
+  "file": "src/claims/signing.rs",
+  "old": "            \"state_before\": state_before.to_hex(),\n            \"state_after\": state_after.to_hex(),",
+  "new": "            \"state_before\": \"0\".repeat(64),\n            \"state_after\": state_after.to_hex(),",
+  "filter": "signed_claim_add_and_release_are_auditable_sidecars",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领事件不嵌入完整 ClaimSpec",
+  "file": "src/claims.rs",
+  "old": "            \"claim\": spec,",
+  "new": "            \"claim\": serde_json::Value::Null,",
+  "filter": "signed_claim_add_and_release_are_auditable_sidecars",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 审计不处理 claim_signature 事件",
+  "file": "src/audit.rs",
+  "old": "            \"claim_signature\" => claim_signature_event::check_claim_signature(\n                repo,\n                events,\n                index,\n                event,\n                &mut issues,\n            ),",
+  "new": "            \"claim_signature\" => {}",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不核 schema",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if payload.get(\"schema\").and_then(Value::as_str) != Some(SCHEMA) {",
+  "new": "    if false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不核 algorithm",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if payload.get(\"algorithm\").and_then(Value::as_str) != Some(\"ed25519\") {",
+  "new": "    if false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不核操作/事件/action 一致",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if begin.payload.get(\"op\").and_then(Value::as_str) != Some(action)\n        || claim_event.kind != action\n        || claim_event.payload.get(\"operation\").and_then(Value::as_str)\n            != Some(operation.to_hex().as_str())\n        || claim_event.payload.get(\"signed\").and_then(Value::as_bool) != Some(true)\n    {",
+  "new": "    if false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不核前后状态绑定",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if parse_hash(payload.get(\"state_before\")) != Some(before)\n        || parse_hash(payload.get(\"state_after\")) != Some(after)\n    {",
+  "new": "    if false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不核 claim 与事件字段一致",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if claim.owner != owner || !claim_matches_event(&claim, claim_event) {",
+  "new": "    if false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不要求操作成功收口",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if result.payload.get(\"op\").and_then(Value::as_str) != Some(action)\n        || result.payload.get(\"status\").and_then(Value::as_str) != Some(\"ok\")\n    {",
+  "new": "    if false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计允许同一操作重复签名",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if events[..index].iter().any(|candidate| {\n        candidate.kind == EVENT_KIND\n            && candidate.payload.get(\"operation\").and_then(Value::as_str)\n                == Some(operation.to_hex().as_str())\n    }) {",
+  "new": "    if false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不核公钥指纹",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if public_key_id(&public_bytes) != key_id {",
+  "new": "    if false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不核 principal/role/owner 授权",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if entry.principal != authorization.principal\n        || entry.role != authorization.role\n        || authorization.role != \"author\"\n        || claim.owner != principal\n        || principal != authorization.principal\n    {",
+  "new": "    if false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名只按签名时信任，不按操作开始时重建授权",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    for event in events.iter().filter(|event| event.seq < begin.seq) {",
+  "new": "    for event in events.iter().filter(|event| event.seq > begin.seq) {",
+  "filter": "signed_claim_add_and_release_are_auditable_sidecars",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不重放强制签名策略",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if require_signed_claims && signed != Some(true) {",
+  "new": "    if require_signed_claims && signed != Some(true) && false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计缺策略字段时沿用旧值",
+  "file": "src/audit.rs",
+  "old": "                    .unwrap_or(versioned);",
+  "new": "                    .unwrap_or(require_signed_claims);",
+  "filter": "historical_unsigned_claims_remain_valid_after_policy_enablement",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不抓缺失 sidecar",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if !has_signature {",
+  "new": "    if !has_signature && false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不看签名时吊销",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "        && signed_at > revoked_at",
+  "new": "        && signed_at > revoked_at\n        && false",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名审计不验 Ed25519 签名",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if let Err(err) = signing::verify_signature(public, signature, &statement) {",
+  "new": "    if let Err(err) = signing::verify_signature(public, signature, &statement)\n        && false\n    {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 普通仓库写路径不抢共享状态锁（检查点可与状态写交错）",
+  "file": "src/op.rs",
+  "old": "        let _guard = self.lock_state()?;\n        self.with_operation(op, args, at_ms, body)",
+  "new": "        let _guard = ();\n        self.with_operation(op, args, at_ms, body)",
+  "filter": "repository_state_entry_points_respect_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 独立审计事件不抢共享状态锁（可插入检查点快照与追加之间）",
+  "file": "src/op.rs",
+  "old": "        let _guard = self.lock_state()?;\n        self.append_audit_locked(kind, payload, at_ms)",
+  "new": "        let _guard = ();\n        self.append_audit_locked(kind, payload, at_ms)",
+  "filter": "public_audit_entry_points_respect_state_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: commit 预检不抢共享状态锁（判决与写入可交错）",
+  "file": "src/repo.rs",
+  "old": "        let _guard = self.lock_state()?;\n        let decision = match crate::preflight::decide(self, &req) {",
+  "new": "        let _guard = ();\n        let decision = match crate::preflight::decide(self, &req) {",
+  "filter": "repository_state_entry_points_respect_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: merge 不抢共享状态锁（检查点可与合并事件交错）",
+  "file": "src/merge.rs",
+  "old": "    let at_ms = wall_ms();\n    let _guard = repo.lock_state()?;",
+  "new": "    let at_ms = wall_ms();",
+  "filter": "repository_state_entry_points_respect_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 认领签名不绑 op_result 的写后状态",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "    if parse_hash(result.payload.get(\"state_after\")) != Some(after) {",
+  "new": "    if parse_hash(result.payload.get(\"state_after\")) == Some(after) {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名不核操作时信任事件的公钥",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "            if entry.public_key.as_deref() != Some(public) {",
+  "new": "            if false {",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名无视操作开始前的吊销",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "            Some(\"revoke\") => event_key == Some(key_id),",
+  "new": "            Some(\"revoke\") => false,",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名无视操作收口前的吊销",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "            && (event.payload.get(\"action\").and_then(Value::as_str) == Some(\"revoke\")\n                && event.payload.get(\"key_id\").and_then(Value::as_str) == Some(key_id)",
+  "new": "            && (event.payload.get(\"action\").and_then(Value::as_str) == Some(\"revoke\")\n                && false\n                && event.payload.get(\"key_id\").and_then(Value::as_str) == Some(key_id)",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: 认领签名无视操作收口前的轮换",
+  "file": "src/audit/claim_signature_event.rs",
+  "old": "                || event.payload.get(\"action\").and_then(Value::as_str) == Some(\"rotate\")\n                    && event.payload.get(\"old_key_id\").and_then(Value::as_str) == Some(key_id))",
+  "new": "                || event.payload.get(\"action\").and_then(Value::as_str) == Some(\"rotate\")\n                    && false\n                    && event.payload.get(\"old_key_id\").and_then(Value::as_str) == Some(key_id))",
+  "filter": "claim_signature_audit_rejects_tampering_and_broken_authorization",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:claims_cli"
+ },
+ {
+  "name": "vcs: begin_operation 不抢共享状态锁",
+  "file": "src/op.rs",
+  "old": "        let _guard = self.lock_state()?;\n        self.begin_operation_locked(op, args, at_ms)",
+  "new": "        let _guard = ();\n        self.begin_operation_locked(op, args, at_ms)",
+  "filter": "public_audit_entry_points_respect_state_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: finish_operation 不抢共享状态锁",
+  "file": "src/op.rs",
+  "old": "        let _guard = self.lock_state()?;\n        self.finish_operation_locked(begin, op, status, result, at_ms)",
+  "new": "        let _guard = ();\n        self.finish_operation_locked(begin, op, status, result, at_ms)",
+  "filter": "public_audit_entry_points_respect_state_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 新版策略缺签名字段时回放为不要求",
+  "file": "src/audit.rs",
+  "old": "                    .unwrap_or(versioned);",
+  "new": "                    .unwrap_or(false);",
+  "filter": "versioned_policy_without_signed_claim_flag_fails_closed",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 新版策略缺签名字段时不报 policy_bad",
+  "file": "src/audit/policy_event.rs",
+  "old": "    if signed_claims.is_none()\n        && (versioned || event.payload.get(\"require_signed_claims\").is_some())\n    {",
+  "new": "    if false {",
+  "filter": "versioned_policy_without_signed_claim_flag_fails_closed",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 新策略事件不写版本标记",
+  "file": "src/policy.rs",
+  "old": "                    \"schema\": \"trit-policy-v1\",",
+  "new": "                    \"schema\": null,",
+  "filter": "policy_set_is_audited_and_manual_edit_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:policy_cli"
+ },
+ {
+  "name": "vcs: publish 不抢共享状态锁（快进检查与 ref 写入可交错）",
+  "file": "src/remote.rs",
+  "old": "    let _guard = central.lock_state()?;",
+  "new": "    let _guard = ();",
+  "filter": "state_lock_blocks_publish_and_pull",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: pull 不抢共享状态锁（物化与事件追加可交错）",
+  "file": "src/remote.rs",
+  "old": "    let _guard = repo.lock_state()?;",
+  "new": "    let _guard = ();",
+  "filter": "state_lock_blocks_publish_and_pull",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: policy 审计把显式非字符串 schema 当旧事件",
+  "file": "src/audit/policy_event.rs",
+  "old": "    if let Some(schema) = event.payload.get(\"schema\")\n        && schema.as_str() != Some(\"trit-policy-v1\")\n    {",
+  "new": "    if let Some(schema) = event.payload.get(\"schema\").and_then(Value::as_str)\n        && schema != \"trit-policy-v1\"\n    {",
+  "filter": "explicit_non_string_policy_schema_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: key add 审计不校验 public_key 字段形状",
+  "file": "src/audit/key_event.rs",
+  "old": "    let Some(public) = public_value.as_str().filter(|public| !public.is_empty()) else {\n        issues.push(AuditIssue::new(\n            \"key_bad\",\n            format!(\n                \"第 {} 条 key add 事件的 public_key 不是非空字符串\",\n                event.seq\n            ),\n        ));\n        return;\n    };",
+  "new": "    let public = public_value.as_str().unwrap_or(\"\");",
+  "filter": "key_add_public_key_shape_preserves_legacy_missing_or_null",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: key add 审计不核公钥指纹",
+  "file": "src/audit/key_event.rs",
+  "old": "    if public_key_id(&public_bytes) != key_id {",
+  "new": "    if false {",
+  "filter": "key_add_public_key_fingerprint_mismatch_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: key add 审计不核事件公钥与信任表一致",
+  "file": "src/audit/key_event.rs",
+  "old": "    if entry\n        .public_key\n        .as_deref()\n        .is_none_or(|trusted| !trusted.eq_ignore_ascii_case(public))\n    {",
+  "new": "    if false {",
+  "filter": "key_add_public_key_must_match_trust_store",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]
