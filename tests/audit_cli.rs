@@ -393,6 +393,17 @@ fn policy_event_accepts_legacy_shape_but_rejects_non_boolean_signed_witness() {
     assert!(!missing.status.success(), "新版策略缺字段必须 fail-closed");
     let value: serde_json::Value = serde_json::from_str(&stdout(&missing)).unwrap();
     assert!(
+        value["issues"].as_array().unwrap().iter().any(|issue| {
+            issue["kind"] == "policy_bad"
+                && issue["detail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("require_signed_witness")
+        }),
+        "{}",
+        stdout(&missing)
+    );
+    assert!(
         value["issues"]
             .as_array()
             .unwrap()
