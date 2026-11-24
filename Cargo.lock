@@ -219,28 +219,37 @@ dependencies = [
 [[package]]
 name = "trit-core"
 version = "0.12.0"
-source = "git+https://github.com/bfxh/trit?rev=2400fb9d2de751cab358455e3bf622b7a3288f1c#2400fb9d2de751cab358455e3bf622b7a3288f1c"
+source = "git+https://github.com/bfxh/trit?rev=79542df8ad3ffbf598f90cfdc09dc8df0018c144#79542df8ad3ffbf598f90cfdc09dc8df0018c144"
 dependencies = [
  "serde",
  "thiserror",
 ]
 
 [[package]]
+name = "trit-ops"
+version = "0.12.0"
+source = "git+https://github.com/bfxh/trit?rev=79542df8ad3ffbf598f90cfdc09dc8df0018c144#79542df8ad3ffbf598f90cfdc09dc8df0018c144"
+dependencies = [
+ "trit-core",
+]
+
+[[package]]
 name = "trit-orch"
 version = "0.12.0"
-source = "git+https://github.com/bfxh/trit?rev=2400fb9d2de751cab358455e3bf622b7a3288f1c#2400fb9d2de751cab358455e3bf622b7a3288f1c"
+source = "git+https://github.com/bfxh/trit?rev=79542df8ad3ffbf598f90cfdc09dc8df0018c144#79542df8ad3ffbf598f90cfdc09dc8df0018c144"
 dependencies = [
  "serde",
  "serde_json",
  "thiserror",
  "trit-core",
+ "trit-ops",
  "trit-schedule",
 ]
 
 [[package]]
 name = "trit-schedule"
 version = "0.12.0"
-source = "git+https://github.com/bfxh/trit?rev=2400fb9d2de751cab358455e3bf622b7a3288f1c#2400fb9d2de751cab358455e3bf622b7a3288f1c"
+source = "git+https://github.com/bfxh/trit?rev=79542df8ad3ffbf598f90cfdc09dc8df0018c144#79542df8ad3ffbf598f90cfdc09dc8df0018c144"
 dependencies = [
  "serde",
  "serde_json",
