@@ -142,24 +142,73 @@ pub fn merkle_root(leaves: &[Hash]) -> Hash {
     if leaves.is_empty() {
         return Hash::of(b"trit-checkpoint-empty-v1");
     }
-    let mut level: Vec<Hash> = leaves
-        .iter()
-        .map(|hash| Hash::of(format!("trit-checkpoint-leaf-v1:{}", hash.to_hex()).as_bytes()))
-        .collect();
+    let mut level: Vec<Hash> = leaves.iter().copied().map(leaf_hash).collect();
     while level.len() > 1 {
         let mut next = Vec::with_capacity(level.len().div_ceil(2));
         for pair in level.chunks(2) {
             let left = pair[0];
             let right = pair.get(1).copied().unwrap_or(left);
-            let mut bytes = Vec::with_capacity(65);
-            bytes.push(1u8);
-            bytes.extend_from_slice(left.as_bytes());
-            bytes.extend_from_slice(right.as_bytes());
-            next.push(Hash::of(&bytes));
+            next.push(node_hash(left, right));
         }
         level = next;
     }
     level[0]
+}
+
+/// 某个事件在检查点前缀里的 inclusion proof（兄弟哈希路径）。
+pub fn merkle_proof(leaves: &[Hash], index: usize) -> Option<Vec<Hash>> {
+    if index >= leaves.len() {
+        return None;
+    }
+    let mut level: Vec<Hash> = leaves.iter().copied().map(leaf_hash).collect();
+    let mut current = index;
+    let mut proof = Vec::new();
+    while level.len() > 1 {
+        let sibling_index = current ^ 1;
+        let sibling = level.get(sibling_index).copied().unwrap_or(level[current]);
+        proof.push(sibling);
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        for pair in level.chunks(2) {
+            let left = pair[0];
+            let right = pair.get(1).copied().unwrap_or(left);
+            next.push(node_hash(left, right));
+        }
+        level = next;
+        current /= 2;
+    }
+    Some(proof)
+}
+
+/// 用 inclusion proof 复算某个事件是否落在 root 下。
+pub fn verify_merkle_proof(
+    event_hash: Hash,
+    index: usize,
+    proof: &[Hash],
+    root: Hash,
+) -> bool {
+    let mut current = leaf_hash(event_hash);
+    let mut position = index;
+    for sibling in proof {
+        current = if position.is_multiple_of(2) {
+            node_hash(current, *sibling)
+        } else {
+            node_hash(*sibling, current)
+        };
+        position /= 2;
+    }
+    current == root
+}
+
+fn leaf_hash(hash: Hash) -> Hash {
+    Hash::of(format!("trit-checkpoint-leaf-v1:{}", hash.to_hex()).as_bytes())
+}
+
+fn node_hash(left: Hash, right: Hash) -> Hash {
+    let mut bytes = Vec::with_capacity(65);
+    bytes.push(1u8);
+    bytes.extend_from_slice(left.as_bytes());
+    bytes.extend_from_slice(right.as_bytes());
+    Hash::of(&bytes)
 }
 
 /// 校验 key_id 与公钥指纹一致；checkpoint 命令/审计共用。
@@ -421,6 +470,28 @@ mod tests {
             "应报 checkpoint_bad：{:?}",
             report.issues
         );
+    }
+
+    #[test]
+    fn merkle_inclusion_proofs_verify_and_reject_tampering() {
+        let leaves = [Hash::of(b"a"), Hash::of(b"b"), Hash::of(b"c")];
+        let root = merkle_root(&leaves);
+        for (index, leaf) in leaves.iter().enumerate() {
+            let proof = merkle_proof(&leaves, index).unwrap();
+            assert!(
+                verify_merkle_proof(*leaf, index, &proof, root),
+                "第 {index} 个叶子应能证明"
+            );
+            if let Some(sibling) = proof.first() {
+                let mut bad = proof.clone();
+                bad[0] = Hash::of(sibling.as_bytes());
+                assert!(!verify_merkle_proof(*leaf, index, &bad, root));
+            }
+            if index + 1 < leaves.len() {
+                assert!(!verify_merkle_proof(*leaf, index + 1, &proof, root));
+            }
+        }
+        assert!(merkle_proof(&leaves, 3).is_none());
     }
 
     #[test]

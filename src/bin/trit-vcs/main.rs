@@ -83,6 +83,7 @@ fn usage() -> ExitCode {
          trit-vcs verify [--repo PATH]\n  \
          trit-vcs audit [status|verify|reconcile] [--json] [--repo PATH]\n  \
          trit-vcs audit checkpoint --key-file <私钥文件> --owner <宿主:会话id> [--json] [--repo PATH]\n  \
+         trit-vcs audit proof --checkpoint <seq> --event <seq> [--json] [--repo PATH]\n  \
          trit-vcs audit log [事件类型] [--from N] [--to N] [--json] [--repo PATH]\n  \
          trit-vcs audit show <序号> [--json] [--repo PATH]\n  \
          trit-vcs stats [--repo PATH]"

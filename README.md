@@ -131,13 +131,17 @@ trit-vcs commit -m "..." --owner qoder:s1 --sign-key ~/.trit/keys/author.key
 ```sh
 trit-vcs key add --key-file ~/.trit/keys/auditor.key --principal qoder:audit --role auditor --owner qoder:audit
 trit-vcs audit checkpoint --key-file ~/.trit/keys/auditor.key --owner qoder:audit --json
+trit-vcs audit proof --checkpoint <检查点事件 seq> --event <事件 seq> --json
 ```
 
 `audit checkpoint` 把当前 `op_begin` 之前的事件前缀做成 Merkle 根，记录 `height`、`head`、
 `previous`、`key_id` 和签名；下一个检查点用 `previous` 接住上一个检查点事件哈希。审计重算前缀根、
 核对高度/前一条检查点、用信任表公钥验签，坏根、坏链、坏签名分别报
 `checkpoint_merkle_mismatch` / `checkpoint_chain_mismatch` / `checkpoint_signature_invalid`。
-**它不能防整条尾巴连检查点一起被删**：仓外锚、inclusion/consistency proof 仍未做。
+`audit proof` 生成某条事件的 Merkle inclusion proof（兄弟路径），用于向仓外审计员证明“这条
+事件在已签名 root 下”；它不证明两个检查点之间的前缀一致性。
+**它不能防整条尾巴连检查点一起被删**：仓外锚、检查点间 consistency proof 仍未做；单事件的
+inclusion proof 可由 `audit proof` 生成。
 
 ## 持久 sparse 索引
 

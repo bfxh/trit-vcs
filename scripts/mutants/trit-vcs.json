@@ -1616,5 +1616,15 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "lib"
+},
+{
+ "name": "vcs: Merkle proof 取错兄弟节点（inclusion proof 失效）",
+ "file": "src/checkpoint.rs",
+ "old": "        let sibling = level.get(sibling_index).copied().unwrap_or(level[current]);",
+ "new": "        let sibling = level[current];",
+ "filter": "merkle_inclusion_proofs_verify_and_reject_tampering",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
 }
 ]

@@ -89,6 +89,25 @@ fn checkpoint_cli_signs_prefix_and_chains_two_checkpoints() {
     let audit_value: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
     assert_eq!(audit_value["ok"], true, "{}", stdout(&audit));
 
+    let checkpoint_seq = first_value["height"].as_u64().unwrap().to_string();
+    let proof = run(
+        &root,
+        &[
+            "audit",
+            "proof",
+            "--checkpoint",
+            &checkpoint_seq,
+            "--event",
+            "0",
+            "--json",
+        ],
+    );
+    assert!(proof.status.success(), "{}", stderr(&proof));
+    let proof_value: serde_json::Value = serde_json::from_str(&stdout(&proof)).unwrap();
+    assert_eq!(proof_value["checkpoint_event"], first_value["event"]);
+    assert_eq!(proof_value["merkle_root"], first_value["merkle_root"]);
+    assert!(!proof_value["proof"].as_array().unwrap().is_empty());
+
     // 再写一条事件，第二个检查点必须指回第一个事件哈希。
     fs::write(root.join("b.txt"), "beta").unwrap();
     let add = run(&root, &["add", "b.txt"]);

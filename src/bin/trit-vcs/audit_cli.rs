@@ -7,6 +7,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use trit_vcs::audit::{self, AuditError, AuditReport};
+use trit_vcs::checkpoint::{merkle_proof, verify_merkle_proof};
 use trit_vcs::repo::Repo;
 
 use crate::cli_fail::CliFail;
@@ -33,13 +34,98 @@ pub(crate) fn audit_cmd(args: &[String]) -> ExitCode {
         "log" => log_cmd(&repo, args),
         "show" => show_cmd(&repo, args),
         "checkpoint" => checkpoint_cmd(&mut repo, args),
+        "proof" => proof_cmd(&repo, args),
         other => {
             eprintln!(
-                "audit 未知子命令：{other}（可用：status / verify / reconcile / log / show / checkpoint）"
+                "audit 未知子命令：{other}（可用：status / verify / reconcile / log / show / checkpoint / proof）"
             );
             ExitCode::from(2)
         }
     }
+}
+
+fn proof_cmd(repo: &Repo, args: &[String]) -> ExitCode {
+    let checkpoint_seq = flag(args, "--checkpoint")
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value as usize);
+    let event_seq = flag(args, "--event")
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value as usize);
+    let (Some(checkpoint_seq), Some(event_seq)) = (checkpoint_seq, event_seq) else {
+        eprintln!("audit proof 需要 --checkpoint <检查点事件序号> 和 --event <事件序号>");
+        return ExitCode::from(2);
+    };
+    let events = repo.journal().events();
+    let Some(checkpoint) = events.get(checkpoint_seq) else {
+        eprintln!("检查点事件 #{checkpoint_seq} 不存在");
+        return ExitCode::from(2);
+    };
+    if checkpoint.kind != "checkpoint" {
+        eprintln!("事件 #{checkpoint_seq} 不是 checkpoint，而是 {}", checkpoint.kind);
+        return ExitCode::from(2);
+    }
+    let Some(height) = checkpoint
+        .payload
+        .get("height")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+    else {
+        eprintln!("检查点 #{checkpoint_seq} 缺 height");
+        return ExitCode::from(2);
+    };
+    if checkpoint_seq != height {
+        eprintln!("检查点 #{checkpoint_seq} 的 height={height}，自身不在前缀里");
+        return ExitCode::from(2);
+    }
+    if event_seq >= height {
+        eprintln!("事件 #{event_seq} 不在检查点 #{checkpoint_seq} 的前缀里（height={height}）");
+        return ExitCode::from(2);
+    }
+    let Some(root) = checkpoint
+        .payload
+        .get("merkle_root")
+        .and_then(|value| value.as_str())
+        .and_then(trit_vcs::hash::Hash::from_hex)
+    else {
+        eprintln!("检查点 #{checkpoint_seq} 缺合法 merkle_root");
+        return ExitCode::from(2);
+    };
+    let leaves: Vec<trit_vcs::hash::Hash> = events[..height].iter().map(|event| event.hash).collect();
+    let Some(proof) = merkle_proof(&leaves, event_seq) else {
+        eprintln!("事件 #{event_seq} 无法生成 inclusion proof");
+        return ExitCode::from(2);
+    };
+    let event_hash = events[event_seq].hash;
+    if !verify_merkle_proof(event_hash, event_seq, &proof, root) {
+        eprintln!("事件 #{event_seq} 的 proof 与检查点 root 不一致");
+        return ExitCode::FAILURE;
+    }
+    if has(args, "--json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "checkpoint": checkpoint_seq,
+                "checkpoint_event": checkpoint.hash.to_hex(),
+                "event": event_hash.to_hex(),
+                "height": height,
+                "index": event_seq,
+                "merkle_root": root.to_hex(),
+                "proof": proof.iter().map(|hash| hash.to_hex()).collect::<Vec<_>>(),
+            }))
+            .unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        println!(
+            "事件 #{event_seq} ({}) 在检查点 #{checkpoint_seq} 下：root {}，proof {} 段",
+            event_hash.short(),
+            root.short(),
+            proof.len()
+        );
+        for (index, sibling) in proof.iter().enumerate() {
+            println!("  [{index}] {}", sibling.to_hex());
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn checkpoint_cmd(repo: &mut Repo, args: &[String]) -> ExitCode {
