@@ -1,7 +1,7 @@
 //! 受审计的信任表：`keys.json` 记录 key_id、principal、角色和吊销状态。
 //!
 //! 信任表本身不生成私钥，也不签提交；它记录“谁被信任”。私钥生成、提交签名与
-//! 验签在 `signing`。每次 add/revoke 都有写前状态、写后状态和操作结果；带公钥的
+//! 验签在 `signing`。每次 add/revoke/rotate 都有写前状态、写后状态和操作结果；带公钥的
 //! 记录还要求 key_id 是公钥的 BLAKE3 指纹。
 
 use std::collections::BTreeMap;
@@ -13,6 +13,7 @@ use serde_json::json;
 
 use crate::hash::Hash;
 use crate::repo::{DIR, Repo, RepoError};
+use crate::signing::KeyFile;
 
 pub const FILE: &str = "keys.json";
 
@@ -31,6 +32,9 @@ pub struct TrustEntry {
     /// Ed25519 公钥（32 字节 hex）；旧的纯 key_id 记录可以为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
+    /// 如果这条记录是 `key rotate` 产生的，指向它替换掉的旧 key_id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotated_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -239,6 +243,143 @@ impl Repo {
             },
         )
     }
+
+    /// 密钥轮换：旧钥和新钥都签同一份轮换声明，旧记录吊销、新记录继承 principal/role。
+    ///
+    /// 两个签名分别证明“旧钥持有者同意换”和“新钥持有者知道这条轮换”。这不等于
+    /// 信任表自身可信（写仓库的人仍可手改 keys.json），但轮换事件本身不能被无钥伪造。
+    pub fn rotate_key(
+        &mut self,
+        old_key: &KeyFile,
+        new_key: &KeyFile,
+        reason: &str,
+        session: &str,
+        at_ms: u64,
+    ) -> Result<Hash, RepoError> {
+        old_key.validate()?;
+        new_key.validate()?;
+        validate_text("reason", reason)?;
+        validate_text("session", session)?;
+        if old_key.key_id == new_key.key_id {
+            return Err(RepoError::BadHead(
+                "旧钥和新钥的 key_id 相同，不能轮换".to_string(),
+            ));
+        }
+        let mut store = self.keys()?;
+        let Some(old_entry) = store.keys.get(&old_key.key_id) else {
+            return Err(RepoError::BadHead(format!(
+                "旧 key {} 不在信任表",
+                old_key.key_id
+            )));
+        };
+        if old_entry.is_revoked() {
+            return Err(RepoError::BadHead(format!(
+                "旧 key {} 已吊销",
+                old_key.key_id
+            )));
+        }
+        if old_entry
+            .public_key
+            .as_deref()
+            .is_none_or(|public| !public.eq_ignore_ascii_case(&old_key.public))
+        {
+            return Err(RepoError::BadHead(format!(
+                "旧 key {} 的公钥与信任表不一致",
+                old_key.key_id
+            )));
+        }
+        if store.keys.contains_key(&new_key.key_id) {
+            return Err(RepoError::BadHead(format!(
+                "新 key {} 已存在；轮换要求一个全新的 key",
+                new_key.key_id
+            )));
+        }
+        validate_text("principal", &old_entry.principal)?;
+        validate_role(&old_entry.role)?;
+
+        let old_key_id = old_key.key_id.clone();
+        let new_key_id = new_key.key_id.clone();
+        let principal = old_entry.principal.clone();
+        let role = old_entry.role.clone();
+        let statement = rotation_statement(&old_key_id, &new_key_id, &principal, &role, at_ms);
+        let old_signature = old_key.sign_hex(&statement)?;
+        let new_signature = new_key.sign_hex(&statement)?;
+        let old_public = old_key.public.clone();
+        let new_public = new_key.public.clone();
+
+        if let Some(old_entry) = store.keys.get_mut(&old_key_id) {
+            old_entry.revoked_at_ms = Some(at_ms);
+            old_entry.revoke_reason = Some(format!("rotated to {new_key_id}"));
+        }
+        store.keys.insert(
+            new_key_id.clone(),
+            TrustEntry {
+                key_id: new_key_id.clone(),
+                principal: principal.clone(),
+                role: role.clone(),
+                added_at_ms: at_ms,
+                public_key: Some(new_public.clone()),
+                rotated_from: Some(old_key_id.clone()),
+                revoked_at_ms: None,
+                revoke_reason: None,
+            },
+        );
+
+        let reason_owned = reason.to_string();
+        let session_owned = session.to_string();
+        self.with_operation(
+            "key",
+            json!({
+                "action": "rotate",
+                "old_key_id": old_key_id.clone(),
+                "key_id": new_key_id.clone(),
+                "principal": principal.clone(),
+                "role": role.clone(),
+                "session": session_owned,
+                "reason": reason_owned.clone(),
+            }),
+            at_ms,
+            move |repo| {
+                let before = repo.state_digest()?.to_hex();
+                let keystore_hash = store.save(repo.root())?;
+                let after = repo.state_digest()?.to_hex();
+                repo.journal_mut().append(
+                    "key",
+                    json!({
+                        "action": "rotate",
+                        "old_key_id": old_key_id,
+                        "key_id": new_key_id,
+                        "principal": principal,
+                        "role": role,
+                        "session": session,
+                        "reason": reason_owned,
+                        "rotated_at_ms": at_ms,
+                        "old_public": old_public,
+                        "new_public": new_public,
+                        "old_signature": old_signature,
+                        "new_signature": new_signature,
+                        "keystore_hash": keystore_hash.to_hex(),
+                        "state_before": before,
+                        "state_after": after,
+                    }),
+                    at_ms,
+                )?;
+                Ok(keystore_hash)
+            },
+        )
+    }
+}
+
+/// 轮换声明的 canonical 字节；旧钥和新钥都对它签名。
+pub fn rotation_statement(
+    old_key_id: &str,
+    new_key_id: &str,
+    principal: &str,
+    role: &str,
+    at_ms: u64,
+) -> Vec<u8> {
+    format!("trit-key-rotate-v1\n{old_key_id}\n{new_key_id}\n{principal}\n{role}\n{at_ms}\n")
+        .into_bytes()
 }
 
 #[cfg(test)]
@@ -268,6 +409,7 @@ mod tests {
                     role: "author".to_string(),
                     added_at_ms: 1,
                     public_key: None,
+                    rotated_from: None,
                     revoked_at_ms: None,
                     revoke_reason: None,
                 },
@@ -286,5 +428,112 @@ mod tests {
         assert!(validate_role("root").is_err());
         assert!(validate_key_id("short").is_err());
         assert!(validate_key_id("ed25519:aaaaaaaa").is_ok());
+    }
+
+    fn rotation_repo(name: &str) -> (std::path::PathBuf, Repo, KeyFile, KeyFile) {
+        let root = std::env::temp_dir().join(format!(
+            "trit-vcs-rotate-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        Repo::init(&root).unwrap();
+        let mut repo = Repo::open(&root).unwrap();
+        let old = KeyFile::generate().unwrap();
+        let new = KeyFile::generate().unwrap();
+        repo.add_key(
+            TrustEntry {
+                key_id: old.key_id.clone(),
+                principal: "qoder:rotate".to_string(),
+                role: "author".to_string(),
+                added_at_ms: 1_001,
+                public_key: Some(old.public.clone()),
+                rotated_from: None,
+                revoked_at_ms: None,
+                revoke_reason: None,
+            },
+            "qoder:rotate",
+            1_001,
+        )
+        .unwrap();
+        repo.rotate_key(&old, &new, "年度轮换", "qoder:rotate", 1_002)
+            .unwrap();
+        (root, repo, old, new)
+    }
+
+    #[test]
+    fn rotate_event_is_checked_against_trust_lineage() {
+        let (root, repo, old, new) = rotation_repo("lineage");
+        let report = crate::audit::status(&repo).unwrap();
+        assert!(report.ok, "轮换后审计应绿：{:?}", report.issues);
+
+        let mut store = TrustStore::load(&root).unwrap();
+        store.keys.get_mut(&new.key_id).unwrap().rotated_from = None;
+        store.save(&root).unwrap();
+        let report = crate::audit::status(&repo).unwrap();
+        assert!(!report.ok, "抹掉轮换谱系必须判红");
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "key_rotation_mismatch"),
+            "应报 key_rotation_mismatch：{:?}",
+            report.issues
+        );
+        assert_eq!(store.keys[&old.key_id].revoked_at_ms, Some(1_002));
+    }
+
+    #[test]
+    fn later_rotation_does_not_retroactively_red_original() {
+        let (_root, mut repo, _old, new) = rotation_repo("chain");
+        let third = KeyFile::generate().unwrap();
+        repo.rotate_key(&new, &third, "第二次轮换", "qoder:rotate", 1_003)
+            .unwrap();
+        let report = crate::audit::status(&repo).unwrap();
+        assert!(
+            report.ok,
+            "新钥后来被轮换吊销，不应把上一次 rotate 判红：{:?}",
+            report.issues
+        );
+        let store = repo.keys().unwrap();
+        assert_eq!(store.keys[&new.key_id].revoked_at_ms, Some(1_003));
+        assert!(store.keys[&third.key_id].rotated_from.as_deref() == Some(new.key_id.as_str()));
+    }
+
+    #[test]
+    fn rotate_event_with_bad_signer_is_red() {
+        let (_root, mut repo, old, new) = rotation_repo("bad-signature");
+        let before = repo.state_digest().unwrap().to_hex();
+        let payload = json!({
+            "action": "rotate",
+            "old_key_id": old.key_id,
+            "key_id": new.key_id,
+            "principal": "qoder:rotate",
+            "role": "author",
+            "session": "qoder:rotate",
+            "reason": "年度轮换",
+            "rotated_at_ms": 1_002,
+            "old_public": old.public,
+            "new_public": new.public,
+            "old_signature": "00".repeat(64),
+            "new_signature": "00".repeat(64),
+            "keystore_hash": TrustStore::load(repo.root()).unwrap().save(repo.root()).unwrap().to_hex(),
+            "state_before": before,
+            "state_after": before,
+        });
+        repo.journal_mut().append("key", payload, 1_002).unwrap();
+        let report = crate::audit::status(&repo).unwrap();
+        assert!(!report.ok, "坏签名的 rotate 事件必须判红");
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "key_rotation_mismatch"),
+            "应报 key_rotation_mismatch：{:?}",
+            report.issues
+        );
     }
 }

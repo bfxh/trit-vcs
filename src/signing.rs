@@ -112,6 +112,10 @@ impl KeyFile {
     pub fn sign(&self, message: &[u8]) -> Result<Signature, RepoError> {
         Ok(self.signing_key()?.sign(message))
     }
+
+    pub fn sign_hex(&self, message: &[u8]) -> Result<String, RepoError> {
+        Ok(encode_hex(&self.sign(message)?.to_bytes()))
+    }
 }
 
 impl Repo {
@@ -300,6 +304,7 @@ mod tests {
                 role: "author".to_string(),
                 added_at_ms: 1_001,
                 public_key: Some(key.public.clone()),
+                rotated_from: None,
                 revoked_at_ms: None,
                 revoke_reason: None,
             },

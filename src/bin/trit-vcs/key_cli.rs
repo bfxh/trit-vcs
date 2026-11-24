@@ -19,7 +19,8 @@ const USAGE: &str = "key 用法：\n  \
      trit-vcs key init --out <私钥文件> [--json]\n  \
      trit-vcs key add --key-id <指纹> --principal <主体> [--role author|auditor|release|reader] --owner <宿主:会话id> [--json] [--repo PATH]\n  \
      trit-vcs key add --key-file <私钥文件> --principal <主体> [--role ...] --owner <宿主:会话id> [--json] [--repo PATH]\n  \
-     trit-vcs key revoke --key-id <指纹> --reason <原因> --owner <宿主:会话id> [--json] [--repo PATH]";
+     trit-vcs key revoke --key-id <指纹> --reason <原因> --owner <宿主:会话id> [--json] [--repo PATH]\n  \
+     trit-vcs key rotate --old-key-file <旧私钥> --new-key-file <新私钥> --reason <原因> --owner <宿主:会话id> [--json] [--repo PATH]";
 
 fn init(args: &[String]) -> ExitCode {
     let Some(path) = flag(args, "--out") else {
@@ -124,6 +125,7 @@ fn add(args: &[String]) -> ExitCode {
         role: role.to_string(),
         added_at_ms: now_secs() * 1000,
         public_key,
+        rotated_from: None,
         revoked_at_ms: None,
         revoke_reason: None,
     };
@@ -185,6 +187,61 @@ fn revoke(args: &[String]) -> ExitCode {
     }
 }
 
+fn rotate(args: &[String]) -> ExitCode {
+    let root = repo_path(args);
+    let old_path = flag(args, "--old-key-file").unwrap_or("");
+    let new_path = flag(args, "--new-key-file").unwrap_or("");
+    let reason = flag(args, "--reason").unwrap_or("");
+    let owner = flag(args, "--owner").unwrap_or("");
+    if old_path.is_empty() || new_path.is_empty() || reason.is_empty() || owner.is_empty() {
+        eprintln!("key rotate 需要 --old-key-file、--new-key-file、--reason 和 --owner\n{USAGE}");
+        return ExitCode::from(2);
+    }
+    let old_key = match KeyFile::load(Path::new(old_path)) {
+        Ok(key) => key,
+        Err(err) => return fail_err(&err, &root, owner, args),
+    };
+    let new_key = match KeyFile::load(Path::new(new_path)) {
+        Ok(key) => key,
+        Err(err) => return fail_err(&err, &root, owner, args),
+    };
+    if old_key.key_id == new_key.key_id {
+        eprintln!("旧钥和新钥是同一个 key_id；轮换要求新生成的 key");
+        return ExitCode::from(2);
+    }
+    let mut repo = match Repo::open(&root) {
+        Ok(repo) => repo,
+        Err(err) => return fail_err(&err, &root, owner, args),
+    };
+    let at_ms = now_secs() * 1000;
+    match repo.rotate_key(&old_key, &new_key, reason, owner, at_ms) {
+        Ok(hash) => {
+            if has(args, "--json") {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "action": "rotate",
+                        "old_key_id": old_key.key_id,
+                        "key_id": new_key.key_id,
+                        "reason": reason,
+                        "keyset": hash.to_hex(),
+                    }))
+                    .unwrap_or_else(|_| "{}".to_string())
+                );
+            } else {
+                println!(
+                    "已轮换 {} -> {}（keyset {}）",
+                    old_key.key_id,
+                    new_key.key_id,
+                    hash.short()
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail_err(&err, repo.root(), owner, args),
+    }
+}
+
 pub(crate) fn key_cmd(args: &[String]) -> ExitCode {
     let words = positionals(
         args,
@@ -197,6 +254,8 @@ pub(crate) fn key_cmd(args: &[String]) -> ExitCode {
             "--role",
             "--owner",
             "--reason",
+            "--old-key-file",
+            "--new-key-file",
         ],
     );
     match words.first().map(String::as_str) {
@@ -204,6 +263,7 @@ pub(crate) fn key_cmd(args: &[String]) -> ExitCode {
         Some("init") => init(args),
         Some("add") => add(args),
         Some("revoke") => revoke(args),
+        Some("rotate") => rotate(args),
         Some(other) => {
             eprintln!("未知 key 动作：{other}\n{USAGE}");
             ExitCode::from(2)

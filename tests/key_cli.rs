@@ -188,6 +188,112 @@ fn generated_key_signs_commit_and_audit_verifies() {
 }
 
 #[test]
+fn generated_key_rotation_is_audited_and_old_key_is_revoked() {
+    let root = temp("rotate");
+    let init = run(&root, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    fs::write(root.join("a.txt"), "alpha").unwrap();
+    let add = run(&root, &["add", "a.txt"]);
+    assert!(add.status.success(), "{}", stderr(&add));
+
+    let old_init = run(&root, &["key", "init", "--out", "old.json", "--json"]);
+    assert!(old_init.status.success(), "{}", stderr(&old_init));
+    let old_key: serde_json::Value = serde_json::from_str(&stdout(&old_init)).unwrap();
+    let old_id = old_key["key_id"].as_str().unwrap().to_string();
+    let new_init = run(&root, &["key", "init", "--out", "new.json", "--json"]);
+    assert!(new_init.status.success(), "{}", stderr(&new_init));
+    let new_key: serde_json::Value = serde_json::from_str(&stdout(&new_init)).unwrap();
+    let new_id = new_key["key_id"].as_str().unwrap().to_string();
+
+    let trust = run(
+        &root,
+        &[
+            "key",
+            "add",
+            "--key-file",
+            "old.json",
+            "--principal",
+            "qoder:rotate",
+            "--owner",
+            "qoder:rotate",
+        ],
+    );
+    assert!(trust.status.success(), "{}", stderr(&trust));
+    let commit = run(
+        &root,
+        &[
+            "commit",
+            "-m",
+            "轮换前签名",
+            "--owner",
+            "qoder:rotate",
+            "--allow-unclaimed",
+            "--sign-key",
+            "old.json",
+        ],
+    );
+    assert!(commit.status.success(), "{}", stderr(&commit));
+
+    let rotate = run(
+        &root,
+        &[
+            "key",
+            "rotate",
+            "--old-key-file",
+            "old.json",
+            "--new-key-file",
+            "new.json",
+            "--reason",
+            "年度轮换",
+            "--owner",
+            "qoder:rotate",
+            "--json",
+        ],
+    );
+    assert!(rotate.status.success(), "{}", stderr(&rotate));
+    let rotate_value: serde_json::Value = serde_json::from_str(&stdout(&rotate)).unwrap();
+    assert_eq!(rotate_value["action"], "rotate");
+    assert_eq!(rotate_value["old_key_id"], old_id);
+    assert_eq!(rotate_value["key_id"], new_id);
+
+    let audit = run(&root, &["audit", "status", "--json"]);
+    assert!(audit.status.success(), "{}", stderr(&audit));
+    let audit_value: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
+    assert_eq!(audit_value["ok"], true, "轮换后审计必须绿：{}", stdout(&audit));
+
+    let log = run(&root, &["audit", "log", "--json"]);
+    assert!(log.status.success(), "{}", stderr(&log));
+    let events: serde_json::Value = serde_json::from_str(&stdout(&log)).unwrap();
+    let rotate_event = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "key" && event["payload"]["action"] == "rotate")
+        .expect("rotate 必须留下 key 事件");
+    assert_eq!(rotate_event["payload"]["old_key_id"], old_id);
+    assert_eq!(rotate_event["payload"]["key_id"], new_id);
+    assert_eq!(rotate_event["payload"]["reason"], "年度轮换");
+
+    let list = run(&root, &["key", "list", "--json"]);
+    assert!(list.status.success(), "{}", stderr(&list));
+    let list_value: serde_json::Value = serde_json::from_str(&stdout(&list)).unwrap();
+    let old_entry = list_value["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["key_id"] == old_id)
+        .unwrap();
+    assert!(old_entry["revoked_at_ms"].is_number());
+    let new_entry = list_value["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["key_id"] == new_id)
+        .unwrap();
+    assert_eq!(new_entry["rotated_from"], old_id);
+}
+
+#[test]
 fn duplicate_and_unknown_key_are_rejected_without_new_event() {
     let root = temp("reject");
     let init = run(&root, &["init"]);

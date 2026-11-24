@@ -372,7 +372,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                 }
             }
             "policy" => policy_event::check_policy(event, &mut issues, &mut warnings),
-            "key" => key_event::check_key(event, &mut issues, &mut warnings),
+            "key" => key_event::check_key(repo, event, &mut issues, &mut warnings),
             "signature" => {
                 signature_event::check_signature(repo, event, &mut issues, &mut warnings)
             }

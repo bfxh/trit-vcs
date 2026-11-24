@@ -1556,5 +1556,25 @@
  "pkg": "trit-vcs",
  "runner": "cargo",
  "target": "lib"
+},
+{
+ "name": "vcs: 轮换不验双签名（坏签名也绿）",
+ "file": "src/audit/key_event.rs",
+ "old": "        if verify_signature(public, signature, &statement).is_err() {",
+ "new": "        if false {",
+ "filter": "rotate_event_with_bad_signer_is_red",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
+},
+{
+ "name": "vcs: 轮换不核对信任谱系（抹掉 rotated_from 仍绿）",
+ "file": "src/audit/key_event.rs",
+ "old": "        || new_entry.rotated_from.as_deref() != Some(old_key_id)",
+ "new": "        || false",
+ "filter": "rotate_event_is_checked_against_trust_lineage",
+ "pkg": "trit-vcs",
+ "runner": "cargo",
+ "target": "lib"
 }
 ]
