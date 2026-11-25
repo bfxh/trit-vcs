@@ -1,9 +1,9 @@
 # trit-vcs 审计强度路线图
 
-> 状态：P0 首批已落地（L2 对账、认领快照、判据回执、信任表 v0、Ed25519 提交/认领/witness sidecar、双签轮换、仓内签名 Merkle 检查点 v0、单事件 inclusion proof、检查点间 consistency proof v0、仓内文件锚 v0、调用方钉住外部公钥的独立外锚 v1）；跨机同一视图尚未实现
-> 日期：2026-11-24
+> 状态：P0 首批与单文件离线审计包 TVAB v1 已落地（L2 对账、认领快照、判据回执、信任表 v0、Ed25519 提交/认领/witness sidecar、双签轮换、仓内签名 Merkle 检查点 v0、单事件 inclusion proof、检查点间 consistency proof v0、仓内文件锚 v0、调用方钉住外部公钥的独立外锚 v1、`audit bundle` / `audit verify-bundle`）；跨机同一视图尚未实现
+> 日期：2026-11-25
 > 目标：审计面做到“第三方可以离线复算”，不是“再加一条日志”
-> 一句话：现在有**链**、有**对账**、有**提交/认领/witness 签名及双签轮换**、有**仓内签名 Merkle 检查点**、有**单事件 inclusion proof**、有**检查点间一致性证明**、有**仓内文件锚与独立外锚**；仓内文件锚仍只是受信副本，独立外锚只认调用方从仓外钉住的公钥，真实独立性取决于外部密钥保管与部署；有**认领**、有**授权快照**；有 `verify`、也有 `audit`。下一步不是把日志写长，而是补跨机同一视图与完整审计包。
+> 一句话：现在有**链**、有**对账**、有**提交/认领/witness 签名及双签轮换**、有**仓内签名 Merkle 检查点**、有**单事件 inclusion proof**、有**检查点间一致性证明**、有**仓内文件锚、独立外锚与单文件离线审计包**；仓内文件锚仍只是受信副本，独立外锚只认调用方从仓外钉住的公钥，真实独立性取决于外部密钥保管与部署；有**认领**、有**授权快照**；有 `verify`、也有 `audit`。下一步不是把日志写长，而是补跨机同一视图与完整操作覆盖。
 
 ## 0. 先给结论
 
@@ -16,10 +16,10 @@
 | L0 | 有日志，能看发生过什么 | 有 |
 | L1 | 链内改一条会被发现 | 有，但只能防中间改写；删尾巴、换整条链仍要靠检查点/锚 |
 | L2 | 日志能重放成当前状态，漏账/假账会被抓 | **已实现首批**：`audit status/verify/reconcile` 对账 HEAD/refs/对象/claim_set/回执/state_digest；尚未覆盖所有会改状态的操作 |
-| L3 | 每条关键事件能证明到签名检查点，检查点有仓外锚 | **部分**：仓内签名 Merkle 检查点、inclusion/consistency proof、仓内文件锚与独立外锚 v1 已落；提交、认领变更与 witness 已有可选 Ed25519 sidecar。独立外锚不读仓内信任表，但公钥必须由调用方从仓外钉住，实际独立性取决于密钥保管与部署；跨机同一视图仍无 |
+| L3 | 每条关键事件能证明到签名检查点，检查点有仓外锚 | **部分**：仓内签名 Merkle 检查点、inclusion/consistency proof、仓内文件锚、独立外锚 v1 与 TVAB 离线复核已落；提交、认领变更与 witness 已有可选 Ed25519 sidecar。独立外锚不读仓内信任表，但公钥必须由调用方从仓外钉住，实际独立性取决于密钥保管与部署；跨机同一视图仍无 |
 | L4 | 跨机同一视图，服务端回滚/分裂视图能被抓 | **没有** |
 
-所以现在能说“有可对账、可签名、可锚定的审计面”，还不能说“审计最强”。L2 的骨架已经能跑：删整本日志、手改 ref、状态漂移、回执/认领快照缺失都会红；L3 已有签名检查点、inclusion/consistency proof、仓内文件锚和独立外锚，但“所有操作都记账”、外部密钥的独立保管与跨机同一视图仍未完成。
+所以现在能说“有可对账、可签名、可锚定、可单文件离线复核的审计面”，还不能说“审计最强”。L2 的骨架已经能跑：删整本日志、手改 ref、状态漂移、回执/认领快照缺失都会红；TVAB 可在无仓库目录中重建并复验，但“所有操作都记账”、外部密钥的独立保管与跨机同一视图仍未完成。
 
 ### 0.2 顺序不能反
 
@@ -57,12 +57,13 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 | 一致性证明 v0 | `trit-vcs audit consistency` / `audit verify-consistency` | 针对现有“奇数末节点复制”的 Merkle 树证明旧前缀是新根的前缀；节点坐标必须规范升序且不重复，独立重算两侧根；穷举 1–65 叶全前缀，1 万叶/旧前缀 4,321 叶的证明少于 64 个节点 |
 | 文件锚 v0 | `trit-vcs audit anchor` / `audit verify-anchor` / `audit verify --anchor` | 把完整检查点事件包成 schema=1 文件；导出前先核对检查点匹配当前仓库前缀，复验事件哈希、签名、信任/角色/吊销、同高当前事件、锚定前缀 head/previous/root 和到较新检查点的一致性；输出拒绝覆盖。文件锚是受信副本，不是独立 CA/透明日志/可信时间戳 |
 | 独立外锚 v1 | `trit-vcs audit external-anchor` / `audit verify-external-anchor` | 单独的 `trit-external-anchor-v1`；签名/验签密钥来自调用方明确钉住的仓外公钥，验锚不读仓内信任表；仍重算仓库前缀和一致性。公钥渠道与外部私钥保管决定真实独立性 |
+| 离线审计包 TVAB v1 | `audit bundle` / `audit verify-bundle` | 单文件封闭容器封装完整 journal、HEAD/index/policy/claims/keys/refs、独立外锚与日志/状态独立推导的精确证据对象闭包；拒绝 sparse 状态；验证不打开现有仓库、不联网、不执行 witness 或 shell，在独占临时目录重建后核对对象 ID 集合、复算状态摘要并重跑 L2 审计；同目录临时文件同步后以不覆盖方式原子发布 |
 | 操作事件 | `stage` / `commit` / `ref` / `adopt` / `claim_*` / `claim_signature` / `publish` / `pull` / `accept` / `gate` / `deny` / `policy` / `key` / `signature` / `attestation` / `checkpoint` / `merge` / `auth` | 带 `state_after` 的事件能被状态摘要校验；`publish` 记 `previous`/`forced`，`pull` 记 prefix/force，`gate` 记拒绝原因与 `state_before`/`state_after`，`deny` 记业务拒绝的入口/原因/消息/请求细节（含 publish 请求形状、服务端 pull 的缺 ref/未知 ref、本地 pull 的脏工作树/非快进），`policy` 记开关与策略摘要，`key` 记 action/key_id/principal/role/keyset 摘要（带公钥的 add 另记 public_key，rotate 另记 old_key_id、双签和指纹），`signature` 记提交签名并用 trust store 验签，`attestation` 记 witness sidecar 并核操作/提交/树/父树/信任/签名，`claim_signature` 记认领变更签名并核操作/ClaimSpec/前后状态/授权，`checkpoint` 记前缀高度/根/前一条检查点并用 trust store 验签，`merge` 记两个输入/树/冲突数，`auth` 记被拒方法/路径/原因（不记 token） |
 | 查询面 | `audit log` / `audit show` / `--json` | 审计员不必用眼睛翻 JSONL；`audit status --json` 可直接分支 |
 | 坏日志容错 | `Repo::open_for_audit` | journal 是坏 JSON 时仍能打开审计入口，输出 `journal_broken`，而不是在 `Repo::open` 阶段只丢一句 IO 错 |
 | 失败即非零 | `audit status` | 有 issue 时退出码 1；`--json` 仍输出结构化报告，便于 CI 消费 |
 
-已经落地、但不能假装完整的：Ed25519 提交、认领变更与 witness sidecar 签名及双签轮换、仓内签名 Merkle 检查点 v0、单事件 inclusion proof、检查点间 consistency proof v0、仓内文件锚 v0、独立外锚 v1；witness 签名默认可选，导出的 `ClaimSpec` 快照仍未签名，跨机 journal 互链仍未做。提交/检查点/witness 签名里的 `signed_at_ms` 是签名者自报时间，不是可信时间戳，相关吊销判断不能防刻意回填；认领签名授权按 `op_begin` 到 `op_result` 的事件顺序重建，witness 签名拒绝早于信任加入时间的签名。仓内文件锚能验证“当前仓库扩展了保留的检查点”，但不能证明从未见过的后续事件存在，也不能抗仓库、锚副本与信任表被同一管理域整体改写。独立外锚在验证时不读仓内信任表，只认调用方从仓外钉住的公钥；但代码不能替代外部私钥保管、公钥指纹核对与独立部署，同一管理域内的外锚仍不构成抗整机篡改。**这些没做完之前，L3 不能完整宣称。**
+已经落地、但不能假装完整的：Ed25519 提交、认领变更与 witness sidecar 签名及双签轮换、仓内签名 Merkle 检查点 v0、单事件 inclusion proof、检查点间 consistency proof v0、仓内文件锚 v0、独立外锚 v1、单文件离线审计包 TVAB v1；witness 签名默认可选，导出的 `ClaimSpec` 快照仍未签名，跨机 journal 互链仍未做。提交/检查点/witness 签名里的 `signed_at_ms` 是签名者自报时间，不是可信时间戳，相关吊销判断不能防刻意回填；认领签名授权按 `op_begin` 到 `op_result` 的事件顺序重建，witness 签名拒绝早于信任加入时间的签名。仓内文件锚能验证“当前仓库扩展了保留的检查点”，但不能证明从未见过的后续事件存在，也不能抗仓库、锚副本与信任表被同一管理域整体改写。独立外锚在验证时不读仓内信任表，只认调用方从仓外钉住的公钥；但代码不能替代外部私钥保管、公钥指纹核对与独立部署，同一管理域内的外锚仍不构成抗整机篡改。TVAB 证明包内字节、外锚前缀、对象与状态彼此一致，不证明签者意图诚实、墙钟可信、外部服务事实为真或公钥保管独立。**这些没做完之前，L3 不能完整宣称。**
 
 ---
 
@@ -115,7 +116,7 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 | G7 | 证据不可验证 | witness 已有可选签名 `attestation` sidecar，绑定 commit/树/实际父树/原始 witness/签者/会话；`accept` 结果已落 `AcceptReceipt` 对象/事件；handoff 仍不携带 witness/accept/attestation | 已签 witness 可复核“谁说了通过并绑哪棵树”；未签 witness 与回执仍可被替换，离线 handoff 证据链未闭合 | P1，**部分关闭** |
 | G8 | 跨机没有同一视图 | 客户端 journal 与中央仓 journal 是两本账；`publish`/`pull` 已有事件但两本账不互链；单 token 无 actor 身份；ref 是普通文件 | 服务端可回滚/改写 ref 和账本；客户端没有 pin，发现不了第二个历史 | P1，未关闭 |
 | G9 | 时间与策略变更不可信 | HLC 只给本地全序；ref/stage 用墙钟毫秒；`policy set` 已有事件与状态对账，但 `policy.json` 仍可被直接改，且无签名 | 可回填时间；绕过 CLI 直接改策略仍只能靠 `state_digest` 漂移/接续抓到，不能证明谁改的 | P1，**部分关闭** |
-| G10 | 没有完整审计查询/证明入口 | `audit status/log/show/verify/reconcile/proof/consistency/verify-consistency/anchor/verify-anchor` 已可用；仍没有独立 audit bundle/verifier | 审计员能查账、验单事件 inclusion、验检查点间一致性和文件锚，但还不能用单个离线包复核全部 | P2，**部分关闭** |
+| G10 | 离线审计查询与证明入口 | `audit status/log/show/verify/reconcile/proof/consistency/verify-consistency/anchor/verify-anchor/external-anchor/verify-external-anchor/bundle/verify-bundle` 已可用；TVAB v1 可单文件离线重建并复验 | 审计员能查账、验 inclusion/consistency、验锚并用单个离线包复核；包内信任表仍不是独立信任根，包格式升级须新 schema | P2，**机制关闭，持续加固** |
 | G11 | Git 桥会丢审计信息 | import 只走 `--first-parent`，丢掉 merge 图、作者签名；session 被合成；export 只加尾注 | Git 侧的信任无法映射到 trit；审计链在桥接处断掉 | P2 |
 | G12 | 规模与隐私没有预算 | `Journal::open` 每次全量读；无增量校验/归档/脱敏/保留策略 | 事件上百万后打开变慢；日志可能把密钥/客户数据带出去 | P2 |
 
@@ -173,7 +174,7 @@ audit reconcile：用事件重放到 refs / HEAD / claims / policy
 |---|---|---|
 | inclusion proof | 某个事件/提交确实在这棵 Merkle 树里 | O(log n) 个哈希 |
 | consistency proof | 新树是在旧树后面追加的，不是换了一棵 | O(log n) 个哈希 |
-| audit bundle | 第三方离线复核上述全部 | 事件 + 证明 + 公钥 + 策略 + 必要对象 |
+| audit bundle TVAB v1 | 第三方离线复算容器完整性、外锚前缀、对象闭包与 L2 状态一致性 | journal + 封闭状态文件 + 独立推导的精确证据对象闭包 + 独立外锚；最大 256 MiB |
 
 ### 3.4 信任根
 
@@ -365,6 +366,53 @@ bundle 可以升 schema=2，但不能悄悄换掉 v0 的树规则或让旧锚失
 
 目标（尚未落地）：策略文件整体签名；每次变更产生 `policy_change` 事件，带旧/新摘要和签名者。默认全关的旧行为保留，逐项目 opt-in。当前已落地的是未签名的 `policy` 事件与 `trit-policy-v1` 重放规则，不能把它当独立信任根。
 
+### 4.7 离线审计包 TVAB v1
+
+`audit bundle` 与 `audit verify-bundle` 已落地。TVAB 是新的单文件容器，不改变冻结的
+`TVBD`、提交 id、witness 或 journal 格式。二进制布局固定为：`TVAB`、schema `u32 LE`、
+manifest 长度 `u32 LE`、manifest JSON、部件数 `u32 LE`，随后每件依次写 32 字节 BLAKE3 id、
+长度 `u32 LE` 和原始字节。所有整数都是小端；拒绝尾字节、截断、重复部件名、未排序部件、
+未知字段、unsafe ref、摘要/长度不符和不支持的 schema。
+
+v1 上限：整包 256 MiB、manifest 4 MiB、单件 64 MiB、100,000 件、1,000,000 条事件；外锚文件
+1 MiB。manifest 记录 schema、事件数、状态摘要、独立外锚和按名字严格升序的 `PieceRef`
+（name/hash/bytes）。封闭部件集合是 `journal.jsonl`、`HEAD`、`index.json`、`policy.json`、
+`claims.json`、`keys.json`、`refs/<合法 ref>` 与 `object:<64位摘要>`；manifest 必须恰好含一个
+journal。`sparse.json` 不在集合内。部件路径由验证器映射，不采用包内任意路径，也不执行包内命令。
+
+导出先锁仓，要求独立外锚匹配当前前缀、没有未收口操作、L2 审计全绿；再从日志里的
+stage/commit/ref/adopt/pull/publish/signature/accept/attestation/merge 引用，以及 HEAD、refs、index
+独立推导证据对象集合。提交闭包包含提交、树、文件映射、块、全部父提交、witness、claim_set 与
+intent 父树；merge 同时纳入结果树及 ours/theirs/base 提交；回执和 attestation 也递归纳入其结果树与父树。**只有被当前状态或已锚日志证明的对象才进包**，
+对象索引里未被任何状态或事件引用的孤立对象不导出。验证时独立重算同一集合并与包内对象 ID 做精确
+双向比较，因此不是“重导后数同一个清单”的自证。包内含完整 journal、认领、策略、信任表及
+witness/receipt 等原始内容，应按敏感审计材料保管；BLAKE3 只提供完整性，不提供保密性。
+
+`sparse.json` 不属于 `Repo::state_digest`，现有写入路径也没有统一提供可由已签日志重建的 sparse
+历史。为避免封入外部锚无法证明的范围/树状态，TVAB v1 在源仓存在 sparse 索引时拒绝导出，在包内
+出现 `sparse.json` 时拒绝验证；先全量检出或运行 `trit-vcs sparse --clear`。`--out` 先写同目录唯一
+临时文件并 `sync_all`，再用 `hard_link` 做目标存在即失败的原子发布；随后清理临时链接，失败会显式
+报告，已有目标不会被替换。
+
+外锚指向 `checkpoint` 事件，而正常检查点操作在其后还有一个 `op_result`。TVAB 恰好允许这一条
+确定的成功收口：其 `op/begin/begin_hash/status/result/state_after`、时间戳必须与已锚的
+`op_begin`/`checkpoint` 一致，四个状态字段都必须是合法哈希且等于重建仓库的实际
+`state_digest`。不能再带其他尾巴，也不能靠重算事件哈希绕过这一检查。
+
+验证不打开调用方现有仓库、不联网、不执行 witness 或 shell：先用调用方钉住的仓外公钥验外锚，
+再在随机独占临时目录重导对象、恢复封闭状态文件、重开仓库、复算状态摘要、核对事件数与独立推导的
+对象 ID 集合并重跑 L2 审计；报告字节数由已解码的头部、manifest 与部件长度计算，不再重读原路径。
+包内 `keys.json` 只作为历史状态，绝不是独立信任根。TVAB 与外锚入口先拒绝目录、符号链接、FIFO 等
+非普通文件，避免在格式/大小检查前阻塞。临时目录正常/失败路径都会清理，清理失败会带路径显式报告。
+主要失败 kind 有 `audit_bundle_bad`、`audit_bundle_io`、`audit_bundle_repo`、
+`audit_bundle_journal`、`audit_bundle_exists`、`audit_bundle_hash_mismatch`、
+`audit_bundle_truncated`、`audit_bundle_trailing`、`audit_bundle_too_large`、
+`audit_bundle_incomplete`，以及外锚的 `anchor_*`。
+
+**证明边界**：TVAB 证明包内完整性、已锚前缀与重建状态一致，不证明签者意图诚实、墙钟时间可信、
+外部服务事实为真或公钥保管真正独立。它也不是透明日志、CA 或可信时间戳服务。只有旧外锚时，
+较短的一致前缀仍是合法扩展；包描述的是封包时可见的历史，不证明从未见过的后续事件不存在。
+
 ---
 
 ## 5. CLI / API 应该长什么样
@@ -385,9 +433,8 @@ trit-vcs audit verify --deep --anchor ./anchors/latest.json --json
 trit-vcs audit log --kind denied --actor qoder:s1 --path src --from-seq 100 --json
 trit-vcs audit show 42 --json
 
-# 给第三方 proof
-trit-vcs audit prove --event 42 --out event-42.proof.json
-trit-vcs audit verify-proof event-42.proof.json --trust ./trust.json
+# 给第三方 inclusion proof（叶下标、兄弟路径由 audit proof 重算）
+trit-vcs audit proof --checkpoint <检查点事件 seq> --event <事件 seq> --json
 
 # 打仓内签名检查点（v0；文件锚由下面的 anchor 命令单独导出）
 trit-vcs audit checkpoint --key-file ~/.trit/keys/audit.ed25519 --owner qoder:audit --json
@@ -400,9 +447,9 @@ trit-vcs audit verify-consistency --from <旧检查点事件 seq> --to <新检�
 trit-vcs audit anchor --checkpoint <检查点事件 seq> --out ./anchors/latest.json --json
 trit-vcs audit verify-anchor --anchor ./anchors/latest.json --json
 
-# 离线包：不依赖仓库、不依赖网络
-trit-vcs audit bundle --out repo.audit.tvab --trust ./trust.json
-trit-vcs audit verify-bundle repo.audit.tvab --offline
+# 离线包：不依赖仓库、不依赖网络；公钥必须从仓外独立渠道钉住
+trit-vcs audit bundle --out repo.audit.tvab --anchor external-anchor.json --anchor-public-key <仓外公钥hex> --json
+trit-vcs audit verify-bundle repo.audit.tvab --anchor-public-key <仓外公钥hex> --offline --json
 
 # 身份（已落地）
 trit-vcs key init --out ~/.trit/keys/author.key

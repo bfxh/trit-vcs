@@ -122,6 +122,16 @@
   29 条变异（签名门/CLI 策略/公钥指纹/主体/角色/吊销/声明绑定/事件引用/状态/成功收口/重复签名/
   缺 sidecar/策略重放/追溯信任/Ed25519 复验）；本机最小目标全量复跑 238 条：237 条断言抓住、
   1 条登记死循环抓住，零存活、假杀、超时、锁等待或无输出。本批尚未做：成功鉴权的 actor/request id。
+- 新增单文件离线审计包 TVAB v1：`audit bundle --out ... --anchor ... --anchor-public-key ...` 导出完整
+  journal、HEAD/index/policy/claims/keys/refs、独立外锚，以及由日志事件和当前状态独立推导的精确证据
+  对象闭包；未被引用的孤立对象不进包。`audit verify-bundle ... --anchor-public-key ... --offline` 不打开
+  现有仓库、不联网、不执行 witness 或 shell，先在独占临时目录重导对象并恢复封闭状态，再复验外锚、
+  检查点成功收口、事件数、实际状态摘要、L2 审计和三方对象 ID 集合。merge 事件同时纳入结果树及
+  ours/theirs/base 提交闭包，intent/回执/证明的 base 均按父树展开；`sparse.json` 不在历史状态摘要内，因此 TVAB v1 拒绝带 sparse 状态的
+  导出与包内 sparse 部件。导出以同目录唯一临时文件写入并 `sync_all`，再用不覆盖目标的原子链接发布；
+  包内 `keys.json` 只作历史状态，公钥仍须从仓外独立渠道钉住。TVAB 不改变冻结的 TVBD、提交、witness
+  或 journal 格式，也不证明签者意图、可信时间、外部事实或外部私钥的真正独立保管。新增 11 条 CLI
+  集成测试及容器、证据闭包、错误分类、检查点收口等库测试，登记 20 条 TVAB 变异，抽跑 20/20 全抓。
 - 独立审查加固：inclusion proof 严格核叶数、事件下标、路径长度和每层节点存在性，幽灵叶与畸形路径
   拒绝；consistency proof 坐标必须规范升序且不重复；锚导出先核对当前仓库前缀；认领签名审计按
   `op_begin` 到 `op_result` 的日志顺序重建授权，拒绝操作前已吊销、操作中吊销或轮换，并核对签名状态与

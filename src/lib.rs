@@ -19,6 +19,7 @@
 pub mod accept;
 pub mod attestation;
 pub mod audit;
+pub mod audit_bundle;
 pub mod bundle;
 pub mod central;
 pub mod checkpoint;

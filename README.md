@@ -225,6 +225,26 @@ trit-vcs audit verify --anchor anchor.json --json
 “只认仓外公钥”的密码学边界，但真实独立性仍取决于外部密钥保管与部署；它不是透明日志、CA 或可信
 时间戳服务。
 
+## 离线审计包 TVAB
+
+```sh
+trit-vcs audit bundle --out repo.audit.tvab --anchor external-anchor.json --anchor-public-key <仓外公钥hex> --json
+trit-vcs audit verify-bundle repo.audit.tvab --anchor-public-key <仓外公钥hex> --offline --json
+```
+
+TVAB v1 把完整 journal、HEAD/index/policy/claims/keys/refs、独立外锚，以及由日志事件和
+HEAD/refs/index 独立推导出的**精确证据闭包**封成一个文件；未被任何状态或历史事件引用的孤立对象
+不会进包。验证不需要已有仓库，不联网、不执行 witness 或 shell，而是在独占临时目录重建后核对
+对象 ID 集合、复算状态摘要并重跑 L2 审计。导出要求检查点成功收口且审计全绿；`--out` 先写同目录
+临时文件并 `sync_all`，再用不覆盖目标的原子链接发布。包内 `keys.json` 不是信任根，公钥仍必须从仓外
+独立渠道钉住。
+
+`sparse.json` 不进入历史状态摘要，也没有统一的已签重建规则，因此 TVAB v1 拒绝导入或从带 sparse
+索引的仓库导出；先全量检出或运行 `trit-vcs sparse --clear`。完整 journal 可能含敏感
+witness/receipt/认领内容，应按敏感材料保管。TVAB 只证明内部完整性、已锚前缀与状态一致，不证明签者
+意图、可信时间、外部服务事实或真正的独立密钥保管。格式与上限见
+[审计强度路线图](docs/AUDIT-STRENGTH.md)。
+
 ## 持久 sparse 索引
 
 前缀 `pull` / `checkout` 会把范围与基准树写进 `.tritvcs/sparse.json`；下一次 `status` 只扫这个范围、
@@ -244,15 +264,15 @@ trit-vcs sparse --clear     # 清掉索引，退回全量判定
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test                                                     # 20 个集成测试二进制 / 313 条 crate 测试（2026-11-25 实测，含 MSRV 1.88）
-python scripts/mutation_check.py --pkg trit-vcs                    # 281 条登记（见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8）
+cargo test                                                     # 21 个集成测试二进制 / 340 条 crate 测试（2026-11-25 实测，含 MSRV 1.88）
+python scripts/mutation_check.py --pkg trit-vcs                    # 301 条登记（见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / TVAB 20）
 python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/change_policy.py --pkg scripts/ci_integrity.py --pkg scripts/docs_hygiene.py --pkg scripts/module_budget.py --pkg scripts/mutation_check.py --pkg scripts/repo_triage.py --pkg scripts/test_surface.py  # 脚本面 111 条
 ```
 
 最后一条在本仓就能跑（`scripts/mutation_check.py` + `scripts/mutants/` 已随拆分一起搬过来，
 路径口径改成新仓根：`src/…`）。门自身的自测面在镜像仓会 SKIP 掉只对单体仓成立的 7 条夹具，并大声打 SKIP。
 变异登记的口径：每条 = 一个单点文本改动 + 点名的那条测试；测试必须变红，否则算存活。
-281 条 Rust 变异全部声明最小 Cargo 目标（190 条 `--lib`、91 条对应集成测试），门会拒绝目标不存在
+301 条 Rust 变异全部声明最小 Cargo 目标（202 条 `--lib`、99 条对应集成测试），门会拒绝目标不存在
 或过滤后零测试的条目，不再为每条变异重编整包。
 
 ## 库面
@@ -267,6 +287,7 @@ python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/cha
 | `signing` | Ed25519 私钥文件、公钥指纹、提交/认领/见证声明签名；`commit/claims --sign-key` 与 `attest --key-file` 落 sidecar 事件，`audit` 用信任表公钥复验 |
 | `attestation` | witness 的 Ed25519 sidecar：绑定提交/树/父树/原始见证/签者/会话，不改提交 id；支持严格策略、操作收口与重复/信任/吊销审计 |
 | `checkpoint` | 事件前缀的 Merkle 根与签名检查点、旧→新 consistency proof、仓内文件锚和独立外锚；外部锚只认调用方钉住的仓外公钥 |
+| `audit_bundle` | `TVAB` v1 单文件离线审计包：完整 journal/状态/独立推导的证据闭包 + 独立外锚；无仓、无网重建复验，拒绝覆盖，包内信任表不作信任根 |
 | `central` | 命名 ref（`.tritvcs/refs/<name>`）、`publish`（闭包 + 父链 + 只准往前推）、`pull`（稀疏物化，脏则拒；全量落 HEAD+索引） |
 | `net` / `wire` / `remote` | 自写 HTTP/1.1 子集 + Bearer token（常量时间比较）、`TVOB` 对象流（收端重算 BLAKE3）、跨机 publish/pull 的快进与完整性闸门；鉴权失败落 `auth` 事件 |
 | `repo` / `journal` | 提交与查询、哈希链事件日志 |
