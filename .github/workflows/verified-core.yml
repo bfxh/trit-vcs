@@ -46,7 +46,7 @@ jobs:
           # 验证脚本与 verus/ 规格取主库 main：锁定 rev 早于验证锚点，
           # 但 trit-core 的实现仍是锁定 rev 的（bridge 对拍的就是它）。
           git fetch --depth 1 origin main
-          git checkout FETCH_HEAD -- scripts/verify.py scripts/check_k3_impl.py verus
+          git checkout FETCH_HEAD -- scripts/verify.py verus
 
       - name: Install Verus (pinned + SHA-256)
         run: |
@@ -58,11 +58,15 @@ jobs:
         run: |
           set -euo pipefail
           cd /tmp/trit
-          python3 scripts/verify.py --json | tee "$GITHUB_WORKSPACE/verus-report.json"
+          # 固定 rev 早于 K3 OPS 标记；分别验证规格与 bridge，不跑要求新标记的 sync 检查。
+          python3 scripts/verify.py --only verify --json | tee "$GITHUB_WORKSPACE/verus-report.json"
+          python3 scripts/verify.py --only bridge --json | tee "$GITHUB_WORKSPACE/bridge-report.json"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: verus-report
-          path: verus-report.json
+          path: |
+            verus-report.json
+            bridge-report.json
           if-no-files-found: warn
