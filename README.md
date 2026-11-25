@@ -15,13 +15,13 @@
 |---|---|---|
 | 对象存储体积 | **认输** | 三形状 A `1.06×` / B（共享块）`2.29×` / C `1.02×`（×>1 就是比 git 大）；第一版每块一文件时 4.87×，靠打包+zlib 才追到现在这个位置 |
 | 大仓 status | 更快 | 10k 文件热改动 **24–32 ms** vs git 34–35 ms（**0.7–0.9×**）；靠 `(size, mtime_ns)` 内容缓存 + 范围内 status |
-| 部分拉取 | 更强 | 200 文件 / 20 目录：全量 publish **162,854 B / 402 对象**，单目录 pull **8,226 B ⇒ 5.05%**；重复 pull 实传 **0 B**（22 个对象全跳过） |
+| 部分拉取 | 更强 | 200 文件 / 20 目录：全量 publish **163,208 B / 403 对象**，单目录 pull **8,580 B ⇒ 5.26%**；重复 pull 实传 **0 B**（23 个对象全跳过） |
 | 传输断点 | 更强 | 截断的包再导入续传，结果**逐字节相同**；导入跳过目标已有对象 |
 | 合并产物 | 更强 | 300 行单点争用：结构化冲突对象 **381 B** vs 两侧全文 7,780 B ⇒ **4.90%**；只差行尾空白的"伪冲突"**0** 条 |
 | 写前准入 | Git 无对应面 | 未认领的提交默认拒；认领有 TTL、同名 id 判红；判决是三态（True/Unknown/False），"不知道"不等于"过" |
 | 被拒之后 | 更强 | 每条判决附**能直接跑的下一步命令**：`unclaimed` 负载 329→455 元（3 条命令）、`claim_conflict` 18→88 元、`witness_required` 26→73 元 |
 | 预检成本 | 有读数 | 60 文件 / 121 对象 / 9,400 字节的预检 **4.8 ms**，**写盘 0 个对象**（对象数、哈希链长度、HEAD 三样分别断言） |
-| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权成功/失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节，`claims add/release --sign-key` 落 `claim_signature` 并复验操作/完整 ClaimSpec/前后状态/操作时点授权，审计按 `op_begin` 到 `op_result` 的日志顺序拒绝操作前吊销和操作中吊销/轮换，并核对 `op_result.state_after`；`trit-policy-v1` 缺签名字段时 fail-closed，旧策略事件保持兼容，审计重放强制签名策略并检查 sidecar 缺失，`key rotate` 由旧/新两把钥双签声明并由 `audit` 复验，`audit checkpoint` 落签名 Merkle 检查点并复验前缀根/链，`audit consistency` 证明旧前缀是新根的前缀（1 万叶、旧前缀 4,321 叶的证明少于 64 个节点），`audit anchor` 导出可离线复验的仓内文件锚，`audit external-anchor/verify-external-anchor` 用调用方从仓外钉住的独立公钥签/验检查点与前缀摘要；`attest` 给已提交 witness 追加 Ed25519 sidecar，`admit --signed` 与 MCP `admit({signed:true})` 强制验签，策略 `require_signed_witness` 可要求新见证必须带 attestation；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；提交可带 `evidence`/`tags` |
+| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权成功/失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节，`claims add/release --sign-key` 落 `claim_signature` 并复验操作/完整 ClaimSpec/前后状态/操作时点授权，审计按 `op_begin` 到 `op_result` 的日志顺序拒绝操作前吊销和操作中吊销/轮换，并核对 `op_result.state_after`；`trit-policy-v1` 缺签名字段时 fail-closed，旧策略事件保持兼容，审计重放强制签名策略并检查 sidecar 缺失，`key rotate` 由旧/新两把钥双签声明并由 `audit` 复验，`audit checkpoint` 落签名 Merkle 检查点并复验前缀根/链，`audit consistency` 证明旧前缀是新根的前缀（1 万叶、旧前缀 4,321 叶的证明少于 64 个节点），`audit anchor` 导出可离线复验的仓内文件锚，`audit external-anchor/verify-external-anchor` 用调用方从仓外钉住的独立公钥签/验检查点与前缀摘要；`attest` 给已提交 witness 追加 Ed25519 sidecar，`admit --signed` 与 MCP `admit({signed:true})` 强制验签，策略 `require_signed_witness` 可要求新见证必须带 attestation；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；成功 publish/pull 的 `trit-sync-v1` 事件按 op_id/request_id 跨仓关联并核阶段、前置鉴权与同侧唯一性；提交可带 `evidence`/`tags` |
 | 时间 | 有面 | HLC（混合逻辑时钟）而非裸墙钟 |
 | 上下文预算 | 有面 | `--budget <元>` 对所有读数生效：只丢整行、从尾部丢，`truncation` 元数据自己算进预算；ASCII 4 字 = 1 元、非 ASCII 4 元 |
 | Git 生态 | 薄 | 双向桥只走第一父链：`git-export` / `git-import`（同步删除、防路径穿越、剥 `Trit-*` 尾注）；无 merge 图 / submodule / tag |
@@ -33,6 +33,8 @@
   事件，带服务端生成的 request id；成功事件还记 `serve --actor` 配置的服务端身份，未配置时如实记
   `bearer:unidentified`。客户端的 `X-Trit-Actor` 不被采信；响应通过 `X-Trit-Request-Id` 回传同一关联号。
   该 actor 是部署配置，不是按用户验证的密码学身份。失败事件另记原因/401，成功事件不抢报端点最终状态；
+  成功 publish/pull 另落 `trit-sync-v1`，用客户端 `op_id` 与服务端 `request_id` 关联源/中央/客户端事件；
+  本地同步只有 `op_id`，HTTP 成功响应同时回传 `X-Trit-Request-Id` 与 `X-Trit-Op-Id`。
   token 与请求头不落账。publish 被业务规则拒绝或请求形状错误会落 `deny`（入口/原因/
   消息/请求细节，不记 token）；服务端 pull 缺 ref/未知 ref 也落 `deny`；客户端 pull 在应用回执时被拒
   （脏工作树、非快进等）也落本地 `deny`；全量 pull 在发请求前先检查工作树，脏就不下载对象；裸健康探针
@@ -77,7 +79,15 @@ trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt --prefi
 - 每个成功解析的 HTTP 请求都有服务端生成的 64 位十六进制 request id；鉴权放行/拒绝事件与
   JSON/二进制响应通过 `X-Trit-Request-Id` 对上。放行事件的 actor 只来自 `serve --actor`（1–128 字节、
   无控制字符）；省略时记 `bearer:unidentified`，不把客户端声明的身份当已认证主体。publish/pull 的
-  请求形状或业务拒绝详情也带 request id/actor；成功 publish/pull 的状态事件尚未绑定 request id。
+  请求形状或业务拒绝详情也带 request id/actor。成功 publish/pull 落 `trit-sync-v1`：客户端生成
+  恰好 64 个 ASCII 十六进制字符、不做首尾裁剪的 `op_id`，publish 用 `X-Trit-Op-Id` 头、pull 用查询参数发送，服务端在成功响应回传同一值，由客户端核对；
+  source/central/client 各侧事件因此可按 `(op_id, request_id)` 关联，审计拒绝同侧重复 `op_id`、
+  非法阶段组合，以及中央 HTTP 成功事件缺同 request_id 的前置放行鉴权。旧客户端不带 op id 仍被接受，
+  由服务端补生成；旧的无版本 publish/pull 事件仍按历史语义审计。反向不兼容：新版客户端要求成功响应
+  带这两个关联头，连接旧服务端会明确报响应关联字段缺失/不匹配，不会把无关联同步误报为成功。
+- 同步闭包包含提交引用的 `claim_set`/`witness` 证据对象；pull 物化前检查证据齐全，缺对象即拒绝，
+  不改冻结的提交或 bundle 格式。跨仓没有原子事务：中央 HTTP pull 的 `response_sent` 只证明响应体
+  已写出，不证明客户端已应用；远端状态改变后本地 journal 追加失败，命令仍可能报失败。
 - 服务端收发布时先逐块重算 BLAKE3 再入库，再查“tip 是提交、树闭包齐全、`merge_base(tip, current)==current`”，
   三条都过才移动 ref；退历史一律 409。快进检查与 ref/事件更新在同一把仓库状态锁内完成。
 - 全量 `pull` 先判快进与暂存区脏，再物化，最后把 HEAD/索引落到被拉的提交；

@@ -68,6 +68,8 @@ pub enum NetError {
     BadToken(String),
     #[error("actor 不合法：{0}")]
     BadActor(String),
+    #[error("op_id 不合法：必须是 64 位十六进制")]
+    BadOpId,
     #[error("响应状态 {0}：{1}")]
     Status(u16, String),
     #[error("对象流: {0}")]
@@ -97,6 +99,7 @@ impl NetError {
             | NetError::MissingLength
             | NetError::BadToken(_)
             | NetError::BadActor(_)
+            | NetError::BadOpId
             | NetError::Wire(_)
             | NetError::BadResponse => 400,
             _ => 500,
@@ -112,6 +115,7 @@ impl NetError {
             NetError::Status(_, _) => "remote_status",
             NetError::BadToken(_) => "bad_token",
             NetError::BadActor(_) => "bad_actor",
+            NetError::BadOpId => "bad_op_id",
             NetError::BadBind(_) => "bad_bind",
             NetError::Repo(_) => "server_repo",
             NetError::NotHttp(_) | NetError::MissingPort(_) => "bad_remote_url",
@@ -417,6 +421,29 @@ fn publish(
     request: &Request,
     state: &Arc<State>,
 ) -> Result<(), NetError> {
+    let op_id = match request.require_op_id() {
+        Ok(Some(op_id)) => op_id,
+        Ok(None) => crate::sync::new_op_id(),
+        Err(err) => {
+            deny::record_publish_rejected(
+                state,
+                request,
+                None,
+                None,
+                err.status(),
+                err.kind(),
+                &err.to_string(),
+            );
+            return reject_json(
+                reader,
+                request,
+                err.status(),
+                "bad_request",
+                &err.to_string(),
+                &request.correlation_headers(),
+            );
+        }
+    };
     let Some(name) = request.query.get("ref") else {
         deny::record_publish_rejected(
             state,
@@ -508,6 +535,7 @@ fn publish(
                     "ref": name,
                     "tip": tip.to_hex(),
                     "request_id": request.request_id,
+                    "op_id": request.valid_op_id(),
                     "actor": request.actor,
                 }),
             );
@@ -515,9 +543,21 @@ fn publish(
             return respond_remote(reader.get_mut(), &err, request);
         }
     };
-    match crate::remote::accept_publish(&mut repo, name, &tip) {
+    match crate::remote::accept_publish_correlated(
+        &mut repo,
+        name,
+        &tip,
+        &op_id,
+        Some(&request.request_id),
+        request.actor.as_deref(),
+        "http",
+    ) {
         Ok(previous) => {
             let _ = previous;
+            let mut headers = request.correlation_headers();
+            if request.valid_op_id().is_none() {
+                headers.push(("X-Trit-Op-Id", op_id.as_str()));
+            }
             drop(repo);
             respond_json_value(
                 reader.get_mut(),
@@ -528,7 +568,7 @@ fn publish(
                     "commit": tip.to_hex(),
                     "received": received,
                 }),
-                &request.correlation_headers(),
+                &headers,
             )
         }
         Err(err) => {
@@ -540,6 +580,7 @@ fn publish(
                     "ref": name,
                     "tip": tip.to_hex(),
                     "request_id": request.request_id,
+                    "op_id": request.valid_op_id(),
                     "actor": request.actor,
                 }),
             );

@@ -22,6 +22,12 @@ pub(super) fn check_operations(
 
     for event in events {
         match event.kind.as_str() {
+            "publish" | "pull"
+                if event.payload.get("schema").and_then(Value::as_str)
+                    == Some(crate::sync::SCHEMA) =>
+            {
+                // 同步事件概括整个跨仓操作；中间的 set_ref/adopt 已各自核对状态连续性。
+            }
             "op_begin" => {
                 let op = event.payload.get("op").and_then(Value::as_str);
                 let before = parse_hash(event.payload.get("state_before"));

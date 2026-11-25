@@ -41,7 +41,7 @@ pub(crate) fn publish_cmd(args: &[String]) -> ExitCode {
         eprintln!("publish 需要 --central PATH（或用 --remote http://host:port）");
         return ExitCode::from(2);
     };
-    let client = match repo_at(repo_path(args), args) {
+    let mut client = match repo_at(repo_path(args), args) {
         Ok(repo) => repo,
         Err(code) => return code,
     };
@@ -57,7 +57,7 @@ pub(crate) fn publish_cmd(args: &[String]) -> ExitCode {
         None => None,
     };
     match central::publish(
-        &client,
+        &mut client,
         &mut central_repo,
         name,
         commit.as_ref(),
@@ -72,6 +72,7 @@ pub(crate) fn publish_cmd(args: &[String]) -> ExitCode {
                 stats.transfer.sent_bytes,
                 stats.transfer.total_bytes
             );
+            println!("  关联 op_id {}", stats.op_id);
             ExitCode::SUCCESS
         }
         Err(err) => fail_err(&err, client.root(), "", args),
@@ -106,13 +107,13 @@ pub(crate) fn pull_cmd(args: &[String]) -> ExitCode {
         Ok(repo) => repo,
         Err(code) => return code,
     };
-    let central_repo = match Repo::open(central_path) {
+    let mut central_repo = match Repo::open(central_path) {
         Ok(repo) => repo,
         Err(err) => return fail_repo(&err, std::path::Path::new(central_path), "", args),
     };
     let prefix = flag(args, "--prefix");
     match central::pull(
-        &central_repo,
+        &mut central_repo,
         &mut client,
         name,
         prefix,
@@ -128,6 +129,7 @@ pub(crate) fn pull_cmd(args: &[String]) -> ExitCode {
                 stats.transfer.total_bytes,
                 stats.written
             );
+            println!("  关联 op_id {}", stats.op_id);
             if stats.skipped > 0 {
                 println!("  范围外跳过 {} 个（前缀 {:?}）", stats.skipped, prefix);
             }

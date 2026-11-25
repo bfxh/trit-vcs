@@ -14,11 +14,30 @@ pub(super) struct Request {
     pub(super) length: u64,
     pub(super) request_id: String,
     pub(super) actor: Option<String>,
+    pub(super) op_id: Option<String>,
 }
 
 impl Request {
-    pub(super) fn correlation_headers(&self) -> [(&str, &str); 1] {
-        [("X-Trit-Request-Id", self.request_id.as_str())]
+    pub(super) fn correlation_headers(&self) -> Vec<(&str, &str)> {
+        let mut headers = vec![("X-Trit-Request-Id", self.request_id.as_str())];
+        if let Some(op_id) = self.valid_op_id() {
+            headers.push(("X-Trit-Op-Id", op_id));
+        }
+        headers
+    }
+
+    pub(super) fn valid_op_id(&self) -> Option<&str> {
+        self.op_id
+            .as_deref()
+            .filter(|raw| crate::sync::valid_op_id(raw))
+    }
+
+    pub(super) fn require_op_id(&self) -> Result<Option<String>, NetError> {
+        match &self.op_id {
+            None => Ok(None),
+            Some(op_id) if crate::sync::valid_op_id(op_id) => Ok(Some(op_id.clone())),
+            Some(_) => Err(NetError::BadOpId),
+        }
     }
 }
 
@@ -74,6 +93,11 @@ pub(super) fn read_request(reader: &mut BufReader<TcpStream>) -> Result<Option<R
         None if method == "POST" => return Err(NetError::MissingLength),
         None => 0,
     };
+    let op_id = if method == "POST" {
+        headers.get("x-trit-op-id").cloned()
+    } else {
+        query.get("op_id").cloned()
+    };
     Ok(Some(Request {
         method,
         path,
@@ -82,6 +106,7 @@ pub(super) fn read_request(reader: &mut BufReader<TcpStream>) -> Result<Option<R
         length,
         request_id: auth::request_id(),
         actor: None,
+        op_id,
     }))
 }
 

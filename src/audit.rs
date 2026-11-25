@@ -5,8 +5,7 @@
 //! - 日志文件是否还在、有没有被截断/改坏；
 //! - HEAD、refs、对象是否和日志里记的最后状态对得上；
 //! - 最新事件里如果带 `state_after`，它是否等于当前状态摘要。
-//!
-//! 提交签名、密钥轮换、检查点/锚、认领签名与 witness attestation 已接入。
+//!   提交签名、密钥轮换、检查点/锚、认领签名与 witness attestation 已接入。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,7 +17,6 @@ use crate::claims::ClaimSet;
 use crate::hash::Hash;
 use crate::journal::{Event, Journal, JournalError};
 use crate::repo::{Repo, RepoError};
-
 pub(crate) mod attestation_event;
 mod auth_event;
 mod checkpoint_event;
@@ -28,6 +26,7 @@ mod key_event;
 mod ops;
 mod policy_event;
 mod signature_event;
+mod sync_event;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AuditIssue {
@@ -362,6 +361,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                         ),
                     );
                 }
+                sync_event::check_sync(events, index, event, &mut issues);
             }
             "gate" => {
                 if event.payload.get("decision").and_then(Value::as_str) != Some("denied") {

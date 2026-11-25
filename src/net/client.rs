@@ -88,7 +88,9 @@ impl Client {
         tip: &crate::hash::Hash,
         body: &wire::Body,
         store: &crate::store::Store,
-    ) -> Result<serde_json::Value, NetError> {
+        op_id: &str,
+    ) -> Result<PublishReply, NetError> {
+        validate_op_id(op_id)?;
         let length = body
             .byte_len(store)
             .map_err(|err| NetError::Wire(err.to_string()))?;
@@ -96,7 +98,7 @@ impl Client {
         let path = format!("/v1/publish?ref={}", percent_encode(name));
         let head = format!(
             "POST {path} HTTP/1.1\r\nhost: {}\r\nauthorization: Bearer {}\r\n\
-             x-trit-tip: {}\r\ncontent-length: {length}\r\nconnection: close\r\n\r\n",
+             x-trit-tip: {}\r\nx-trit-op-id: {op_id}\r\ncontent-length: {length}\r\nconnection: close\r\n\r\n",
             self.authority(),
             self.token,
             tip.to_hex()
@@ -120,8 +122,17 @@ impl Client {
         if let Some(err) = write_error {
             return Err(err);
         }
-        serde_json::from_slice(&body)
-            .map_err(|err| NetError::Status(200, format!("响应不是 JSON：{err}")))
+        serde_json::from_slice::<serde_json::Value>(&body)
+            .map_err(|err| NetError::Status(200, format!("响应不是 JSON：{err}")))?;
+        let request_id = response
+            .header("x-trit-request-id")
+            .filter(|raw| crate::hash::Hash::from_hex(raw).is_some())
+            .ok_or(NetError::BadResponse)?
+            .to_string();
+        if response.header("x-trit-op-id") != Some(op_id) {
+            return Err(NetError::BadResponse);
+        }
+        Ok(PublishReply { request_id })
     }
 
     /// 拉 `ref`（可限定前缀），边读边入库；返回回执头。
@@ -131,11 +142,14 @@ impl Client {
         prefix: Option<&str>,
         store: &crate::store::Store,
         limits: Limits,
+        op_id: &str,
     ) -> Result<PullReply, NetError> {
+        validate_op_id(op_id)?;
         let mut path = format!("/v1/pull?ref={}", percent_encode(name));
         if let Some(prefix) = prefix {
             path.push_str(&format!("&prefix={}", percent_encode(prefix)));
         }
+        path.push_str(&format!("&op_id={}", percent_encode(op_id)));
         let mut stream = self.connect()?;
         let head = format!(
             "GET {path} HTTP/1.1\r\nhost: {}\r\nauthorization: Bearer {}\r\nconnection: close\r\n\r\n",
@@ -148,6 +162,14 @@ impl Client {
         if response.status != 200 {
             let body = read_body(&mut reader, MAX_ERROR_BODY)?;
             return Err(NetError::Status(response.status, error_message(&body)));
+        }
+        let request_id = response
+            .header("x-trit-request-id")
+            .filter(|raw| crate::hash::Hash::from_hex(raw).is_some())
+            .ok_or(NetError::BadResponse)?
+            .to_string();
+        if response.header("x-trit-op-id") != Some(op_id) {
+            return Err(NetError::BadResponse);
         }
         let tip = response
             .header("x-trit-tip")
@@ -195,12 +217,18 @@ impl Client {
             objects: objects as usize,
             declared,
             received,
+            request_id,
         })
     }
 
     fn authority(&self) -> &str {
         self.base.strip_prefix("http://").unwrap_or(&self.base)
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct PublishReply {
+    pub request_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -211,6 +239,14 @@ pub struct PullReply {
     pub objects: usize,
     pub declared: u64,
     pub received: usize,
+    pub request_id: String,
+}
+
+fn validate_op_id(op_id: &str) -> Result<(), NetError> {
+    if !crate::sync::valid_op_id(op_id) {
+        return Err(NetError::BadOpId);
+    }
+    Ok(())
 }
 
 struct ResponseHead {

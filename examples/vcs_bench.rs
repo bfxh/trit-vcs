@@ -499,22 +499,22 @@ fn central_bench() {
     std::fs::create_dir_all(&hub_dir).unwrap();
     let mut hub = Repo::init(&hub_dir).unwrap();
     let start = Instant::now();
-    let published = central::publish(&repo, &mut hub, "main", None, false).unwrap();
+    let published = central::publish(&mut repo, &mut hub, "main", None, false).unwrap();
     let publish_ms = start.elapsed().as_secs_f64() * 1000.0;
 
     let one_dir = root.join("client-one");
     std::fs::create_dir_all(&one_dir).unwrap();
     let mut client = Repo::init(&one_dir).unwrap();
     let start = Instant::now();
-    let first = central::pull(&hub, &mut client, "main", Some("gen/d00"), false).unwrap();
+    let first = central::pull(&mut hub, &mut client, "main", Some("gen/d00"), false).unwrap();
     let first_ms = start.elapsed().as_secs_f64() * 1000.0;
-    let again = central::pull(&hub, &mut client, "main", Some("gen/d00"), false).unwrap();
+    let again = central::pull(&mut hub, &mut client, "main", Some("gen/d00"), false).unwrap();
 
     let all_dir = root.join("client-all");
     std::fs::create_dir_all(&all_dir).unwrap();
     let mut client_all = Repo::init(&all_dir).unwrap();
     let start = Instant::now();
-    let whole = central::pull(&hub, &mut client_all, "main", None, false).unwrap();
+    let whole = central::pull(&mut hub, &mut client_all, "main", None, false).unwrap();
     let whole_ms = start.elapsed().as_secs_f64() * 1000.0;
 
     let ratio = first.transfer.sent_bytes as f64 / published.transfer.total_bytes as f64 * 100.0;
