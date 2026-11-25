@@ -1,0 +1,68 @@
+name: verified-core
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verified-core-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: trit-core K3 specs (pinned rev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Resolve pinned trit rev
+        id: rev
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          text = open("Cargo.toml", encoding="utf-8").read()
+          match = re.search(r'trit-core[^\n]*rev = "([0-9a-f]+)"', text)
+          if not match:
+              raise SystemExit("Cargo.toml 里找不到 trit-core 的 rev（本 workflow 只适用于 git 依赖）")
+          print("rev=" + match.group(1))
+          PY
+
+      - name: Checkout trit at the pinned rev
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/bfxh/trit.git /tmp/trit
+          cd /tmp/trit
+          git fetch --depth 1 origin "${{ steps.rev.outputs.rev }}"
+          git checkout --detach FETCH_HEAD
+          # 验证脚本与 verus/ 规格取主库 main：锁定 rev 早于验证锚点，
+          # 但 trit-core 的实现仍是锁定 rev 的（bridge 对拍的就是它）。
+          git fetch --depth 1 origin main
+          git checkout FETCH_HEAD -- scripts/verify.py verus
+
+      - name: Install Verus (pinned + SHA-256)
+        run: |
+          set -euo pipefail
+          cd /tmp/trit
+          python3 scripts/verify.py --install
+
+      - name: Verify K3 specs against the pinned rev
+        run: |
+          set -euo pipefail
+          cd /tmp/trit
+          python3 scripts/verify.py --json | tee "$GITHUB_WORKSPACE/verus-report.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: verus-report
+          path: verus-report.json
+          if-no-files-found: warn
