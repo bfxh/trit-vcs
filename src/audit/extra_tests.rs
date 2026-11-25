@@ -103,6 +103,204 @@ fn auth_event_with_request_shape_is_audited_green() {
 }
 
 #[test]
+fn auth_event_with_unknown_schema_is_red() {
+    let root = temp("auth-unknown-schema");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.journal_mut()
+        .append(
+            "auth",
+            json!({
+                "schema": "trit-auth-v3",
+                "decision": "denied",
+                "reason": "bad_token",
+                "method": "POST",
+                "path": "/v1/publish",
+                "status": 401,
+                "state_after": digest,
+            }),
+            2_000,
+        )
+        .unwrap();
+    let report = status(&repo).unwrap();
+    assert!(!report.ok);
+    assert!(
+        report.issues.iter().any(|issue| {
+            issue.kind == "auth_bad" && issue.detail.contains("schema 不受支持")
+        }),
+        "{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn allowed_auth_with_actor_and_request_id_is_audited_green() {
+    let root = temp("auth-allowed-ok");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.journal_mut()
+        .append(
+            "auth",
+            json!({
+                "schema": "trit-auth-v2",
+                "action": "auth",
+                "decision": "allowed",
+                "actor": "qoder:ci",
+                "request_id": Hash::of(b"request-1").to_hex(),
+                "method": "GET",
+                "path": "/v1/health",
+                "state_before": digest,
+                "state_after": digest,
+            }),
+            2_000,
+        )
+        .unwrap();
+    let report = status(&repo).unwrap();
+    assert!(report.ok, "{:?}", report.issues);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn allowed_auth_without_actor_is_red() {
+    let root = temp("auth-allowed-no-actor");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.journal_mut()
+        .append(
+            "auth",
+            json!({
+                "schema": "trit-auth-v2",
+                "decision": "allowed",
+                "request_id": Hash::of(b"request-2").to_hex(),
+                "method": "GET",
+                "path": "/v1/health",
+                "state_after": digest,
+            }),
+            2_000,
+        )
+        .unwrap();
+    let report = status(&repo).unwrap();
+    assert!(!report.ok);
+    assert!(
+        report.issues.iter().any(|issue| issue.kind == "auth_bad"),
+        "{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn allowed_auth_without_request_id_is_red() {
+    let root = temp("auth-allowed-no-request-id");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.journal_mut()
+        .append(
+            "auth",
+            json!({
+                "schema": "trit-auth-v2",
+                "decision": "allowed",
+                "actor": "qoder:ci",
+                "method": "GET",
+                "path": "/v1/health",
+                "state_after": digest,
+            }),
+            2_000,
+        )
+        .unwrap();
+    let report = status(&repo).unwrap();
+    assert!(!report.ok);
+    assert!(
+        report.issues.iter().any(|issue| issue.kind == "auth_bad"),
+        "{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn allowed_auth_with_invalid_actor_is_red() {
+    let root = temp("auth-allowed-invalid-actor");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    for actor in [String::new(), "x".repeat(129), "qoder:\nci".to_string()] {
+        repo.journal_mut()
+            .append(
+                "auth",
+                json!({
+                    "schema": "trit-auth-v2",
+                    "decision": "allowed",
+                    "actor": actor,
+                    "request_id": Hash::of(b"request-invalid-actor").to_hex(),
+                    "method": "GET",
+                    "path": "/v1/health",
+                    "state_after": digest,
+                }),
+                2_000,
+            )
+            .unwrap();
+    }
+    let report = status(&repo).unwrap();
+    assert!(!report.ok);
+    assert_eq!(
+        report
+            .issues
+            .iter()
+            .filter(|issue| { issue.kind == "auth_bad" && issue.detail.contains("合法 actor") })
+            .count(),
+        3,
+        "{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn allowed_auth_without_schema_is_red() {
+    let root = temp("auth-allowed-no-schema");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.journal_mut()
+        .append(
+            "auth",
+            json!({
+                "decision": "allowed",
+                "actor": "qoder:ci",
+                "request_id": Hash::of(b"request-no-schema").to_hex(),
+                "method": "GET",
+                "path": "/v1/health",
+                "state_after": digest,
+            }),
+            2_000,
+        )
+        .unwrap();
+    let report = status(&repo).unwrap();
+    assert!(!report.ok);
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == "auth_bad" && issue.detail.contains("trit-auth-v2") }),
+        "{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn deny_event_with_business_reason_is_audited_green() {
     let root = temp("deny-ok");
     let _ = std::fs::remove_dir_all(&root);

@@ -687,7 +687,9 @@ mod tests {
             .journal()
             .events()
             .iter()
-            .find(|event| event.kind == "auth")
+            .find(|event| {
+                event.kind == "auth" && event.payload["decision"].as_str() == Some("denied")
+            })
             .expect("错的 token 必须留下 auth 事件");
         assert_eq!(auth.payload["decision"], "denied");
         assert_eq!(auth.payload["reason"], "bad_token");

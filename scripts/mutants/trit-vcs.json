@@ -1603,8 +1603,8 @@
  {
   "name": "vcs: 鉴权失败不落 auth 事件（错 token 无账）",
   "file": "src/net/auth.rs",
-  "old": "        \"auth\",",
-  "new": "        \"auth_changed\",",
+  "old": "repo.append_audit_locked(\"auth\", payload, at_ms)",
+  "new": "repo.append_audit_locked(\"auth_changed\", payload, at_ms)",
   "filter": "wrong_token_and_non_fast_forward_are_loud",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3006,6 +3006,106 @@
   "old": "            self.tree(base, format!(\"{source} 的证明父树\"))?;",
   "new": "            self.commit(base, format!(\"{source} 的证明父树\"))?;",
   "filter": "tree_bases_in_commit_receipt_and_attestation_are_expanded",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 未知鉴权事件 schema 被当成旧事件放行",
+  "file": "src/audit/auth_event.rs",
+  "old": "    if event\n        .payload\n        .get(\"schema\")\n        .is_some_and(|schema| schema.as_str() != Some(\"trit-auth-v2\"))\n    {",
+  "new": "    if false {",
+  "filter": "auth_event_with_unknown_schema_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 所有请求复用同一 request id",
+  "file": "src/net/auth.rs",
+  "old": "    Hash::of(format!(\"{}:{now}:{counter}\", std::process::id()).as_bytes()).to_hex()",
+  "new": "    \"00\".repeat(32).to_string()",
+  "filter": "allowed_auth_binds_server_actor_and_response_request_id",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 成功鉴权不落账",
+  "file": "src/net/mod.rs",
+  "old": "    auth::record_allowed(state, &request);",
+  "new": "",
+  "filter": "allowed_auth_binds_server_actor_and_response_request_id",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 服务端 actor 配置被丢弃",
+  "file": "src/net/mod.rs",
+  "old": "            actor: config.actor.clone(),",
+  "new": "            actor: None,",
+  "filter": "allowed_auth_binds_server_actor_and_response_request_id",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 信任客户端伪造的 actor 头",
+  "file": "src/net/mod.rs",
+  "old": "        state\n            .actor\n            .clone()\n            .unwrap_or_else(|| \"bearer:unidentified\".to_string()),",
+  "new": "        request\n            .headers\n            .get(\"x-trit-actor\")\n            .cloned()\n            .unwrap_or_else(|| \"bearer:unidentified\".to_string()),",
+  "filter": "allowed_auth_binds_server_actor_and_response_request_id",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 允许空或含控制字符的服务端 actor",
+  "file": "src/net/mod.rs",
+  "old": "actor.is_empty() || actor.len() > 128 || actor.chars().any(|ch| ch.is_control())",
+  "new": "false",
+  "filter": "config_rejects_empty_oversized_or_control_actor",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 响应不回传真实 request id",
+  "file": "src/net/request.rs",
+  "old": "        [(\"X-Trit-Request-Id\", self.request_id.as_str())]",
+  "new": "        [(\"X-Trit-Request-Id\", \"redacted\")]",
+  "filter": "allowed_auth_binds_server_actor_and_response_request_id",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 新版鉴权事件不校验 request id",
+  "file": "src/audit/auth_event.rs",
+  "old": "    if versioned && parse_hash(event.payload.get(\"request_id\")).is_none() {",
+  "new": "    if false {",
+  "filter": "allowed_auth_without_request_id_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 放行鉴权事件不要求版本",
+  "file": "src/audit/auth_event.rs",
+  "old": "            if !versioned {",
+  "new": "            if false {",
+  "filter": "allowed_auth_without_schema_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 放行鉴权事件接受非法 actor",
+  "file": "src/audit/auth_event.rs",
+  "old": "                .is_some_and(valid_actor)",
+  "new": "                .is_some()",
+  "filter": "allowed_auth_with_invalid_actor_is_red",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"

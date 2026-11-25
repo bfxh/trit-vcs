@@ -13,7 +13,7 @@
 //! - 每连接读写超时，连接数上限，超出回 503 而不是把线程堆爆。
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -28,8 +28,10 @@ mod auth;
 mod deny;
 mod pull;
 mod reject;
+mod request;
 
 use self::reject::{drain_body, reject_json};
+use self::request::{Request, read_request};
 
 const MAX_HEAD_BYTES: usize = 8 * 1024;
 const MAX_HEADERS: usize = 24;
@@ -64,6 +66,8 @@ pub enum NetError {
     Unauthorized,
     #[error("token 不合法：{0}")]
     BadToken(String),
+    #[error("actor 不合法：{0}")]
+    BadActor(String),
     #[error("响应状态 {0}：{1}")]
     Status(u16, String),
     #[error("对象流: {0}")]
@@ -92,6 +96,7 @@ impl NetError {
             | NetError::BadTransferEncoding(_)
             | NetError::MissingLength
             | NetError::BadToken(_)
+            | NetError::BadActor(_)
             | NetError::Wire(_)
             | NetError::BadResponse => 400,
             _ => 500,
@@ -106,6 +111,7 @@ impl NetError {
             NetError::Busy(_) => "server_busy",
             NetError::Status(_, _) => "remote_status",
             NetError::BadToken(_) => "bad_token",
+            NetError::BadActor(_) => "bad_actor",
             NetError::BadBind(_) => "bad_bind",
             NetError::Repo(_) => "server_repo",
             NetError::NotHttp(_) | NetError::MissingPort(_) => "bad_remote_url",
@@ -149,6 +155,9 @@ impl NetError {
                 "token 至少 16 字节、至多 256 字节；用 `--token-file` 给，不要放进 argv"
                     .to_string(),
             ],
+            NetError::BadActor(_) => vec![
+                "`serve --actor` 给 1–128 字节的服务端身份，不能含控制字符".to_string(),
+            ],
             NetError::Repo(detail) => vec![
                 format!("中央仓不可用：{detail}"),
                 "确认 `--dir` 是中央仓目录（不是客户端仓）；先 `trit-vcs init --repo <dir>` 也可以"
@@ -165,6 +174,7 @@ pub struct Config {
     pub repo: PathBuf,
     pub bind: String,
     pub token: String,
+    pub actor: Option<String>,
     pub limits: Limits,
     pub max_body: u64,
     pub read_timeout: Duration,
@@ -181,6 +191,7 @@ impl Config {
             repo: repo.into(),
             bind: bind.into(),
             token: token.into(),
+            actor: None,
             limits: Limits::default(),
             max_body: 256 * 1024 * 1024,
             read_timeout: Duration::from_secs(30),
@@ -199,6 +210,11 @@ impl Config {
         if self.token.len() > 256 {
             return Err(NetError::BadToken("至多 256 字节".to_string()));
         }
+        if let Some(actor) = &self.actor
+            && (actor.is_empty() || actor.len() > 128 || actor.chars().any(|ch| ch.is_control()))
+        {
+            return Err(NetError::BadActor("1–128 字节且不能含控制字符".to_string()));
+        }
         if self.max_body == 0 {
             return Err(NetError::BadBind("max_body 不能为 0".to_string()));
         }
@@ -209,6 +225,7 @@ impl Config {
 struct State {
     repo: Mutex<crate::repo::Repo>,
     token: String,
+    actor: Option<String>,
     limits: Limits,
     max_body: u64,
     connections: AtomicUsize,
@@ -237,6 +254,7 @@ impl Server {
         let state = Arc::new(State {
             repo: Mutex::new(repo),
             token: config.token.clone(),
+            actor: config.actor.clone(),
             limits: config.limits,
             max_body: config.max_body,
             connections: AtomicUsize::new(0),
@@ -314,7 +332,7 @@ fn handle_conn(stream: TcpStream, state: &Arc<State>) -> Result<(), NetError> {
     // 一条连接只用一个句柄：Windows 上 try_clone 出两个句柄时，
     // 先关副本会把还没被对端确认的响应字节变成 RST（客户端看到 10054 而不是 JSON）。
     let mut reader = BufReader::new(stream);
-    let request = match read_request(&mut reader)? {
+    let mut request = match read_request(&mut reader)? {
         Some(request) => request,
         None => return Ok(()),
     };
@@ -330,21 +348,32 @@ fn handle_conn(stream: TcpStream, state: &Arc<State>) -> Result<(), NetError> {
         // 401 在读完 body 前就回，Windows 上服务端带着未读数据关连接会发 RST，
         // 客户端连已经写好的 401 都读不到。小 body 先排空再回（大 body 仍直接关，见 README）。
         drain_body(&mut reader, request.length);
+        let headers = [
+            ("WWW-Authenticate", "Bearer"),
+            ("X-Trit-Request-Id", request.request_id.as_str()),
+        ];
         return respond_json(
             reader.get_mut(),
             401,
             "unauthorized",
             "缺 Bearer token 或对不上",
-            &[("WWW-Authenticate", "Bearer")],
+            &headers,
         );
     }
+    request.actor = Some(
+        state
+            .actor
+            .clone()
+            .unwrap_or_else(|| "bearer:unidentified".to_string()),
+    );
+    auth::record_allowed(state, &request);
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/v1/health") => respond_json(
             reader.get_mut(),
             200,
             "ok",
             &format!("trit-vcs {}", env!("CARGO_PKG_VERSION")),
-            &[],
+            &request.correlation_headers(),
         ),
         ("GET", "/v1/refs") => {
             let repo = state.repo.lock().expect("服务器仓库锁中毒");
@@ -361,18 +390,25 @@ fn handle_conn(stream: TcpStream, state: &Arc<State>) -> Result<(), NetError> {
                         reader.get_mut(),
                         200,
                         &serde_json::json!({"ok": true, "refs": rows}),
+                        &request.correlation_headers(),
                     )
                 }
                 Err(err) => {
                     drop(repo);
                     let err: crate::remote::RemoteError = err.into();
-                    respond_remote(reader.get_mut(), &err)
+                    respond_remote(reader.get_mut(), &err, &request)
                 }
             }
         }
         ("POST", "/v1/publish") => publish(&mut reader, &request, state),
         ("GET", "/v1/pull") => pull::handle(reader.get_mut(), &request, state),
-        _ => respond_json(reader.get_mut(), 404, "not_found", "没有这个端点", &[]),
+        _ => respond_json(
+            reader.get_mut(),
+            404,
+            "not_found",
+            "没有这个端点",
+            &request.correlation_headers(),
+        ),
     }
 }
 
@@ -397,7 +433,7 @@ fn publish(
             400,
             "bad_request",
             "publish 需要 ?ref=NAME",
-            &[],
+            &request.correlation_headers(),
         );
     };
     let Some(tip_hex) = request.headers.get("x-trit-tip") else {
@@ -416,7 +452,7 @@ fn publish(
             400,
             "bad_request",
             "publish 需要 X-Trit-Tip",
-            &[],
+            &request.correlation_headers(),
         );
     };
     let Some(tip) = crate::hash::Hash::from_hex(tip_hex) else {
@@ -435,7 +471,7 @@ fn publish(
             400,
             "bad_request",
             "X-Trit-Tip 不是合法提交 id",
-            &[],
+            &request.correlation_headers(),
         );
     };
     if request.length == 0 || request.length > state.max_body {
@@ -454,7 +490,7 @@ fn publish(
             413,
             "too_large",
             "请求体为空或超过上限",
-            &[],
+            &request.correlation_headers(),
         );
     }
     let mut repo = state.repo.lock().expect("服务器仓库锁中毒");
@@ -468,10 +504,15 @@ fn publish(
                 "publish",
                 err.kind(),
                 &err.to_string(),
-                serde_json::json!({"ref": name, "tip": tip.to_hex()}),
+                serde_json::json!({
+                    "ref": name,
+                    "tip": tip.to_hex(),
+                    "request_id": request.request_id,
+                    "actor": request.actor,
+                }),
             );
             drop(repo);
-            return respond_remote(reader.get_mut(), &err);
+            return respond_remote(reader.get_mut(), &err, request);
         }
     };
     match crate::remote::accept_publish(&mut repo, name, &tip) {
@@ -487,6 +528,7 @@ fn publish(
                     "commit": tip.to_hex(),
                     "received": received,
                 }),
+                &request.correlation_headers(),
             )
         }
         Err(err) => {
@@ -494,10 +536,15 @@ fn publish(
                 "publish",
                 err.kind(),
                 &err.to_string(),
-                serde_json::json!({"ref": name, "tip": tip.to_hex()}),
+                serde_json::json!({
+                    "ref": name,
+                    "tip": tip.to_hex(),
+                    "request_id": request.request_id,
+                    "actor": request.actor,
+                }),
             );
             drop(repo);
-            respond_remote(reader.get_mut(), &err)
+            respond_remote(reader.get_mut(), &err, request)
         }
     }
 }
@@ -517,120 +564,6 @@ fn read_publish_body<R: Read>(
     }
     wire_reader.finish()?;
     Ok(received)
-}
-
-struct Request {
-    method: String,
-    path: String,
-    query: BTreeMap<String, String>,
-    headers: BTreeMap<String, String>,
-    length: u64,
-}
-
-fn read_request(reader: &mut BufReader<TcpStream>) -> Result<Option<Request>, NetError> {
-    let mut head_bytes = 0usize;
-    let mut first = String::new();
-    if reader.read_line(&mut first)? == 0 {
-        return Ok(None);
-    }
-    head_bytes += first.len();
-    let mut parts = first.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let target = parts.next().unwrap_or_default().to_string();
-    let version = parts.next().unwrap_or_default().to_string();
-    if method.is_empty() || target.is_empty() {
-        return Err(NetError::BadRequestLine(first.trim().to_string()));
-    }
-    if version != "HTTP/1.1" && version != "HTTP/1.0" {
-        return Err(NetError::BadVersion(version));
-    }
-    let (path, query) = split_target(&target);
-    let mut headers = BTreeMap::new();
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        head_bytes += line.len();
-        if head_bytes > MAX_HEAD_BYTES {
-            return Err(NetError::HeadTooLarge);
-        }
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
-            break;
-        }
-        let Some((name, value)) = trimmed.split_once(':') else {
-            return Err(NetError::BadRequestLine(trimmed.to_string()));
-        };
-        let name = name.trim().to_ascii_lowercase();
-        if headers.contains_key(&name) {
-            return Err(NetError::BadRequestLine(format!("重复的头：{name}")));
-        }
-        if headers.len() >= MAX_HEADERS {
-            return Err(NetError::TooManyHeaders);
-        }
-        headers.insert(name, value.trim().to_string());
-    }
-    if let Some(encoding) = headers.get("transfer-encoding") {
-        return Err(NetError::BadTransferEncoding(encoding.clone()));
-    }
-    let length = match headers.get("content-length") {
-        Some(raw) => raw
-            .parse::<u64>()
-            .map_err(|_| NetError::BadRequestLine(format!("Content-Length 不合法：{raw}")))?,
-        None if method == "POST" => return Err(NetError::MissingLength),
-        None => 0,
-    };
-    Ok(Some(Request {
-        method,
-        path,
-        query,
-        headers,
-        length,
-    }))
-}
-
-fn split_target(target: &str) -> (String, BTreeMap<String, String>) {
-    let (path, raw_query) = match target.split_once('?') {
-        Some((path, query)) => (path, query),
-        None => (target, ""),
-    };
-    let mut query = BTreeMap::new();
-    for pair in raw_query.split('&').filter(|pair| !pair.is_empty()) {
-        let (key, value) = match pair.split_once('=') {
-            Some((key, value)) => (key, value),
-            None => (pair, ""),
-        };
-        query.insert(percent_decode(key), percent_decode(value));
-    }
-    (path.to_string(), query)
-}
-
-fn percent_decode(raw: &str) -> String {
-    let mut out = Vec::with_capacity(raw.len());
-    let bytes = raw.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => {
-                out.push(b' ');
-                index += 1;
-            }
-            b'%' if index + 2 < bytes.len() => {
-                let hex = &raw[index + 1..index + 3];
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    out.push(byte);
-                    index += 3;
-                    continue;
-                }
-                out.push(bytes[index]);
-                index += 1;
-            }
-            byte => {
-                out.push(byte);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).to_string()
 }
 
 /// 常量时间比较：先比长度，再逐字节 xor 累积；不因为第一个字节不同就提前返回。
@@ -670,8 +603,9 @@ fn respond_json_value(
     stream: &mut TcpStream,
     status: u16,
     value: &serde_json::Value,
+    extra: &[(&str, &str)],
 ) -> Result<(), NetError> {
-    respond_with_headers(stream, status, value, &[])
+    respond_with_headers(stream, status, value, extra)
 }
 
 fn respond_with_headers(
@@ -707,9 +641,16 @@ fn respond_with_headers(
 fn respond_remote(
     stream: &mut TcpStream,
     err: &crate::remote::RemoteError,
+    request: &Request,
 ) -> Result<(), NetError> {
     let status = err.status();
-    respond_json(stream, status, err.kind(), &err.to_string(), &[])
+    respond_json(
+        stream,
+        status,
+        err.kind(),
+        &err.to_string(),
+        &request.correlation_headers(),
+    )
 }
 
 // ---- 客户端 ----

@@ -67,7 +67,7 @@ fn usage() -> ExitCode {
          trit-vcs publish <ref> --remote http://host:port --token-file FILE [--commit ID] [--repo SRC]\n  \
          trit-vcs pull <ref> --central PATH [--prefix DIR] [--force] [--repo DEST]\n  \
          trit-vcs pull <ref> --remote http://host:port --token-file FILE [--prefix DIR] [--repo DEST]\n  \
-         trit-vcs serve --dir PATH [--bind 127.0.0.1:7878] --token-file FILE [--max-body-mb N] [--max-object-mb N] [--max-conn N] [--read-timeout 秒]\n  \
+         trit-vcs serve --dir PATH [--bind 127.0.0.1:7878] [--actor PRINCIPAL] --token-file FILE [--max-body-mb N] [--max-object-mb N] [--max-conn N] [--read-timeout 秒]\n  \
          trit-vcs git-export <git目录> [--map FILE] [--repo PATH]\n  \
          trit-vcs mcp [--repo PATH]\n  \
          trit-vcs git-import <git目录> [--map FILE] [--repo PATH]\n  \
