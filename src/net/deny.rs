@@ -27,6 +27,8 @@ pub(super) fn record_publish_rejected(
             "tip": tip,
             "method": request.method,
             "path": request.path,
+            "request_id": request.request_id,
+            "actor": request.actor,
             "length": request.length,
             "status": status,
         }),
@@ -66,6 +68,8 @@ pub(super) fn record_pull_in_repo(
             "prefix": prefix,
             "method": request.method,
             "path": request.path,
+            "request_id": request.request_id,
+            "actor": request.actor,
             "status": status,
         }),
     );

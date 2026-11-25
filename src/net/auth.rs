@@ -1,11 +1,15 @@
-//! 鉴权失败记账：把“谁在哪个入口被 401”落进中央仓的哈希链，但不记 token/请求头。
+//! 鉴权记账：成功与失败都带服务端生成的 request id；token 与请求头不落账。
 //!
 //! 只记带 `Authorization` 的失败与 `POST /v1/publish` 的失败；裸健康探针不进账，
 //! 避免扫描器把账本刷爆。
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{Request, State};
+use crate::hash::Hash;
+
+static NEXT_REQUEST: AtomicU64 = AtomicU64::new(0);
 
 fn wall_ms() -> u64 {
     std::time::SystemTime::now()
@@ -14,43 +18,59 @@ fn wall_ms() -> u64 {
         .unwrap_or(0)
 }
 
+pub(super) fn request_id() -> String {
+    let counter = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+    let now = wall_ms();
+    Hash::of(format!("{}:{now}:{counter}", std::process::id()).as_bytes()).to_hex()
+}
+
 pub(super) fn attempt_should_be_logged(request: &Request) -> bool {
     request.headers.contains_key("authorization")
         || (request.method == "POST" && request.path == "/v1/publish")
 }
 
 pub(super) fn record_denied(state: &Arc<State>, request: &Request, reason: &str) {
+    record(state, request, "denied", Some(reason));
+}
+
+pub(super) fn record_allowed(state: &Arc<State>, request: &Request) {
+    record(state, request, "allowed", None);
+}
+
+fn record(state: &Arc<State>, request: &Request, decision: &str, reason: Option<&str>) {
     let Ok(mut repo) = state.repo.lock() else {
-        eprintln!("trit-vcs: 鉴权拒绝事件无法落账：服务器仓库锁中毒");
+        eprintln!("trit-vcs: 鉴权事件无法落账：服务器仓库锁中毒");
         return;
     };
     let at_ms = wall_ms();
     let Ok(_guard) = repo.lock_state() else {
-        eprintln!("trit-vcs: 鉴权拒绝事件无法落账：仓库状态锁不可用");
+        eprintln!("trit-vcs: 鉴权事件无法落账：仓库状态锁不可用");
         return;
     };
     let state_before = match repo.state_digest() {
         Ok(digest) => digest.to_hex(),
         Err(err) => {
-            eprintln!("trit-vcs: 鉴权拒绝事件无法落账：状态摘要失败：{err}");
+            eprintln!("trit-vcs: 鉴权事件无法落账：状态摘要失败：{err}");
             return;
         }
     };
     let state_after = state_before.clone();
-    if let Err(err) = repo.append_audit_locked(
-        "auth",
-        serde_json::json!({
-            "action": "auth",
-            "decision": "denied",
-            "reason": reason,
-            "method": request.method,
-            "path": request.path,
-            "status": 401,
-            "state_before": state_before,
-            "state_after": state_after,
-        }),
-        at_ms,
-    ) {
-        eprintln!("trit-vcs: 鉴权拒绝事件无法落账：{err}");
+    let mut payload = serde_json::json!({
+        "schema": "trit-auth-v2",
+        "action": "auth",
+        "decision": decision,
+        "method": request.method,
+        "path": request.path,
+        "request_id": request.request_id,
+        "actor": request.actor,
+        "state_before": state_before,
+        "state_after": state_after,
+    });
+    if let Some(reason) = reason {
+        payload["reason"] = serde_json::json!(reason);
+        payload["status"] = serde_json::json!(401);
+    }
+    if let Err(err) = repo.append_audit_locked("auth", payload, at_ms) {
+        eprintln!("trit-vcs: 鉴权事件无法落账：{err}");
     }
 }

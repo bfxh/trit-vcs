@@ -50,6 +50,9 @@ pub(crate) fn serve_cmd(args: &[String]) -> ExitCode {
     };
     let bind = flag(args, "--bind").unwrap_or(DEFAULT_BIND);
     let mut config = Config::new(PathBuf::from(dir), bind, token);
+    if let Some(actor) = flag(args, "--actor") {
+        config.actor = Some(actor.to_string());
+    }
     if let Some(raw) = flag(args, "--max-body-mb") {
         match raw.parse::<u64>() {
             Ok(mb) if mb > 0 => config.max_body = mb * 1024 * 1024,

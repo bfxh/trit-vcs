@@ -58,7 +58,8 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 | 文件锚 v0 | `trit-vcs audit anchor` / `audit verify-anchor` / `audit verify --anchor` | 把完整检查点事件包成 schema=1 文件；导出前先核对检查点匹配当前仓库前缀，复验事件哈希、签名、信任/角色/吊销、同高当前事件、锚定前缀 head/previous/root 和到较新检查点的一致性；输出拒绝覆盖。文件锚是受信副本，不是独立 CA/透明日志/可信时间戳 |
 | 独立外锚 v1 | `trit-vcs audit external-anchor` / `audit verify-external-anchor` | 单独的 `trit-external-anchor-v1`；签名/验签密钥来自调用方明确钉住的仓外公钥，验锚不读仓内信任表；仍重算仓库前缀和一致性。公钥渠道与外部私钥保管决定真实独立性 |
 | 离线审计包 TVAB v1 | `audit bundle` / `audit verify-bundle` | 单文件封闭容器封装完整 journal、HEAD/index/policy/claims/keys/refs、独立外锚与日志/状态独立推导的精确证据对象闭包；拒绝 sparse 状态；验证不打开现有仓库、不联网、不执行 witness 或 shell，在独占临时目录重建后核对对象 ID 集合、复算状态摘要并重跑 L2 审计；同目录临时文件同步后以不覆盖方式原子发布 |
-| 操作事件 | `stage` / `commit` / `ref` / `adopt` / `claim_*` / `claim_signature` / `publish` / `pull` / `accept` / `gate` / `deny` / `policy` / `key` / `signature` / `attestation` / `checkpoint` / `merge` / `auth` | 带 `state_after` 的事件能被状态摘要校验；`publish` 记 `previous`/`forced`，`pull` 记 prefix/force，`gate` 记拒绝原因与 `state_before`/`state_after`，`deny` 记业务拒绝的入口/原因/消息/请求细节（含 publish 请求形状、服务端 pull 的缺 ref/未知 ref、本地 pull 的脏工作树/非快进），`policy` 记开关与策略摘要，`key` 记 action/key_id/principal/role/keyset 摘要（带公钥的 add 另记 public_key，rotate 另记 old_key_id、双签和指纹），`signature` 记提交签名并用 trust store 验签，`attestation` 记 witness sidecar 并核操作/提交/树/父树/信任/签名，`claim_signature` 记认领变更签名并核操作/ClaimSpec/前后状态/授权，`checkpoint` 记前缀高度/根/前一条检查点并用 trust store 验签，`merge` 记两个输入/树/冲突数，`auth` 记被拒方法/路径/原因（不记 token） |
+| 请求身份关联 v2 | `serve --actor` / `X-Trit-Request-Id` / `auth` / `deny` | 每个成功解析的请求由服务端生成独立 request id；成功/失败鉴权都落 `trit-auth-v2`，响应回传同一 `X-Trit-Request-Id`。成功 actor 只取服务端配置，省略时为 `bearer:unidentified`，不采信客户端 actor 头；publish/pull 的请求形状或业务拒绝详情也带 request id/actor。旧的无版本拒绝事件保持兼容；未知 schema、新版缺合法 request id、放行缺 schema 或合法 actor 都判红。actor 是部署配置，不是按用户验证的密码学身份；成功 publish/pull 状态事件尚未绑定 request id，来源地址也未记录 |
+| 操作事件 | `stage` / `commit` / `ref` / `adopt` / `claim_*` / `claim_signature` / `publish` / `pull` / `accept` / `gate` / `deny` / `policy` / `key` / `signature` / `attestation` / `checkpoint` / `merge` / `auth` | 带 `state_after` 的事件能被状态摘要校验；`publish` 记 `previous`/`forced`，`pull` 记 prefix/force，`gate` 记拒绝原因与 `state_before`/`state_after`，`deny` 记业务拒绝的入口/原因/消息/请求细节（含 publish 请求形状、服务端 pull 的缺 ref/未知 ref、本地 pull 的脏工作树/非快进），`policy` 记开关与策略摘要，`key` 记 action/key_id/principal/role/keyset 摘要（带公钥的 add 另记 public_key，rotate 另记 old_key_id、双签和指纹），`signature` 记提交签名并用 trust store 验签，`attestation` 记 witness sidecar 并核操作/提交/树/父树/信任/签名，`claim_signature` 记认领变更签名并核操作/ClaimSpec/前后状态/授权，`checkpoint` 记前缀高度/根/前一条检查点并用 trust store 验签，`merge` 记两个输入/树/冲突数，`auth` 记成功/失败的方法/路径/request id/actor（不记 token）；失败另记原因/401，放行不预报端点最终状态 |
 | 查询面 | `audit log` / `audit show` / `--json` | 审计员不必用眼睛翻 JSONL；`audit status --json` 可直接分支 |
 | 坏日志容错 | `Repo::open_for_audit` | journal 是坏 JSON 时仍能打开审计入口，输出 `journal_broken`，而不是在 `Repo::open` 阶段只丢一句 IO 错 |
 | 失败即非零 | `audit status` | 有 issue 时退出码 1；`--json` 仍输出结构化报告，便于 CI 消费 |
@@ -110,7 +111,7 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 | G1 | 日志不能解释状态 | `Repo::verify` 仍只统计事件数、跑对象 fsck、走第一父链；但 `audit status` 已比对 journal 与 refs/HEAD/claims/policy/state_digest | `verify` 单独跑仍可能绿；用 `audit` 才会抓删日志/手改 ref/漏记 commit | P0，**部分关闭** |
 | G2 | 链可截断、可换整条 | 仓内签名 Merkle 检查点、单事件 inclusion proof、检查点间 consistency proof、仓内文件锚与独立外锚 v1 已落；独立外锚只认调用方钉住的仓外公钥，但公钥渠道/私钥保管仍须独立 | 保留较新锚时可发现其后的删尾；旧到新换链会被一致性证明拒绝；仓库、锚副本和信任表被同一管理域整体改写仍可能验不出 | P0，**机制关闭，部署信任根未关闭** |
 | G3 | 身份不可验证 | `session` 是自由字符串；提交已有可选 Ed25519 `signature` sidecar；`claims add/release --sign-key` 已有 `claim_signature` sidecar 并核完整 `ClaimSpec`/操作/状态/授权；`key rotate` 要求旧/新钥双签；`checkpoint` 由 auditor/release 钥签名；witness 已有可选 `attestation` sidecar 并核提交/树/父树/信任/签名 | 提交、已签认领变更、检查点与已签 witness 是谁做的可验证；轮换有双钥同意；未签操作和证据仍可能被自称的主体替换 | P0，**部分关闭** |
-| G4 | 操作覆盖不全 | 状态变更已走 `op_begin/op_result`（`stage`/`commit`/`ref`/`adopt`/`claim_*`），提交门拒绝落 `gate`，策略变更落 `policy`，合并落 `merge`，鉴权失败落 `auth`，publish 业务/请求形状拒绝、服务端 pull 拒绝、本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，提交与认领变更签名分别落 `signature`/`claim_signature`；仍缺成功鉴权的 actor/request id 绑定 | 已认证请求仍不能追到主体 | P0，**部分关闭** |
+| G4 | 操作覆盖不全 | 状态变更已走 `op_begin/op_result`（`stage`/`commit`/`ref`/`adopt`/`claim_*`），提交门拒绝落 `gate`，策略变更落 `policy`，合并落 `merge`，成功/失败鉴权落 `trit-auth-v2`（服务端 actor + 独立 request id），响应带同一 `X-Trit-Request-Id`，publish 业务/请求形状拒绝、服务端 pull 拒绝、本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，提交与认领变更签名分别落 `signature`/`claim_signature` | 鉴权可与响应关联，但 actor 仍是部署配置；成功 publish/pull 状态事件尚未绑定 request id，来源地址未记录 | P0，**部分关闭** |
 | G5 | 并发与崩溃会撕裂日志 | `Journal::append` 已有 `journal.lock` 单写者链；认领/策略/信任/提交签名/检查点、普通仓库状态写、中央仓 publish/pull、merge 与独立审计事件共用 `claims.lock` 状态锁；提交预检和写入在同一临界区；关键状态变更前有 `op_begin.state_before`、后有 `op_result.state_after` | 锁住并发写，检查点快照与追加不会插入其他事件；写前协议让“操作开始”有账，但仍不能阻止进程死在中间，只能让审计抓到 | P0，**部分关闭** |
 | G6 | 授权不可事后复核 | 已落 `ClaimSet` 不可变快照，claim 事件补 `path_list` 和完整 `ClaimSpec`，可选 `claim_signature` 证明中央账本变更；账本 TTL 过后原条目仍会消失 | 快照能证明当时授权；已签账本变更有签名历史；未签历史与导出的 `ClaimSpec` 快照仍不能抗替换 | P0，**部分关闭** |
 | G7 | 证据不可验证 | witness 已有可选签名 `attestation` sidecar，绑定 commit/树/实际父树/原始 witness/签者/会话；`accept` 结果已落 `AcceptReceipt` 对象/事件；handoff 仍不携带 witness/accept/attestation | 已签 witness 可复核“谁说了通过并绑哪棵树”；未签 witness 与回执仍可被替换，离线 handoff 证据链未闭合 | P1，**部分关闭** |
@@ -488,7 +489,7 @@ MCP 面保持 13 个工具，不新增独立 attestation/anchor 工具；`admit`
 - `op_result_unknown` / `op_result_mismatch` / `op_result_bad`
 - `op_failed_state_change`（操作标 failed，但 `state_after` 已经不等于动手前状态）
 - `gate_bad`
-- `auth_bad`（`auth` 事件不是 denied / 缺 reason、method、path / status 不是 401）
+- `auth_bad`（旧拒绝事件缺 reason/method/path 或 status 不是 401；schema 非空且不受支持；`trit-auth-v2` 缺合法 request id；放行缺 schema 或合法 actor；decision 不是 denied/allowed）
 - `auth_no_state`（warning：`auth` 事件缺 `state_after`）
 - `deny_bad`（`deny` 事件缺 action/reason/message 或 decision 不是 denied）
 - `deny_no_state`（warning：`deny` 事件缺 `state_after`）
@@ -559,14 +560,14 @@ MCP 面保持 13 个工具，不新增独立 attestation/anchor 工具；`admit`
 - accept receipt 落对象 + 事件；
 - `audit status/log/show/verify --json`。
 
-**本轮已落地**：仓级 `journal.lock` 单写者链，以及认领/策略/信任/提交签名/检查点、普通仓库状态写、中央仓 publish/pull、merge 与独立审计事件共用的 `claims.lock` 状态锁（拿不到锁报 `state_locked`，提交预检与写入同锁，publish/pull 的快进检查到事件追加同锁，merge 从 `op_begin` 到 `op_result` 同锁）；`state_digest` + `audit status/verify/reconcile`；`op_begin/op_result` 写前协议（`stage`/`commit`/`set_ref`/`adopt`/`claim_*`/`policy`/`key`/`sign_commit`/`merge`/`checkpoint`）；提交门拒绝的 `gate` 事件；策略变更的 `policy` 事件；信任表 add/revoke/rotate 的 `key` 事件（rotate 要旧/新双签并核 `rotated_from`）；Ed25519 `key init`、`commit --sign-key` 与 `signature` 事件（审计用信任表公钥验签，签名是 sidecar，不改提交 id）；`claims add/release --sign-key`、库面 `add_signed/release_signed` 与 `claim_signature` 事件（绑定 action/op_begin/完整 ClaimSpec/前后状态/主体，审计复验顺序、成功收口、此前的 key add/rotate、信任、角色、吊销与签名）；`policy set --require-signed-claims`（默认关，历史未签名兼容）；合并的 `merge` 事件；服务端鉴权失败的 `auth` 事件；publish 业务/请求形状、服务端 pull 与本地 pull 业务拒绝的 `deny` 事件；全量 pull 在请求前检查脏工作树；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`；`audit checkpoint` 的前缀 Merkle 根/`previous` 链/验签；`audit proof` 的严格单事件 inclusion proof；`audit consistency/verify-consistency` 的规范坐标旧→新前缀一致性证明；导出前核对当前前缀的 `audit anchor/verify-anchor` 与 `audit verify --anchor` 文件锚闭环；`audit` 对 `op_open` / `op_state_gap` / `event_state_gap` 的检查。
+**本轮已落地**：仓级 `journal.lock` 单写者链，以及认领/策略/信任/提交签名/检查点、普通仓库状态写、中央仓 publish/pull、merge 与独立审计事件共用的 `claims.lock` 状态锁（拿不到锁报 `state_locked`，提交预检与写入同锁，publish/pull 的快进检查到事件追加同锁，merge 从 `op_begin` 到 `op_result` 同锁）；`state_digest` + `audit status/verify/reconcile`；`op_begin/op_result` 写前协议（`stage`/`commit`/`set_ref`/`adopt`/`claim_*`/`policy`/`key`/`sign_commit`/`merge`/`checkpoint`）；提交门拒绝的 `gate` 事件；策略变更的 `policy` 事件；信任表 add/revoke/rotate 的 `key` 事件（rotate 要旧/新双签并核 `rotated_from`）；Ed25519 `key init`、`commit --sign-key` 与 `signature` 事件（审计用信任表公钥验签，签名是 sidecar，不改提交 id）；`claims add/release --sign-key`、库面 `add_signed/release_signed` 与 `claim_signature` 事件（绑定 action/op_begin/完整 ClaimSpec/前后状态/主体，审计复验顺序、成功收口、此前的 key add/rotate、信任、角色、吊销与签名）；`policy set --require-signed-claims`（默认关，历史未签名兼容）；合并的 `merge` 事件；服务端成功/失败鉴权的 `trit-auth-v2` 事件（服务端 actor + request id，响应回传同一 request id）；publish 业务/请求形状、服务端 pull 与本地 pull 业务拒绝的 `deny` 事件；全量 pull 在请求前检查脏工作树；`ClaimSet` 快照；`AcceptReceipt`；`publish`/`pull`/`accept` 事件；`audit log/show` 与 `--json`；`audit checkpoint` 的前缀 Merkle 根/`previous` 链/验签；`audit proof` 的严格单事件 inclusion proof；`audit consistency/verify-consistency` 的规范坐标旧→新前缀一致性证明；导出前核对当前前缀的 `audit anchor/verify-anchor` 与 `audit verify --anchor` 文件锚闭环；`audit` 对 `op_open` / `op_state_gap` / `event_state_gap` 的检查。
 
-**仍未落地**：`AuditEvent v2` 类型化、成功鉴权的 actor/request id、跨机同一视图、完整 proof bundle。提交、认领变更与 witness 已有可选 Ed25519 sidecar 并由审计验签，密钥轮换有双签，检查点有仓内签名 Merkle v0、单事件 inclusion proof、检查点间 consistency proof v0、仓内文件锚 v0 与独立外锚 v1；但签名不进提交 id，认领签名不覆盖导出的 `ClaimSpec` 快照，receipt/handoff 证据链未闭合。仓内文件锚不是独立信任根；独立外锚只认调用方钉住的仓外公钥，实际独立性取决于外部私钥保管与部署，也不是 CA/透明日志/可信时间戳。只有旧锚时，无法证明从未见过的后续事件存在。`auth` 事件目前有方法/路径/原因/401，但没有请求 id、来源地址和经过认证的 actor；`deny` 目前覆盖服务端 publish（含请求形状）、服务端 pull 和客户端 pull 应用回执时的业务拒绝。这也是为什么现在只能算 L2 首批、L3 机制部分落地，不能算 P0/P1 完成。
+**仍未落地**：`AuditEvent v2` 类型化、成功 publish/pull 状态事件与 request id 的绑定、请求来源地址、按用户验证的密码学 actor、跨机同一视图、完整 proof bundle。提交、认领变更与 witness 已有可选 Ed25519 sidecar 并由审计验签，密钥轮换有双签，检查点有仓内签名 Merkle v0、单事件 inclusion proof、检查点间 consistency proof v0、仓内文件锚 v0 与独立外锚 v1；但签名不进提交 id，认领签名不覆盖导出的 `ClaimSpec` 快照，receipt/handoff 证据链未闭合。仓内文件锚不是独立信任根；独立外锚只认调用方钉住的仓外公钥，实际独立性取决于外部私钥保管与部署，也不是 CA/透明日志/可信时间戳。只有旧锚时，无法证明从未见过的后续事件存在。`auth` 现已记录成功/失败的服务端 actor 与 request id，但 actor 来自 `serve --actor` 部署配置，未配置时记 `bearer:unidentified`；它不是每用户密码学身份，成功 `auth` 也不代表端点最终成功。`deny` 目前覆盖服务端 publish（含请求形状）、服务端 pull 和客户端 pull 应用回执时的业务拒绝。这也是为什么现在只能算 L2 首批、L3 机制部分落地，不能算 P0/P1 完成。
 
 **完成定义**
 
 - 删 journal、删尾、改中间、手改 ref、删对象、崩在两次写之间、10 进程并发写，7 类夹具全部按预期 kind 判红。
-- 每个改状态的本地 CLI 路径都有 `op_begin` 和 `op_result`；提交门拒绝路径有 `gate` 事件；鉴权失败路径有 `auth` 事件；服务端 publish（含请求形状）、服务端 pull 与本地 pull 的业务拒绝有 `deny` 事件；信任表 add/revoke/rotate 有 `key` 事件（rotate 双签并核谱系）；提交与已签认领变更分别有 `signature`/`claim_signature` 事件并由 `audit` 验签，但缺请求 id/来源与已认证 actor。
+- 每个改状态的本地 CLI 路径都有 `op_begin` 和 `op_result`；提交门拒绝路径有 `gate` 事件；鉴权成功/失败都有带服务端 actor/request id 的 `auth` 事件，响应回传同一 request id；服务端 publish（含请求形状）、服务端 pull 与本地 pull 的业务拒绝有 `deny` 事件；信任表 add/revoke/rotate 有 `key` 事件（rotate 双签并核谱系）；提交与已签认领变更分别有 `signature`/`claim_signature` 事件并由 `audit` 验签。仍缺成功 publish/pull 状态事件与 request id 的绑定、来源地址与按用户验证的密码学 actor。
 - `audit reconcile` 在干净仓上零告警，在任意一类篡改上失败闭合。
 - 验签只依赖本地 `ed25519-dalek` 和信任表，不依赖外部 CA/网络服务。
 
@@ -621,7 +622,7 @@ MCP 面保持 13 个工具，不新增独立 attestation/anchor 工具；`admit`
 
 - 服务端返回旧检查点 → 客户端 `remote_rollback`。
 - 同一 ref 两个不同检查点 → `remote_equivocation`，并给出两边 root/size。
-- 鉴权失败有事件（actor 可未知，但请求 id/来源/结果必须有）。
+- 鉴权失败有事件（actor 可未知，request id 已与响应关联；来源地址与每用户密码学身份仍未落地）。
 - `publish` 的本地事件与中央事件能用 `op_id` 对上。
 
 ### P4：运营与体验
@@ -722,7 +723,7 @@ MCP 面保持 13 个工具，不新增独立 attestation/anchor 工具；`admit`
 
 1. **`Journal` 加锁 + `op_begin/op_result` 写前协议**，先把并发/崩溃撕裂堵住。
 2. **`audit reconcile` + 状态摘要**，让 `verify` 能回答“日志是否解释了当前状态”。
-3. **全操作事件覆盖 + 拒绝事件**，把 gate/accept/publish/pull/auth/policy/key/signature/attestation/checkpoint/force 都记账；`auth`、publish（含请求形状）、服务端 pull 与本地 pull 的 `deny` 已落，信任表 add/revoke/rotate 的 `key`、提交 `signature`、认领变更 `claim_signature`、witness `attestation`、仓内 `checkpoint`、单事件 `audit proof`、检查点间 consistency proof、仓内文件锚与独立外锚已落；force 仍未单独成事件。
+3. **全操作事件覆盖 + 拒绝事件**，把 gate/accept/publish/pull/auth/policy/key/signature/attestation/checkpoint/force 都记账；`auth`、publish（含请求形状）、服务端 pull 与本地 pull 的 `deny` 已落；成功/失败鉴权已绑定服务端 actor 与响应 request id，但成功 publish/pull 状态事件尚未绑定 request id；信任表 add/revoke/rotate 的 `key`、提交 `signature`、认领变更 `claim_signature`、witness `attestation`、仓内 `checkpoint`、单事件 `audit proof`、检查点间 consistency proof、仓内文件锚与独立外锚已落；force 仍未单独成事件。
 4. **ClaimSet 快照 + accept receipt 落对象**，让授权和证据事后可复核。
 5. **`audit status/log/show/verify --json`**，把审计从内部 JSONL 变成可用的产品面。
 

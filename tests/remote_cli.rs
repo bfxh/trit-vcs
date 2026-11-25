@@ -58,6 +58,8 @@ fn serve(root: &Path, token_file: &Path) -> ServerProc {
             &root.join("central").to_string_lossy(),
             "--bind",
             "127.0.0.1:0",
+            "--actor",
+            "qoder:remote-cli",
             "--token-file",
             &token,
             "--read-timeout",
@@ -326,5 +328,27 @@ fn serve_publish_pull_end_to_end() {
         ],
     );
     assert!(again.status.success(), "{}", stderr(&again));
+
+    let audit = run(&central, &["audit", "log", "--json"]);
+    assert!(audit.status.success(), "{}", stderr(&audit));
+    let events: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
+    let allowed: Vec<_> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["kind"] == "auth" && event["payload"]["decision"] == "allowed")
+        .collect();
+    assert!(allowed.len() >= 3, "publish/pull 成功鉴权都要落账");
+    assert!(
+        allowed
+            .iter()
+            .all(|event| event["payload"]["actor"] == "qoder:remote-cli")
+    );
+    let request_ids: std::collections::HashSet<_> = allowed
+        .iter()
+        .map(|event| event["payload"]["request_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(request_ids.len(), allowed.len(), "request id 不得复用");
+
     let _ = fs::remove_dir_all(&root);
 }

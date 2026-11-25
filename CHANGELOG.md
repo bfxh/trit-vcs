@@ -27,6 +27,13 @@
   不是错误，审计不因此判红。`serve` 的鉴权失败也落 `auth` 事件（decision/reason/method/path/status，
   state_before/state_after 同值；不记 token 与请求头）；只记带 `Authorization` 的失败和 `POST /v1/publish`
   的失败，裸健康探针不进账，避免扫描器刷爆日志。`auth` 事件由审计做字段/401/状态检查。
+  新增请求身份关联 v2：`serve --actor` 配置 1–128 字节、无控制字符的服务端身份；每个成功解析的
+  请求生成独立 64 位十六进制 request id，成功/失败鉴权都落 `trit-auth-v2`，响应通过
+  `X-Trit-Request-Id` 回传同一值。放行 actor 只取服务端配置，未配置时记 `bearer:unidentified`，
+  不采信客户端 actor 头；客户端 `X-Trit-Actor` 不能伪造审计主体。旧的无版本拒绝事件保持兼容；
+  未知 schema 判红；新版缺合法 request id、放行缺 schema 或合法 actor 都判红。publish/pull 的请求形状或业务拒绝
+  详情也带 request id/actor。该 actor 是部署配置而非每用户密码学身份，成功 publish/pull 状态事件
+  尚未绑定 request id，来源地址也未记录。
   服务端 publish 被业务规则拒绝（非快进、对象流坏、ref 非法等）落 `deny` 事件：
   action/decision/reason/message/detail 与同值 state_before/state_after，仍不记 token；
   进入仓库锁之前的请求形状错误（缺 ref、缺 X-Trit-Tip、坏 tip、空/超大 body）也先落

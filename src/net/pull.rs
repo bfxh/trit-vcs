@@ -25,7 +25,13 @@ pub(super) fn handle(
             "missing_ref",
             "pull 需要 ?ref=NAME",
         );
-        return respond_json(stream, 400, "bad_request", "pull 需要 ?ref=NAME", &[]);
+        return respond_json(
+            stream,
+            400,
+            "bad_request",
+            "pull 需要 ?ref=NAME",
+            &request.correlation_headers(),
+        );
     };
     let prefix = request
         .query
@@ -45,7 +51,7 @@ pub(super) fn handle(
                 err.kind(),
                 &err.to_string(),
             );
-            return respond_remote(stream, &err);
+            return respond_remote(stream, &err, request);
         }
     };
     let total = match plan.body.byte_len(repo.store()) {
@@ -61,13 +67,14 @@ pub(super) fn handle(
                 err.kind(),
                 &err.to_string(),
             );
-            return respond_remote(stream, &err);
+            return respond_remote(stream, &err, request);
         }
     };
     let head = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {total}\r\n\
-         x-trit-ref: {name}\r\nx-trit-tip: {}\r\nx-trit-manifest: {}\r\nx-trit-files: {}\r\n\
+         x-trit-request-id: {}\r\nx-trit-ref: {name}\r\nx-trit-tip: {}\r\nx-trit-manifest: {}\r\nx-trit-files: {}\r\n\
          x-trit-objects: {}\r\nconnection: close\r\n\r\n",
+        request.request_id,
         plan.tip.to_hex(),
         plan.manifest.to_hex(),
         plan.files,

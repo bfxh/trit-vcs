@@ -21,7 +21,7 @@
 | 写前准入 | Git 无对应面 | 未认领的提交默认拒；认领有 TTL、同名 id 判红；判决是三态（True/Unknown/False），"不知道"不等于"过" |
 | 被拒之后 | 更强 | 每条判决附**能直接跑的下一步命令**：`unclaimed` 负载 329→455 元（3 条命令）、`claim_conflict` 18→88 元、`witness_required` 26→73 元 |
 | 预检成本 | 有读数 | 60 文件 / 121 对象 / 9,400 字节的预检 **4.8 ms**，**写盘 0 个对象**（对象数、哈希链长度、HEAD 三样分别断言） |
-| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节，`claims add/release --sign-key` 落 `claim_signature` 并复验操作/完整 ClaimSpec/前后状态/操作时点授权，审计按 `op_begin` 到 `op_result` 的日志顺序拒绝操作前吊销和操作中吊销/轮换，并核对 `op_result.state_after`；`trit-policy-v1` 缺签名字段时 fail-closed，旧策略事件保持兼容，审计重放强制签名策略并检查 sidecar 缺失，`key rotate` 由旧/新两把钥双签声明并由 `audit` 复验，`audit checkpoint` 落签名 Merkle 检查点并复验前缀根/链，`audit consistency` 证明旧前缀是新根的前缀（1 万叶、旧前缀 4,321 叶的证明少于 64 个节点），`audit anchor` 导出可离线复验的仓内文件锚，`audit external-anchor/verify-external-anchor` 用调用方从仓外钉住的独立公钥签/验检查点与前缀摘要；`attest` 给已提交 witness 追加 Ed25519 sidecar，`admit --signed` 与 MCP `admit({signed:true})` 强制验签，策略 `require_signed_witness` 可要求新见证必须带 attestation；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；提交可带 `evidence`/`tags` |
+| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权成功/失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节，`claims add/release --sign-key` 落 `claim_signature` 并复验操作/完整 ClaimSpec/前后状态/操作时点授权，审计按 `op_begin` 到 `op_result` 的日志顺序拒绝操作前吊销和操作中吊销/轮换，并核对 `op_result.state_after`；`trit-policy-v1` 缺签名字段时 fail-closed，旧策略事件保持兼容，审计重放强制签名策略并检查 sidecar 缺失，`key rotate` 由旧/新两把钥双签声明并由 `audit` 复验，`audit checkpoint` 落签名 Merkle 检查点并复验前缀根/链，`audit consistency` 证明旧前缀是新根的前缀（1 万叶、旧前缀 4,321 叶的证明少于 64 个节点），`audit anchor` 导出可离线复验的仓内文件锚，`audit external-anchor/verify-external-anchor` 用调用方从仓外钉住的独立公钥签/验检查点与前缀摘要；`attest` 给已提交 witness 追加 Ed25519 sidecar，`admit --signed` 与 MCP `admit({signed:true})` 强制验签，策略 `require_signed_witness` 可要求新见证必须带 attestation；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；提交可带 `evidence`/`tags` |
 | 时间 | 有面 | HLC（混合逻辑时钟）而非裸墙钟 |
 | 上下文预算 | 有面 | `--budget <元>` 对所有读数生效：只丢整行、从尾部丢，`truncation` 元数据自己算进预算；ASCII 4 字 = 1 元、非 ASCII 4 元 |
 | Git 生态 | 薄 | 双向桥只走第一父链：`git-export` / `git-import`（同步删除、防路径穿越、剥 `Trit-*` 尾注）；无 merge 图 / submodule / tag |
@@ -29,8 +29,11 @@
 ## 明确没做的（别当成已具备）
 
 - **网络只有 v0：明文 HTTP、无 TLS、单 token**。`serve` 只该绑回环；跨机请套 SSH 隧道或反代，
-  鉴权只是"同一个 Bearer token"，没有多租户、没有按路径授权，也没有证书。鉴权失败会落 `auth`
-  事件（方法/路径/原因/401，不记 token）；publish 被业务规则拒绝或请求形状错误会落 `deny`（入口/原因/
+  鉴权只是"同一个 Bearer token"，没有多租户、没有按路径授权，也没有证书。成功与失败鉴权都落 `auth`
+  事件，带服务端生成的 request id；成功事件还记 `serve --actor` 配置的服务端身份，未配置时如实记
+  `bearer:unidentified`。客户端的 `X-Trit-Actor` 不被采信；响应通过 `X-Trit-Request-Id` 回传同一关联号。
+  该 actor 是部署配置，不是按用户验证的密码学身份。失败事件另记原因/401，成功事件不抢报端点最终状态；
+  token 与请求头不落账。publish 被业务规则拒绝或请求形状错误会落 `deny`（入口/原因/
   消息/请求细节，不记 token）；服务端 pull 缺 ref/未知 ref 也落 `deny`；客户端 pull 在应用回执时被拒
   （脏工作树、非快进等）也落本地 `deny`；全量 pull 在发请求前先检查工作树，脏就不下载对象；裸健康探针
   不记账，避免扫描器刷爆日志。
@@ -63,7 +66,7 @@
 
 ```sh
 # 服务端：中央仓目录 + token 文件（token 不进 argv，16–256 字节）
-trit-vcs serve --dir ./central --bind 127.0.0.1:7878 --token-file token.txt
+trit-vcs serve --dir ./central --bind 127.0.0.1:7878 --actor qoder:ci --token-file token.txt
 
 # 客户端：发布 / 全量拉取（ref 只准快进；网络面不开放 force）
 trit-vcs publish main --remote http://127.0.0.1:7878 --token-file token.txt
@@ -71,6 +74,10 @@ trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt
 trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt --prefix gen/d00
 ```
 
+- 每个成功解析的 HTTP 请求都有服务端生成的 64 位十六进制 request id；鉴权放行/拒绝事件与
+  JSON/二进制响应通过 `X-Trit-Request-Id` 对上。放行事件的 actor 只来自 `serve --actor`（1–128 字节、
+  无控制字符）；省略时记 `bearer:unidentified`，不把客户端声明的身份当已认证主体。publish/pull 的
+  请求形状或业务拒绝详情也带 request id/actor；成功 publish/pull 的状态事件尚未绑定 request id。
 - 服务端收发布时先逐块重算 BLAKE3 再入库，再查“tip 是提交、树闭包齐全、`merge_base(tip, current)==current`”，
   三条都过才移动 ref；退历史一律 409。快进检查与 ref/事件更新在同一把仓库状态锁内完成。
 - 全量 `pull` 先判快进与暂存区脏，再物化，最后把 HEAD/索引落到被拉的提交；
