@@ -16,6 +16,7 @@ use trit_vcs::worktree;
 
 mod accept_cli;
 mod attest_cli;
+mod audit_bundle_cli;
 mod audit_cli;
 mod bridge;
 mod central_sync;
@@ -100,6 +101,8 @@ fn usage() -> ExitCode {
          trit-vcs audit verify-anchor --anchor FILE [--json] [--repo PATH]\n  \
          trit-vcs audit external-anchor --checkpoint <seq> --key-file <外部私钥> --anchor-public-key <独立公钥hex> --out FILE [--json] [--repo PATH]\n  \
          trit-vcs audit verify-external-anchor --anchor FILE --anchor-public-key <独立公钥hex> [--json] [--repo PATH]\n  \
+         trit-vcs audit bundle --out FILE --anchor <独立外锚文件> --anchor-public-key <仓外公钥hex> [--json] [--repo PATH]\n  \
+         trit-vcs audit verify-bundle <FILE> --anchor-public-key <仓外公钥hex> [--offline] [--json]\n  \
          trit-vcs audit log [事件类型] [--from N] [--to N] [--json] [--repo PATH]\n  \
          trit-vcs audit show <序号> [--json] [--repo PATH]\n  \
          trit-vcs stats [--repo PATH]"

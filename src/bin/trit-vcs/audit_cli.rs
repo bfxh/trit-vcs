@@ -29,6 +29,12 @@ pub(crate) fn audit_cmd(args: &[String]) -> ExitCode {
         .filter(|value| !value.starts_with("--"))
         .map(String::as_str)
         .unwrap_or("status");
+    if sub == "bundle" {
+        return super::audit_bundle_cli::bundle_cmd(args);
+    }
+    if sub == "verify-bundle" {
+        return super::audit_bundle_cli::verify_bundle_cmd(args);
+    }
     let repo = match sub {
         "log" | "show" | "checkpoint" => Repo::open(&root),
         _ => Repo::open_for_audit(&root),
@@ -53,7 +59,7 @@ pub(crate) fn audit_cmd(args: &[String]) -> ExitCode {
         }
         other => {
             eprintln!(
-                "audit 未知子命令：{other}（可用：status / verify / reconcile / log / show / checkpoint / proof / consistency / verify-consistency / anchor / verify-anchor / external-anchor / verify-external-anchor）"
+                "audit 未知子命令：{other}（可用：status / verify / reconcile / log / show / checkpoint / proof / consistency / verify-consistency / anchor / verify-anchor / external-anchor / verify-external-anchor / bundle / verify-bundle）"
             );
             ExitCode::from(2)
         }

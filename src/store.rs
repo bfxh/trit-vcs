@@ -144,6 +144,12 @@ impl Store {
         self.index.borrow().contains_key(hash)
     }
 
+    pub fn ids(&self) -> Vec<Hash> {
+        let mut ids: Vec<Hash> = self.index.borrow().keys().copied().collect();
+        ids.sort();
+        ids
+    }
+
     fn lock(&self) -> Result<PathBuf, StoreError> {
         let path = self.objects().join("pack.lock");
         match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -499,6 +505,19 @@ mod tests {
         assert_eq!(stats.reused_chunks, 0);
         assert!(store.stats().unwrap().bytes_stored > 0);
         assert!(store.fsck().is_ok());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ids_are_complete_sorted_and_deduplicated() {
+        let root = temp("ids");
+        let store = Store::open(&root).unwrap();
+        let first = store.put_chunk(b"first").unwrap().0;
+        let second = store.put_chunk(b"second").unwrap().0;
+        store.put_chunk(b"first").unwrap();
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(store.ids(), expected);
         let _ = fs::remove_dir_all(&root);
     }
 

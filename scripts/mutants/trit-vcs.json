@@ -2809,5 +2809,205 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "test:trust_cli"
+ },
+ {
+  "name": "vcs: TVAB 不验部件内容摘要（坏对象仍绿）",
+  "file": "src/audit_bundle/container.rs",
+  "old": "        if actual != expected_hash {",
+  "new": "        if false {",
+  "filter": "rejects_corrupt_piece_and_duplicate_or_unsafe_names",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB 不拒绝尾字节（夹带数据仍绿）",
+  "file": "src/audit_bundle/container.rs",
+  "old": "    if input.read(&mut trailing)? != 0 {",
+  "new": "    if false {",
+  "filter": "rejects_bad_magic_schema_truncation_and_trailing_bytes",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB 允许封闭集合外部件名",
+  "file": "src/audit_bundle/container.rs",
+  "old": "    let valid = match name {\n        \"journal.jsonl\" | \"HEAD\" | \"index.json\" | \"policy.json\" | \"claims.json\" | \"keys.json\" => {\n            true\n        }\n        _ if name.starts_with(\"refs/\") => Repo::validate_ref(&name[\"refs/\".len()..]).is_ok(),\n        _ if name.starts_with(\"object:\") => Hash::from_hex(&name[\"object:\".len()..]) == Some(*hash),\n        _ => false,\n    };",
+  "new": "    let valid = true;\n    let _ = hash;",
+  "filter": "rejects_corrupt_piece_and_duplicate_or_unsafe_names",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB 不核检查点成功收口形状",
+  "file": "src/audit_bundle.rs",
+  "old": "    if !valid_shape {",
+  "new": "    if false {",
+  "filter": "recomputed_checkpoint_completion_tail_is_still_checked",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_bundle_cli"
+ },
+ {
+  "name": "vcs: TVAB 检查点收口不绑实际状态摘要",
+  "file": "src/audit_bundle.rs",
+  "old": "    let digest = repo.state_digest()?;\n    let state_before = begin",
+  "new": "    let digest = Hash::of(b\"wrong-state\");\n    let state_before = begin",
+  "filter": "checkpoint_completion_accepts_matching_state_digest",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB 不核 manifest 状态摘要",
+  "file": "src/audit_bundle.rs",
+  "old": "        if digest.to_hex() != decoded.manifest.state_digest {",
+  "new": "        if false {",
+  "filter": "state_tampering_is_caught_even_when_piece_hash_is_recomputed",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_bundle_cli"
+ },
+ {
+  "name": "vcs: TVAB 不要求重建后 L2 审计全绿",
+  "file": "src/audit_bundle.rs",
+  "old": "    if !report.ok || report.level != \"L2\" || report.open_ops != 0 {",
+  "new": "    if false {",
+  "filter": "clean_audit_rejects_open_operations",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB 不核外锚 key_id 与钉住公钥",
+  "file": "src/checkpoint/external.rs",
+  "old": "        if public_key_id(&public) != self.key_id {",
+  "new": "        if false {",
+  "filter": "wrong_external_public_key_is_rejected",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_bundle_cli"
+ },
+ {
+  "name": "vcs: TVAB 导出覆盖已有文件",
+  "file": "src/audit_bundle/container.rs",
+  "old": "match fs::hard_link(temp_path, path) {",
+  "new": "match { if path.exists() { fs::remove_file(path)?; } fs::rename(temp_path, path) } {",
+  "filter": "stale_anchor_and_existing_output_are_refused",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_bundle_cli"
+ },
+ {
+  "name": "vcs: TVAB 导出把孤立对象也塞进清单",
+  "file": "src/audit_bundle.rs",
+  "old": "    for id in required_objects {",
+  "new": "    for id in repo.store().ids() {\n        let _ = &required_objects;",
+  "filter": "inventory_is_the_independently_derived_evidence_closure",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_bundle_cli"
+ },
+ {
+  "name": "vcs: TVAB 不独立核对证据对象集合",
+  "file": "src/audit_bundle.rs",
+  "old": "        if required_objects != packaged {",
+  "new": "        let _ = &required_objects;\n        if false {",
+  "filter": "inventory_is_the_independently_derived_evidence_closure",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_bundle_cli"
+ },
+ {
+  "name": "vcs: TVAB 导出未锚定的 sparse 状态",
+  "file": "src/audit_bundle.rs",
+  "old": "    let sparse = dir.join(\"sparse.json\");",
+  "new": "    let sparse = dir.join(\"never-sparse.json\");",
+  "filter": "sparse_state_is_rejected_on_export_and_verification",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_bundle_cli"
+ },
+ {
+  "name": "vcs: TVAB 包内接收未锚定的 sparse 状态",
+  "file": "src/audit_bundle/container.rs",
+  "old": "        \"journal.jsonl\" | \"HEAD\" | \"index.json\" | \"policy.json\" | \"claims.json\" | \"keys.json\" => {",
+  "new": "        \"journal.jsonl\" | \"HEAD\" | \"index.json\" | \"policy.json\" | \"claims.json\" | \"keys.json\" | \"sparse.json\" => {",
+  "filter": "sparse_state_is_rejected_on_export_and_verification",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_bundle_cli"
+ },
+ {
+  "name": "vcs: TVAB 非普通文件先打开再拒绝",
+  "file": "src/audit_bundle/container.rs",
+  "old": "pub(crate) fn open_regular_file(path: &Path) -> Result<fs::File, BundleError> {\n    let before = fs::symlink_metadata(path)?;\n    if !before.file_type().is_file() {\n        return Err(BundleError::invalid(\n            \"audit_bundle_bad\",\n            format!(\"{} 不是普通文件\", path.display()),\n        ));\n    }\n    let file = fs::File::open(path)?;\n    if !file.metadata()?.file_type().is_file() {\n        return Err(BundleError::invalid(\n            \"audit_bundle_bad\",\n            format!(\"{} 打开后不是普通文件\", path.display()),\n        ));\n    }\n    Ok(file)\n}",
+  "new": "pub(crate) fn open_regular_file(path: &Path) -> Result<fs::File, BundleError> {\n    Ok(fs::File::open(path)?)\n}",
+  "filter": "rejects_directory_as_input_before_reading",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB 报告字节数不从解码内容计算",
+  "file": "src/audit_bundle/container.rs",
+  "old": "        bytes: total,",
+  "new": "        bytes: 0,",
+  "filter": "roundtrip_preserves_manifest_pieces_and_exact_size",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB 审计错误全混成不完整包",
+  "file": "src/audit_bundle.rs",
+  "old": "            Self::Audit(AuditError::Io(_)) => \"audit_bundle_io\",\n            Self::Audit(AuditError::Repo(_)) => \"audit_bundle_repo\",\n            Self::Audit(AuditError::Journal(_)) => \"audit_bundle_journal\",",
+  "new": "            Self::Audit(_) => \"audit_bundle_incomplete\",",
+  "filter": "audit_error_kinds_remain_specific",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB 证据闭包漏掉 merge 事件",
+  "file": "src/audit_bundle/evidence.rs",
+  "old": "            \"merge\" => {",
+  "new": "            \"merge_ignored\" => {",
+  "filter": "merge_event_contributes_its_tree_and_file_closure",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB intent 父树误按提交展开",
+  "file": "src/audit_bundle/evidence.rs",
+  "old": "            self.tree(base, format!(\"{source} 的意图父树\"))?;",
+  "new": "            self.commit(base, format!(\"{source} 的意图父树\"))?;",
+  "filter": "tree_bases_in_commit_receipt_and_attestation_are_expanded",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB 回执父树误按提交展开",
+  "file": "src/audit_bundle/evidence.rs",
+  "old": "            self.tree(base, format!(\"{source} 的回执父树\"))?;",
+  "new": "            self.commit(base, format!(\"{source} 的回执父树\"))?;",
+  "filter": "tree_bases_in_commit_receipt_and_attestation_are_expanded",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: TVAB 证明父树误按提交展开",
+  "file": "src/audit_bundle/evidence.rs",
+  "old": "            self.tree(base, format!(\"{source} 的证明父树\"))?;",
+  "new": "            self.commit(base, format!(\"{source} 的证明父树\"))?;",
+  "filter": "tree_bases_in_commit_receipt_and_attestation_are_expanded",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]
