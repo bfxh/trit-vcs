@@ -46,7 +46,7 @@ jobs:
           # 验证脚本与 verus/ 规格取主库 main：锁定 rev 早于验证锚点，
           # 但 trit-core 的实现仍是锁定 rev 的（bridge 对拍的就是它）。
           git fetch --depth 1 origin main
-          git checkout FETCH_HEAD -- scripts/verify.py verus
+          git checkout FETCH_HEAD -- scripts/verify.py scripts/check_k3_impl.py verus
 
       - name: Install Verus (pinned + SHA-256)
         run: |
