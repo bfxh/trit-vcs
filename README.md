@@ -306,6 +306,18 @@ python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/cha
 | `sparse` | 持久 sparse 索引：前缀 + 基准树；`status` 只扫范围内，全量检出自动清 |
 | `git_bridge` / `techmap` / `status_cache` / `mcp` | Git 双向桥、技术标签索引、status 缓存、13 个工具的 stdio JSON-RPC |
 
+## 形式化验证门（上游 K3 语义）
+
+`verified-core` workflow 在每次 PR / push `main` 时：
+
+1. 从 `Cargo.toml` 解析 `trit-core` 锁定的 git rev；
+2. clone 主库并 checkout 该 rev，再取主库 `main` 的 `scripts/verify.py` 与 `verus/`；
+3. 用 Verus 验证该 rev 的 K3 规格，并用 bridge 对拍**该 rev 的 `trit-core` 实现**。
+
+这保证"本仓锁定的那个上游版本"满足主库证明过的 K3 代数律。验证的是锁定 rev，不是上游
+最新 `main`：上游改语义而本仓没 bump rev 时门不会红；bump 之后的下一次 PR 会验证新 rev。
+本地复跑见主库 `docs/engineering/VERIFICATION.md`。
+
 ## 这仓是怎么来的 / 依赖边界
 
 从单体仓 `bfxh/trit` 的 `crates/trit-vcs` 用 `git subtree split` 搬出，**带着原来的提交历史**
