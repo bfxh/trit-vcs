@@ -86,6 +86,8 @@ fn record(state: &Arc<State>, request: &Request, decision: &str, reason: Option<
         "path": request.path,
         "request_id": request.request_id,
         "actor": request.actor,
+        // 只记 TCP 对端 IP，不记临时端口；反代部署时这里就是反代地址。
+        "source": request.source,
         "state_before": state_before,
         "state_after": state_after,
     });

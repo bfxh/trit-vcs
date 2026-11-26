@@ -30,6 +30,7 @@ pub(super) fn record_publish_rejected(
             "request_id": request.request_id,
             "op_id": request.valid_op_id(),
             "actor": request.actor,
+            "source": request.source,
             "length": request.length,
             "status": status,
         }),
@@ -72,6 +73,7 @@ pub(super) fn record_pull_in_repo(
             "request_id": request.request_id,
             "op_id": request.valid_op_id(),
             "actor": request.actor,
+            "source": request.source,
             "status": status,
         }),
     );
@@ -100,6 +102,7 @@ pub(super) fn record_view_rejected(
             "request_id": request.request_id,
             "op_id": request.valid_op_id(),
             "actor": request.actor,
+            "source": request.source,
             "status": status,
         }),
     );

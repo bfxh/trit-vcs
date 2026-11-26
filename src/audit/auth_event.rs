@@ -27,6 +27,16 @@ pub(super) fn check_auth(
             format!("第 {} 条 auth 事件缺合法 request_id", event.seq),
         ));
     }
+    if event
+        .payload
+        .get("source")
+        .is_some_and(|source| !valid_source(source))
+    {
+        issues.push(AuditIssue::new(
+            "auth_bad",
+            format!("第 {} 条 auth 事件的 source 不是合法 IP", event.seq),
+        ));
+    }
     match event.payload.get("decision").and_then(Value::as_str) {
         Some("denied") => check_denied(event, issues),
         Some("allowed") => {
@@ -102,4 +112,64 @@ fn check_denied(event: &Event, issues: &mut Vec<AuditIssue>) {
 
 fn valid_actor(actor: &str) -> bool {
     !actor.is_empty() && actor.len() <= 128 && !actor.chars().any(char::is_control)
+}
+
+fn valid_source(value: &Value) -> bool {
+    value
+        .as_str()
+        .is_some_and(|raw| raw.parse::<std::net::IpAddr>().is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hash::Hash;
+
+    fn event(payload: Value) -> Event {
+        Event {
+            seq: 1,
+            at_ms: 1,
+            kind: "auth".to_string(),
+            hash: Hash::of(b"auth"),
+            payload,
+            prev: None,
+        }
+    }
+
+    fn base_payload() -> Value {
+        serde_json::json!({
+            "schema": "trit-auth-v2",
+            "action": "auth",
+            "decision": "allowed",
+            "method": "GET",
+            "path": "/v1/health",
+            "request_id": Hash::of(b"request").to_hex(),
+            "actor": "test:actor",
+            "state_after": Hash::of(b"state").to_hex(),
+        })
+    }
+
+    #[test]
+    fn source_must_be_an_ip_when_present() {
+        let mut issues = Vec::new();
+        let mut payload = base_payload();
+        payload["source"] = Value::from("127.0.0.1");
+        let mut warnings = Vec::new();
+        check_auth(&event(payload), &mut issues, &mut warnings);
+        assert!(
+            issues.iter().all(|issue| issue.kind != "auth_bad"),
+            "{issues:?}"
+        );
+
+        let mut payload = base_payload();
+        payload["source"] = Value::from("127.0.0.1:8080");
+        let mut issues = Vec::new();
+        check_auth(&event(payload), &mut issues, &mut warnings);
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.kind == "auth_bad" && issue.detail.contains("source")),
+            "{issues:?}"
+        );
+    }
 }

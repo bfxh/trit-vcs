@@ -10,6 +10,9 @@
   （本地/HTTP 客户端）成功应用后追加 `force` 事件，记录 action/transport/side/name/op_id/commit/
   previous/reason 与前后状态；审计要求同 op_id/side 的成功 `trit-sync-v1` 事件带 `forced=true`，
   publish 的 previous 还必须与该同步事件一致。
+- `auth`/`deny` 记录 TCP 对端地址：服务端从连接取 `peer_addr().ip()` 写入 `source`（不记临时端口，
+  不采信 `X-Forwarded-For`；反代后为代理地址）。`trit-auth-v2` 与 HTTP 入口的 `deny` 都带该字段；
+  旧事件可缺，出现时审计要求是合法 IPv4/IPv6。
 - `checkout --force` 独立审计事件 `trit-checkout-v1`：强制检出实际放行未提交改动时追加
   `checkout` 事件，记录目标提交、前缀、被放行条数/前 8 条路径/完整集合摘要、写入/跳过数与前后状态；
   审计要求 `force=true`、`dirty>0`、脏样本不超限且 `state_before`/`state_after` 相等（检出只改工作树）。
@@ -61,7 +64,7 @@
   `X-Trit-Request-Id` 回传同一值。放行 actor 只取服务端配置，未配置时记 `bearer:unidentified`，
   不采信客户端 actor 头；客户端 `X-Trit-Actor` 不能伪造审计主体。旧的无版本拒绝事件保持兼容；
   未知 schema 判红；新版缺合法 request id、放行缺 schema 或合法 actor 都判红。publish/pull 的请求形状或业务拒绝
-  详情也带 request id/actor。该 actor 是部署配置而非每用户密码学身份，来源地址仍未记录。
+  详情也带 request id/actor。该 actor 是部署配置而非每用户密码学身份；来源地址现由 `source` 记录（旧事件可缺）。
   新增成功同步关联 `trit-sync-v1`：客户端生成恰好 64 个 ASCII 十六进制字符、不做首尾裁剪的 `op_id`，
   publish 通过 `X-Trit-Op-Id`、pull 通过查询参数发送；服务端成功响应回传
   `X-Trit-Request-Id`/`X-Trit-Op-Id`，由客户端核对，source/central/client 成功事件记录同一组关联号、

@@ -13,6 +13,8 @@ pub(super) struct Request {
     pub(super) headers: BTreeMap<String, String>,
     pub(super) length: u64,
     pub(super) request_id: String,
+    /// TCP 对端 IP；反代后面时这里只是反代地址，不采信 `X-Forwarded-For`。
+    pub(super) source: Option<String>,
     pub(super) actor: Option<String>,
     pub(super) op_id: Option<String>,
 }
@@ -98,6 +100,11 @@ pub(super) fn read_request(reader: &mut BufReader<TcpStream>) -> Result<Option<R
     } else {
         query.get("op_id").cloned()
     };
+    let source = reader
+        .get_ref()
+        .peer_addr()
+        .ok()
+        .map(|addr| addr.ip().to_string());
     Ok(Some(Request {
         method,
         path,
@@ -105,6 +112,7 @@ pub(super) fn read_request(reader: &mut BufReader<TcpStream>) -> Result<Option<R
         headers,
         length,
         request_id: auth::request_id(),
+        source,
         actor: None,
         op_id,
     }))
