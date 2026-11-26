@@ -6,6 +6,11 @@
 ## [Unreleased]
 
 ### Added
+- 每 actor 独立 token：`serve --token-file` 改为逐行解析 `<token> [actor]`（空行与 `#` 注释忽略，
+  最多 256 条，token 16–256 字节且不得重复），同一服务端可按 Bearer token 把 `auth` 事件的
+  actor 区分到不同主体；逐行 actor 优先，缺省退回 `--actor`，再退回 `bearer:unidentified`。
+  鉴权仍对每条 token 做常量时间比较并扫完整表；所有 token 权限相同，不是密码学用户身份。
+  客户端 token 文件仍只接受单条，多条直接拒绝，避免把服务端 token 表当客户端凭据。
 - 审计 L2 首批（`docs/AUDIT-STRENGTH.md`）：`trit-vcs audit status/verify/reconcile` 把哈希链日志对账到
   当前 `HEAD`/refs/索引/策略/认领账本/对象闭包，`audit log/show` 可按事件类型与序号查；
   `--json` 输出 `ok/level/chain_ok/events/issues`，有 issue 时退出码非零。新增 `Repo::state_digest`

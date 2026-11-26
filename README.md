@@ -28,11 +28,13 @@
 
 ## 明确没做的（别当成已具备）
 
-- **网络只有 v0：明文 HTTP、无 TLS、单 token**。`serve` 只该绑回环；跨机请套 SSH 隧道或反代，
-  鉴权只是"同一个 Bearer token"，没有多租户、没有按路径授权，也没有证书。成功与失败鉴权都落 `auth`
-  事件，带服务端生成的 request id；成功事件还记 `serve --actor` 配置的服务端身份，未配置时如实记
-  `bearer:unidentified`。客户端的 `X-Trit-Actor` 不被采信；响应通过 `X-Trit-Request-Id` 回传同一关联号。
-  该 actor 是部署配置，不是按用户验证的密码学身份。失败事件另记原因/401，成功事件不抢报端点最终状态；
+- **网络只有 v0：明文 HTTP、无 TLS、多 bearer token**。`serve` 只该绑回环；跨机请套 SSH 隧道或反代，
+  鉴权只是"若干条 Bearer token"，每条可映射一个审计 actor；没有多租户隔离、没有按路径授权，也没有证书。
+  服务端 token 文件逐行写 `<token> [actor]`，同一个 token 只出现一次；未逐行写 actor 的条目退回
+  `serve --actor` 的全局身份，仍未配置时如实记 `bearer:unidentified`。成功与失败鉴权都落 `auth`
+  事件，带服务端生成的 request id；客户端的 `X-Trit-Actor` 不被采信；响应通过 `X-Trit-Request-Id`
+  回传同一关联号。该 actor 是 bearer token 对应的部署配置，不是按用户验证的密码学身份；所有 token
+  仍拥有同样的仓库读写权限。失败事件另记原因/401，成功事件不抢报端点最终状态；
   成功 publish/pull 另落 `trit-sync-v1`，用客户端 `op_id` 与服务端 `request_id` 关联源/中央/客户端事件；
   本地同步只有 `op_id`，HTTP 成功响应同时回传 `X-Trit-Request-Id` 与 `X-Trit-Op-Id`。
   token 与请求头不落账。publish 被业务规则拒绝或请求形状错误会落 `deny`（入口/原因/
@@ -69,18 +71,23 @@
 "对象格式自己写"一样——多一层框架就多一层"它的行为谁保证"。
 
 ```sh
-# 服务端：中央仓目录 + token 文件（token 不进 argv，16–256 字节）
-trit-vcs serve --dir ./central --bind 127.0.0.1:7878 --actor qoder:ci --token-file token.txt
+# 服务端：tokens.txt 每行 `<token> [actor]`；空行与 # 注释忽略，最多 256 条
+# 例：0123456789abcdef alice
+#     fedcba9876543210 bob
+trit-vcs serve --dir ./central --bind 127.0.0.1:7878 --actor qoder:fallback --token-file tokens.txt
 
-# 客户端：发布 / 全量拉取（ref 只准快进；网络面不开放 force）
+# 客户端：只接受单 token 文件（可带 actor，但客户端不会用它覆盖服务端审计主体）
 trit-vcs publish main --remote http://127.0.0.1:7878 --token-file token.txt
 trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt
 trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt --prefix gen/d00
 ```
 
 - 每个成功解析的 HTTP 请求都有服务端生成的 64 位十六进制 request id；鉴权放行/拒绝事件与
-  JSON/二进制响应通过 `X-Trit-Request-Id` 对上。放行事件的 actor 只来自 `serve --actor`（1–128 字节、
-  无控制字符）；省略时记 `bearer:unidentified`，不把客户端声明的身份当已认证主体。publish/pull 的
+  JSON/二进制响应通过 `X-Trit-Request-Id` 对上。放行事件的 actor 先取命中 token 行里的 actor，
+  没有则退回 `serve --actor`（1–128 字节、无控制字符）；两者都没有时记 `bearer:unidentified`，
+  不把客户端声明的身份当已认证主体。服务端对每条 token 都做常量时间比较且扫完整个表，再取命中
+  条目的主体；客户端 token 文件含多条时直接拒绝，避免把服务端 token 表误当客户端凭据。
+  publish/pull 的
   请求形状或业务拒绝详情也带 request id/actor。成功 publish/pull 落 `trit-sync-v1`：客户端生成
   恰好 64 个 ASCII 十六进制字符、不做首尾裁剪的 `op_id`，publish 用 `X-Trit-Op-Id` 头、pull 用查询参数发送，服务端在成功响应回传同一值，由客户端核对；
   source/central/client 各侧事件因此可按 `(op_id, request_id)` 关联，审计拒绝同侧重复 `op_id`、

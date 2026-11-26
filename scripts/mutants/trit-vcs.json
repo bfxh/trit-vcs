@@ -3539,5 +3539,45 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: 多 token 全部退回全局 actor（逐条绑定被丢）",
+  "file": "src/net/auth.rs",
+  "old": "                binding\n                    .actor\n                    .clone()\n                    .or_else(|| state.actor.clone())\n                    .unwrap_or_else(|| \"bearer:unidentified\".to_string()),",
+  "new": "                state\n                    .actor\n                    .clone()\n                    .unwrap_or_else(|| \"bearer:unidentified\".to_string()),",
+  "filter": "per_token_bindings_pick_their_own_actor",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 多 token 只比较第一条（后面的 token 全失效）",
+  "file": "src/net/auth.rs",
+  "old": "    for binding in &state.tokens {",
+  "new": "    for binding in state.tokens.iter().take(1) {",
+  "filter": "per_token_bindings_pick_their_own_actor",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 重复 token 绑定不拒绝（后一条覆盖前一条主体）",
+  "file": "src/net/mod.rs",
+  "old": "                if !seen.insert(binding.token.as_str()) {\n                    return Err(NetError::BadToken(format!(\n                        \"token 重复绑定（条目 {}）\",\n                        binding.token.len()\n                    )));\n                }",
+  "new": "                let _ = seen.insert(binding.token.as_str());",
+  "filter": "config_rejects_duplicate_token_bindings",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 逐行 actor 缺失时不回退全局 actor",
+  "file": "src/net/auth.rs",
+  "old": "                    .or_else(|| state.actor.clone())",
+  "new": "                    .or_else(|| None)",
+  "filter": "per_token_bindings_pick_their_own_actor",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]
