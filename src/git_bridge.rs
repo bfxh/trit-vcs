@@ -2,7 +2,8 @@
 //!
 //! 导出的每个 Git 提交带 `Trit-Id/Session/Tags/Evidence` 尾注，便于反查；
 //! 导入逐提交重建，文件内容逐字节搬运。v2 保留多父图、Git 作者/提交者/时间；
-//! `--first-parent` 仍是显式降级，只走第一父链。仍不搬 submodule/tag，也不导入 Git 签名信任。
+//! `--first-parent` 仍是显式降级，只走第一父链。标签名可往返（附注标签导出为轻量标签），
+//! submodule 仍不搬，也不导入 Git 签名信任。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -12,6 +13,9 @@ use crate::hash::Hash;
 use crate::model::Commit;
 use crate::repo::{CommitRequest, Repo, RepoError};
 use crate::store::StoreError;
+
+mod tags;
+use tags::{collect_tag_refs, git_tags, tag_evidence};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
@@ -43,6 +47,9 @@ pub struct ExportStats {
     pub files_written: usize,
     pub merge_commits: usize,
     pub metadata_commits: usize,
+    /// 导出的轻量标签数（附注标签只保留名字，导出为轻量标签）。
+    pub tags: usize,
+    pub annotated_tags_degraded: usize,
     /// (trit 提交 id, git 提交 sha)
     pub map: Vec<(Hash, String)>,
 }
@@ -53,6 +60,10 @@ pub struct ImportStats {
     pub files: usize,
     pub merge_commits: usize,
     pub metadata_commits: usize,
+    /// 导入的标签名数；附注标签只保留名字与标记。
+    pub tags: usize,
+    pub annotated_tags: usize,
+    pub tags_skipped: usize,
     /// (git 提交 sha, trit 提交 id)
     pub map: Vec<(String, Hash)>,
 }
@@ -290,6 +301,9 @@ fn record_bridge(
         "files": stats.files,
         "merge_commits": stats.merge_commits,
         "metadata_commits": stats.metadata_commits,
+        "tags": stats.tags,
+        "annotated_tags": stats.annotated_tags,
+        "tags_skipped": stats.tags_skipped,
         "map_digest": Hash::of(stats.map_text.as_bytes()).to_hex(),
         "error": error,
     });
@@ -312,6 +326,9 @@ struct BridgeStats {
     files: usize,
     merge_commits: usize,
     metadata_commits: usize,
+    tags: usize,
+    annotated_tags: usize,
+    tags_skipped: usize,
     map_text: String,
 }
 
@@ -481,6 +498,15 @@ fn export_inner(
         bridge.commits += 1;
         last = Some(sha);
     }
+    for (name, (sha, annotated)) in collect_tag_refs(&commits, &shas)? {
+        git_raw(git_dir, &["update-ref", &format!("refs/tags/{name}"), &sha])?;
+        stats.tags += 1;
+        bridge.tags += 1;
+        if annotated {
+            stats.annotated_tags_degraded += 1;
+            bridge.annotated_tags += 1;
+        }
+    }
     if let Some(sha) = last {
         set_head(git_dir, &sha)?;
     }
@@ -615,6 +641,8 @@ fn import_inner(
     }
     args.push("HEAD");
     let log = git_text(git_dir, &args)?;
+    let tag_map = git_tags(git_dir)?;
+    let total_tags: usize = tag_map.values().map(Vec::len).sum();
     let mut imported: HashMap<String, Hash> = HashMap::new();
     for sha in log.lines().map(str::trim).filter(|line| !line.is_empty()) {
         let mut files = BTreeMap::new();
@@ -646,6 +674,17 @@ fn import_inner(
         bridge.files = stats.files;
         let mut evidence = vec![format!("git:{sha}")];
         evidence.extend(meta.evidence());
+        if let Some(tags) = tag_map.get(sha) {
+            for tag in tags {
+                evidence.push(tag_evidence(tag));
+                stats.tags += 1;
+                bridge.tags += 1;
+                if tag.annotated {
+                    stats.annotated_tags += 1;
+                    bridge.annotated_tags += 1;
+                }
+            }
+        }
         if meta.has_identity() {
             stats.metadata_commits += 1;
             bridge.metadata_commits += 1;
@@ -681,6 +720,8 @@ fn import_inner(
             .push_str(&format!("{sha} {}\n", outcome.id.to_hex()));
         imported.insert(sha.to_string(), outcome.id);
     }
+    bridge.tags_skipped = total_tags.saturating_sub(stats.tags);
+    stats.tags_skipped = bridge.tags_skipped;
     Ok(())
 }
 

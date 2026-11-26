@@ -136,6 +136,102 @@ fn imported_git_metadata_is_audited_and_exported_back() {
 }
 
 #[test]
+fn git_tags_are_imported_exported_and_annotations_are_marked_lossy() {
+    let root = temp("tags");
+    let git_dir = root.join("git");
+    init_git(&git_dir);
+    std::fs::write(git_dir.join("a.txt"), b"one").unwrap();
+    git_ok(&git_dir, &["add", "a.txt"]);
+    git_ok(&git_dir, &["commit", "-q", "-m", "base"]);
+    git_ok(&git_dir, &["tag", "v1"]);
+    std::fs::write(git_dir.join("b.txt"), b"two").unwrap();
+    git_ok(&git_dir, &["add", "b.txt"]);
+    git_ok(&git_dir, &["commit", "-q", "-m", "second"]);
+    git_ok(&git_dir, &["tag", "-a", "release", "-m", "release notes"]);
+    // 不在 HEAD 历史上的标签不能被假装搬进来。
+    git_ok(&git_dir, &["switch", "-q", "-c", "side"]);
+    std::fs::write(git_dir.join("side.txt"), b"side").unwrap();
+    git_ok(&git_dir, &["add", "side.txt"]);
+    git_ok(&git_dir, &["commit", "-q", "-m", "side"]);
+    git_ok(&git_dir, &["tag", "side-only"]);
+    git_ok(&git_dir, &["switch", "-q", "main"]);
+
+    let mut dst = Repo::init(root.join("dst")).unwrap();
+    let imported = import(&mut dst, &git_dir).unwrap();
+    assert_eq!(imported.tags, 2);
+    assert_eq!(imported.annotated_tags, 1);
+    assert_eq!(imported.tags_skipped, 1, "侧分支标签不在 HEAD 图里");
+    let log = dst.log().unwrap();
+    let base = log
+        .iter()
+        .find(|(_, commit)| commit.message == "base")
+        .unwrap();
+    let second = log
+        .iter()
+        .find(|(_, commit)| commit.message == "second")
+        .unwrap();
+    assert!(
+        base.1.evidence.iter().any(|line| line == "git-tag:v1"),
+        "{:?}",
+        base.1.evidence
+    );
+    assert!(
+        second
+            .1
+            .evidence
+            .iter()
+            .any(|line| line == "git-tag-annotated:release"),
+        "{:?}",
+        second.1.evidence
+    );
+    let event = dst
+        .journal()
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.kind == "git_bridge")
+        .unwrap();
+    assert_eq!(event.payload["tags"], 2);
+    assert_eq!(event.payload["annotated_tags"], 1);
+    assert_eq!(event.payload["tags_skipped"], 1);
+
+    let out = root.join("out");
+    let exported = export(&mut dst, &out).unwrap();
+    assert_eq!(exported.tags, 2);
+    assert_eq!(
+        exported.annotated_tags_degraded, 1,
+        "附注标签导出为轻量标签"
+    );
+    let tags = git_text(&out, &["tag", "--list"]).unwrap();
+    assert!(tags.lines().any(|name| name == "v1"), "{tags}");
+    assert!(tags.lines().any(|name| name == "release"), "{tags}");
+    assert!(
+        !tags.lines().any(|name| name == "side-only"),
+        "未导入的侧分支标签不该凭空出现：{tags}"
+    );
+
+    let mut roundtrip = Repo::init(root.join("roundtrip")).unwrap();
+    let reimported = import(&mut roundtrip, &out).unwrap();
+    assert_eq!(reimported.tags, 2);
+    assert_eq!(reimported.annotated_tags, 0, "导出后只剩轻量标签");
+    let log = roundtrip.log().unwrap();
+    let second = log
+        .iter()
+        .find(|(_, commit)| commit.message == "second")
+        .unwrap();
+    assert!(
+        second
+            .1
+            .evidence
+            .iter()
+            .any(|line| line == "git-tag:release"),
+        "附注标签应降级为轻量标签名：{:?}",
+        second.1.evidence
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn export_preserves_trit_merge_graph() {
     let root = temp("export-merge");
     let mut repo = Repo::init(root.join("src")).unwrap();

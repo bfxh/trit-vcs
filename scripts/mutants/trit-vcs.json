@@ -3663,8 +3663,8 @@
  {
   "name": "vcs: Git 导出按新→旧写（父链反了）",
   "file": "src/git_bridge.rs",
-  "old": "    for (id, commit) in &commits {",
-  "new": "    for (id, commit) in commits.iter().rev() {",
+  "old": "    let mut last = None;\n    for (id, commit) in &commits {",
+  "new": "    let mut last = None;\n    for (id, commit) in commits.iter().rev() {",
   "filter": "export_then_import_roundtrip_keeps_content_and_order",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3766,6 +3766,36 @@
   "old": "repo.append_audit_locked(\"force\", payload, at_ms)",
   "new": "repo.append_audit_locked(\"force_disabled\", payload, at_ms)",
   "filter": "publish_only_moves_a_ref_forwards",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 导入不读标签（标签名静默消失）",
+  "file": "src/git_bridge.rs",
+  "old": "    let tag_map = git_tags(git_dir)?;",
+  "new": "    let _tags = git_tags(git_dir)?;\n    let tag_map: BTreeMap<String, Vec<tags::GitTagInfo>> = BTreeMap::new();",
+  "filter": "git_tags_are_imported_exported_and_annotations_are_marked_lossy",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 导出标签改名（标签不能往返）",
+  "file": "src/git_bridge.rs",
+  "old": "        git_raw(git_dir, &[\"update-ref\", &format!(\"refs/tags/{name}\"), &sha])?;",
+  "new": "        git_raw(git_dir, &[\"update-ref\", &format!(\"refs/tags/disabled-{name}\"), &sha])?;",
+  "filter": "git_tags_are_imported_exported_and_annotations_are_marked_lossy",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 同名标签静默覆盖（导出标签指向错提交）",
+  "file": "src/git_bridge/tags.rs",
+  "old": "            if let Some((previous, _)) = refs.insert(name.to_string(), (sha.clone(), annotated))\n                && previous != *sha\n            {\n                return Err(GitError::Graph(format!(\n                    \"标签 {name} 同时指向两个提交：{previous} / {sha}\",\n                )));\n            }",
+  "new": "            refs.insert(name.to_string(), (sha.clone(), annotated));",
+  "filter": "duplicate_tag_names_are_rejected_instead_of_overwritten",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
