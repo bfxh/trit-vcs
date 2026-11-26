@@ -5,6 +5,16 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+/// 这两条测试都会起真实 `serve` 子进程；Windows runner 上并行起两个监听者会互相干扰
+/// （复现为其中一条在首个 publish 时 connection refused），所以进程级网络用例串行跑。
+fn serial() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_trit-vcs")
@@ -144,6 +154,7 @@ fn commit(dir: &Path, message: &str, files: &[(&str, &str)]) {
 
 #[test]
 fn serve_publish_pull_end_to_end() {
+    let _serial = serial();
     let root = temp("flow");
     let token_file = root.join("token.txt");
     fs::write(&token_file, format!("{TOKEN}\n")).unwrap();
@@ -403,6 +414,7 @@ fn serve_publish_pull_end_to_end() {
 
 #[test]
 fn view_reports_and_checks_server_signer() {
+    let _serial = serial();
     let root = temp("view-signer");
     let token_file = root.join("token.txt");
     fs::write(&token_file, format!("{TOKEN}\n")).unwrap();
