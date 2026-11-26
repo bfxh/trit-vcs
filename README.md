@@ -39,6 +39,8 @@
   消息/请求细节，不记 token）；服务端 pull 缺 ref/未知 ref 也落 `deny`；客户端 pull 在应用回执时被拒
   （脏工作树、非快进等）也落本地 `deny`；全量 pull 在发请求前先检查工作树，脏就不下载对象；裸健康探针
   不记账，避免扫描器刷爆日志。
+- **视图 pin 只覆盖单个客户端见过的历史**：能发现服务端回滚、同高换根、换掉已落账前缀；两个客户端
+  各自没见过对方的 pin，所以互相之间的分裂视图仍要靠签名检查点/gossip/共享锚（未做）。
 - `pull` 全量时会把 HEAD 与索引落到被拉的提交；**带 `--prefix` 时不动 HEAD**（否则范围外会被算成删除），
   两种形态都不删本地多余文件。
 - 认领账本放在**中央仓目录**里，多个工作树共享；但账本**没有走网络**：远程克隆仍要能读到同一个
@@ -96,6 +98,27 @@ trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt --prefi
   读写超时 30 s（`--read-timeout`），超限回 413/503 而不是把线程堆爆。
 - 已知边界：401 会先排空 ≤1 MiB 的请求体再回（更大的 body 直接关，可能被 RST）；服务端 `shutdown`
   只停 accept，不等处理线程。
+
+### 视图固定与回滚/改写检测（v0）
+
+`serve` 另开只读 `GET /v1/view?ref=main`，回中央仓当前 journal 高度/头/Merkle 根与 ref tip。客户端每次
+publish/pull 成功后把这次视图写进 `trit-sync-v1` 事件；下一次同步先用 `from_height`/`from_root` 要一条
+旧前缀→新前缀的 consistency proof，验过才继续：
+
+```sh
+trit-vcs view main --remote http://127.0.0.1:7878 --token-file token.txt --json
+trit-vcs publish main --remote http://127.0.0.1:7878 --token-file token.txt
+# 明确降级（旧服务端/排障）：不读也不写视图，也就没有回滚检测
+trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt --no-pin
+```
+
+- 首次同步是 TOFU：没有旧 pin 可对，成功后落第一条视图；之后同 `(remote, ref)` 的高度只能不减，
+  同高必须同根/同头，否则 `remote_equivocation`；服务端历史比 pin 短即 `remote_rollback`。
+- 预检失败在发 publish / 收对象之前就返回，并落本地 `deny`（`remote_rollback`/`remote_equivocation`）；
+  成功后视图与回执 tip 不一致报 `remote_view_mismatch`。`--no-pin` 只留 `remote` 字段，审计会把这
+  类同步标成"有远端、无视图"，不会伪造成已验证。
+- 视图不是服务端签名，也不进 `state_digest`：它防的是"同一客户端前后看到的服务端历史不一致"，
+  不是"服务端对全世界撒谎"。要跨客户端对账，下一步得做签名检查点 + 外部锚/gossip。
 
 ## 跨仓认领账本
 
@@ -281,15 +304,15 @@ trit-vcs sparse --clear     # 清掉索引，退回全量判定
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test                                                     # 21 个集成测试二进制 / 340 条 crate 测试（2026-11-25 实测，含 MSRV 1.88）
-python scripts/mutation_check.py --pkg trit-vcs                    # 301 条登记（见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / TVAB 20）
+cargo test                                                     # 21 个集成测试二进制 / 311 条 crate 测试（2026-11-26 实测，含 MSRV 1.88）
+python scripts/mutation_check.py --pkg trit-vcs                    # 349 条登记（视图 pin 9 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / TVAB 20）
 python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/change_policy.py --pkg scripts/ci_integrity.py --pkg scripts/docs_hygiene.py --pkg scripts/module_budget.py --pkg scripts/mutation_check.py --pkg scripts/repo_triage.py --pkg scripts/test_surface.py  # 脚本面 111 条
 ```
 
 最后一条在本仓就能跑（`scripts/mutation_check.py` + `scripts/mutants/` 已随拆分一起搬过来，
 路径口径改成新仓根：`src/…`）。门自身的自测面在镜像仓会 SKIP 掉只对单体仓成立的 7 条夹具，并大声打 SKIP。
 变异登记的口径：每条 = 一个单点文本改动 + 点名的那条测试；测试必须变红，否则算存活。
-301 条 Rust 变异全部声明最小 Cargo 目标（202 条 `--lib`、99 条对应集成测试），门会拒绝目标不存在
+349 条 Rust 变异全部声明最小 Cargo 目标，门会拒绝目标不存在
 或过滤后零测试的条目，不再为每条变异重编整包。
 
 ## 库面
@@ -307,6 +330,7 @@ python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/cha
 | `audit_bundle` | `TVAB` v1 单文件离线审计包：完整 journal/状态/独立推导的证据闭包 + 独立外锚；无仓、无网重建复验，拒绝覆盖，包内信任表不作信任根 |
 | `central` | 命名 ref（`.tritvcs/refs/<name>`）、`publish`（闭包 + 父链 + 只准往前推）、`pull`（稀疏物化，脏则拒；全量落 HEAD+索引） |
 | `net` / `wire` / `remote` | 自写 HTTP/1.1 子集 + Bearer token（常量时间比较）、`TVOB` 对象流（收端重算 BLAKE3）、跨机 publish/pull 的快进与完整性闸门；鉴权失败落 `auth` 事件 |
+| `view` / `net::view` | `GET /v1/view` 的视图快照与 `from_height/from_root` consistency proof；客户端把上次成功视图记进 `trit-sync-v1`，下次同步前验旧前缀仍是新根的前缀，报 `remote_rollback`/`remote_equivocation`；`--no-pin` 显式降级 |
 | `repo` / `journal` | 提交与查询、哈希链事件日志 |
 | `preflight` | `commit()` 与 `preflight()` **共用**的唯一判决处 ⇒ 预检不会和真提交分叉 |
 | `remediation` | 每条 `RepoError` → `kind` + 可执行命令（`--json` 下失败也是纯对象） |

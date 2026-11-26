@@ -1,9 +1,9 @@
 # trit-vcs 审计强度路线图
 
-> 状态：P0 首批与单文件离线审计包 TVAB v1 已落地（L2 对账、认领快照、判据回执、信任表 v0、Ed25519 提交/认领/witness sidecar、双签轮换、仓内签名 Merkle 检查点 v0、单事件 inclusion proof、检查点间 consistency proof v0、仓内文件锚 v0、调用方钉住外部公钥的独立外锚 v1、`audit bundle` / `audit verify-bundle`）；跨机同一视图尚未实现
+> 状态：P0 首批与单文件离线审计包 TVAB v1 已落地（L2 对账、认领快照、判据回执、信任表 v0、Ed25519 提交/认领/witness sidecar、双签轮换、仓内签名 Merkle 检查点 v0、单事件 inclusion proof、检查点间 consistency proof v0、仓内文件锚 v0、调用方钉住外部公钥的独立外锚 v1、`audit bundle` / `audit verify-bundle`）；跨机同一视图 v0（单客户端 pin + 服务端视图/一致性证明）已落地，跨客户端分裂视图仍未
 > 日期：2026-11-26
 > 目标：审计面做到“第三方可以离线复算”，不是“再加一条日志”
-> 一句话：现在有**链**、有**对账**、有**提交/认领/witness 签名及双签轮换**、有**仓内签名 Merkle 检查点**、有**单事件 inclusion proof**、有**检查点间一致性证明**、有**仓内文件锚、独立外锚与单文件离线审计包**；仓内文件锚仍只是受信副本，独立外锚只认调用方从仓外钉住的公钥，真实独立性取决于外部密钥保管与部署；有**认领**、有**授权快照**；有 `verify`、也有 `audit`。下一步不是把日志写长，而是补跨机同一视图与完整操作覆盖。
+> 一句话：现在有**链**、有**对账**、有**提交/认领/witness 签名及双签轮换**、有**仓内签名 Merkle 检查点**、有**单事件 inclusion proof**、有**检查点间一致性证明**、有**仓内文件锚、独立外锚与单文件离线审计包**，还有**单客户端跨机视图 pin 与回滚/同高换根检测**；仓内文件锚仍只是受信副本，独立外锚只认调用方从仓外钉住的公钥，真实独立性取决于外部密钥保管与部署；跨客户端分裂视图仍无共享锚；有**认领**、有**授权快照**；有 `verify`、也有 `audit`。下一步是补跨客户端透明视图与完整操作覆盖。
 
 ## 0. 先给结论
 
@@ -17,9 +17,9 @@
 | L1 | 链内改一条会被发现 | 有，但只能防中间改写；删尾巴、换整条链仍要靠检查点/锚 |
 | L2 | 日志能重放成当前状态，漏账/假账会被抓 | **已实现首批**：`audit status/verify/reconcile` 对账 HEAD/refs/对象/claim_set/回执/state_digest；尚未覆盖所有会改状态的操作 |
 | L3 | 每条关键事件能证明到签名检查点，检查点有仓外锚 | **部分**：仓内签名 Merkle 检查点、inclusion/consistency proof、仓内文件锚、独立外锚 v1 与 TVAB 离线复核已落；提交、认领变更与 witness 已有可选 Ed25519 sidecar。独立外锚不读仓内信任表，但公钥必须由调用方从仓外钉住，实际独立性取决于密钥保管与部署；跨机同一视图仍无 |
-| L4 | 跨机同一视图，服务端回滚/分裂视图能被抓 | **没有** |
+| L4 | 跨机同一视图，服务端回滚/分裂视图能被抓 | **部分 v0**：客户端把上次成功视图记进哈希链，下一次同步用旧前缀→新前缀 consistency proof 验服务端只是往后长；能抓本客户端见过的回滚、同高换根与已落账前缀被换。两个客户端没见过对方的 pin，跨客户端分裂视图/整条换链仍无 |
 
-所以现在能说“有可对账、可签名、可锚定、可单文件离线复核的审计面”，还不能说“审计最强”。L2 的骨架已经能跑：删整本日志、手改 ref、状态漂移、回执/认领快照缺失都会红；TVAB 可在无仓库目录中重建并复验，但“所有操作都记账”、外部密钥的独立保管与跨机同一视图仍未完成。
+所以现在能说“有可对账、可签名、可锚定、可单文件离线复核的审计面”，还不能说“审计最强”。L2 的骨架已经能跑：删整本日志、手改 ref、状态漂移、回执/认领快照缺失都会红；TVAB 可在无仓库目录中重建并复验。跨机同一视图只做到单客户端 pin：能发现服务端把本客户端见过的历史回滚或换根，但两个客户端各自持有一份 pin、互相没有共享锚，所以还不能证明“所有人看到同一个历史”。“所有操作都记账”、外部密钥的独立保管与跨客户端透明仍未完成。
 
 ### 0.2 顺序不能反
 
@@ -116,7 +116,7 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 | G5 | 并发与崩溃会撕裂日志 | `Journal::append` 已有 `journal.lock` 单写者链；认领/策略/信任/提交签名/检查点、普通仓库状态写、中央仓 publish/pull、merge 与独立审计事件共用 `claims.lock` 状态锁；提交预检和写入在同一临界区；关键状态变更前有 `op_begin.state_before`、后有 `op_result.state_after` | 锁住并发写，检查点快照与追加不会插入其他事件；写前协议让“操作开始”有账，但仍不能阻止进程死在中间，只能让审计抓到 | P0，**部分关闭** |
 | G6 | 授权不可事后复核 | 已落 `ClaimSet` 不可变快照，claim 事件补 `path_list` 和完整 `ClaimSpec`，可选 `claim_signature` 证明中央账本变更；账本 TTL 过后原条目仍会消失 | 快照能证明当时授权；已签账本变更有签名历史；未签历史与导出的 `ClaimSpec` 快照仍不能抗替换 | P0，**部分关闭** |
 | G7 | 证据不可验证 | witness 已有可选签名 `attestation` sidecar，绑定 commit/树/实际父树/原始 witness/签者/会话；`accept` 结果已落 `AcceptReceipt` 对象/事件；handoff 仍不携带 witness/accept/attestation | 已签 witness 可复核“谁说了通过并绑哪棵树”；未签 witness 与回执仍可被替换，离线 handoff 证据链未闭合 | P1，**部分关闭** |
-| G8 | 跨机没有同一视图 | 客户端 journal 与中央仓 journal 是两本账；成功 publish/pull 已用 op id/request id 关联，但两本账不互链、不共享锚；单 token 的 actor 是部署配置；ref 是普通文件 | 关联号能对账一次操作，不能证明服务端没有回滚/改写 ref 和账本；客户端没有 pin，仍发现不了第二个历史 | P1，未关闭 |
+| G8 | 跨机没有同一视图 | 客户端 journal 与中央仓 journal 是两本账；成功 publish/pull 已用 op id/request id 关联，但两本账不互链、不共享锚；单 token 的 actor 是部署配置；ref 是普通文件。v0 增加了 `GET /v1/view` 与客户端 pin：每次成功同步把服务端高度/头/根写进 `trit-sync-v1`，下一次先要旧→新 consistency proof | 关联号能对账一次操作；pin 能发现本客户端见过的服务端回滚、同高换根与已落账前缀被换，并在发 publish/收对象前中止。两个客户端没见过对方的 pin，跨客户端分裂视图仍发现不了；整条换链仍要靠签名检查点/外锚 | P1，**部分关闭（单客户端）** |
 | G9 | 时间与策略变更不可信 | HLC 只给本地全序；ref/stage 用墙钟毫秒；`policy set` 已有事件与状态对账，但 `policy.json` 仍可被直接改，且无签名 | 可回填时间；绕过 CLI 直接改策略仍只能靠 `state_digest` 漂移/接续抓到，不能证明谁改的 | P1，**部分关闭** |
 | G10 | 离线审计查询与证明入口 | `audit status/log/show/verify/reconcile/proof/consistency/verify-consistency/anchor/verify-anchor/external-anchor/verify-external-anchor/bundle/verify-bundle` 已可用；TVAB v1 可单文件离线重建并复验 | 审计员能查账、验 inclusion/consistency、验锚并用单个离线包复核；包内信任表仍不是独立信任根，包格式升级须新 schema | P2，**机制关闭，持续加固** |
 | G11 | Git 桥会丢审计信息 | import 只走 `--first-parent`，丢掉 merge 图、作者签名；session 被合成；export 只加尾注 | Git 侧的信任无法映射到 trit；审计链在桥接处断掉 | P2 |
@@ -622,10 +622,22 @@ MCP 面保持 13 个工具，不新增独立 attestation/anchor 工具；`admit`
 - 受保护 ref 支持 N 个独立 cosigner（注意：这里的 cosigner 不是现有 `witness` 测试见证）；
 - 服务端回滚、分裂视图、静默改写 ref 的告警。
 
+**已落 v0（2026-11-26）**
+
+- `GET /v1/view` 给 journal 高度/头/Merkle 根/ref tip；客户端带 `from_height`/`from_root` 时回
+  旧→新 consistency proof。
+- 客户端把每次成功同步的视图写进 `trit-sync-v1`（`view`/`pin_before`/`pin_status`），下一次同步
+  先验旧前缀仍是新根的前缀；落账事件不能在同一 `(remote, ref)` 上高度倒退或同高换根。
+- 服务端历史比 pin 短 → `remote_rollback`；同高换根/换头、证明缺失或复算不过 → `remote_equivocation`；
+  同步后视图与回执 tip 不一致 → `remote_view_mismatch`。预检失败在发 publish / 收对象前中止并落 `deny`。
+- `trit-vcs view <ref> --remote … --json` 只读对账；`--no-pin` 显式降级，审计标 `sync_view_bad`/无视图。
+- **未落**：服务端签名检查点、跨客户端 gossip/共享锚、受保护 ref 的多 cosigner、每 actor token。
+  所以跨客户端分裂视图与整条换链仍不能宣称关闭。
+
 **完成定义**
 
-- 服务端返回旧检查点 → 客户端 `remote_rollback`。
-- 同一 ref 两个不同检查点 → `remote_equivocation`，并给出两边 root/size。
+- 服务端返回旧检查点 → 客户端 `remote_rollback`。**v0 已按 journal 高度/根判定**
+- 同一 ref 两个不同检查点 → `remote_equivocation`，并给出两边 root/size。**v0 单客户端已落；跨客户端未落**
 - 鉴权失败有事件（actor 可未知，request id 已与响应关联；来源地址与每用户密码学身份仍未落地）。
 - 本地 `publish`/`pull` 两侧事件能用 `op_id` 对上；HTTP 还用 `request_id` 关联响应、鉴权与中央事件。
 
@@ -653,8 +665,8 @@ MCP 面保持 13 个工具，不新增独立 attestation/anchor 工具；`admit`
 | R7 | 伪造 `session=qoder:s1` 的提交 | `signer_untrusted` / `signature_missing` | P1 |
 | R8 | 把 witness 的 `exit` 改成 0 | `attestation_invalid` / `attestation_bad` | P1，**v1 已落** |
 | R9 | 提交后改 claim 账本，缩小/删除原认领 | `claim_snapshot_mismatch` | P0 |
-| R10 | 服务端把 ref 回滚到旧提交 | `remote_rollback` | P3 |
-| R11 | 服务端对不同客户端返回不同历史 | `remote_equivocation` | P3 |
+| R10 | 服务端把 ref 回滚到旧提交 | `remote_rollback` | P3，**v0 已落（journal 前缀）** |
+| R11 | 服务端对不同客户端返回不同历史 | `remote_equivocation` | P3，**v0 只抓同客户端同高换根；跨客户端未落** |
 | R12 | 鉴权失败但服务端不留痕 | 单测断言 `auth` 事件存在；`auth_event_missing` 尚未做成审计 kind | P3 |
 | R13 | 崩在 ref 写入与事件追加之间 | `dangling_state` | P0 |
 | R14 | 10 个进程同时 commit | 链完整、事件不丢、seq 不重 | P0 |

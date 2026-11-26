@@ -589,6 +589,7 @@ pub fn pull_from_with(
     Ok(stats)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_pull(
     repo: &mut Repo,
     reply: &PullReply,
@@ -729,3 +730,5 @@ pub fn ensure_tree_present(store: &Store, tree: &Hash) -> Result<(), RemoteError
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod view_tests;

@@ -3399,5 +3399,95 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: 视图 pin 不检查服务端历史变短（回滚照过）",
+  "file": "src/view.rs",
+  "old": "    if pin.height > view.height {",
+  "new": "    if false {",
+  "filter": "pin_rejects_shorter_history",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 视图 pin 同高不比对根/头（换根照过）",
+  "file": "src/view.rs",
+  "old": "        if pin.root != view.root || pin.head != view.head {",
+  "new": "        if false {",
+  "filter": "pin_same_height_requires_same_root_and_head",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 视图变长时缺一致性证明也当通过",
+  "file": "src/view.rs",
+  "old": "    let Some(proof) = proof else {\n        return Err(ViewError::Equivocation(\n            \"服务端没有提供旧前缀到新前缀的一致性证明\".to_string(),\n        ));\n    };",
+  "new": "    let Some(proof) = proof else {\n        return Ok(PinStatus::Advanced);\n    };",
+  "filter": "advanced_pin_requires_consistency_proof",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 一致性证明不核对旧根/尺寸（换根证明照过）",
+  "file": "src/view.rs",
+  "old": "    if proof.from_size != pin.height\n        || proof.to_size != view.height\n        || proof.old_root != pin.root\n        || proof.new_root != view.root\n    {",
+  "new": "    if false {",
+  "filter": "advanced_pin_rejects_foreign_valid_proof",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 服务端视图永远不附一致性证明",
+  "file": "src/view.rs",
+  "old": "    if from_height > events.len() {\n        return Ok(None);\n    }",
+  "new": "    if true {\n        return Ok(None);\n    }",
+  "filter": "publish_pins_view_and_later_sync_advances_it",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不核对 view.tip 与 commit（视图可指另一提交）",
+  "file": "src/audit/sync_event.rs",
+  "old": "    if snapshot.tip != parse_hash(event.payload.get(\"commit\")) {",
+  "new": "    if false {",
+  "filter": "view_tip_must_match_commit_and_remote_must_be_narrow",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不限制 remote 形状（带路径的地址照过）",
+  "file": "src/audit/sync_event.rs",
+  "old": "    if !crate::view::valid_remote(remote) {",
+  "new": "    if false {",
+  "filter": "view_tip_must_match_commit_and_remote_must_be_narrow",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不查视图高度倒退（落账回滚照绿）",
+  "file": "src/audit/sync_event.rs",
+  "old": "        if snapshot.height < prior.height {",
+  "new": "        if false {",
+  "filter": "view_height_must_not_go_backwards",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: view 坏 ref 一律回 500（入口拒绝没有正确状态）",
+  "file": "src/net/view.rs",
+  "old": "            let status = if matches!(err, crate::repo::RepoError::BadRefName(_)) {\n                400\n            } else {\n                500\n            };",
+  "new": "            let status = 500;",
+  "filter": "view_endpoint_is_json_and_bad_ref_is_denied",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]

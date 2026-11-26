@@ -16,7 +16,8 @@ use crate::hash::Hash;
 
 /// 追加时的单写者锁：锁文件是 `journal.lock`，与事件日志同目录。
 /// 抢不到就重试一小会儿，仍抢不到报 `Locked`；不静默并发写坏链。
-const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+/// 15s 而不是 5s：全量测试/杀毒扫描会把 8 线程的持锁窗口拉长，5s 会把调度抖动误报成真锁。
+const LOCK_TIMEOUT: Duration = Duration::from_secs(15);
 const LOCK_RETRY: Duration = Duration::from_millis(5);
 const OPEN_RETRIES: u32 = 400;
 const OPEN_RETRY_DELAY: Duration = Duration::from_millis(10);

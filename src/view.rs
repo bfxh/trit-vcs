@@ -5,8 +5,6 @@
 //! 这不是透明日志，也不是服务端签名：它只能发现「同一客户端见过的两个视图不一致」。
 //! 两个客户端之间互相没见过对方的 pin，所以分裂视图仍要靠后续的签名检查点/共享锚。
 
-use std::collections::BTreeMap;
-
 use serde_json::{Value, json};
 
 use crate::checkpoint;
@@ -156,6 +154,11 @@ impl Pin {
             .and_then(Hash::from_hex)
             .ok_or_else(|| ViewError::Bad("pin root 不合法".to_string()))?;
         let tip = nullable_hash(object.get("tip"), "tip")?;
+        if (height == 0) != head.is_none() {
+            return Err(ViewError::Bad(
+                "pin 的 height 与 head 不一致（0 条必须无头，非 0 条必须有头）".to_string(),
+            ));
+        }
         Ok(Self {
             height,
             head,
@@ -357,37 +360,6 @@ pub fn proof_from(
         .map_err(|err| ViewError::Bad(format!("生成一致性证明失败：{err}")))
 }
 
-/// audit 用：同一 `(remote, ref)` 的视图只能单调往后长；同高必须同根。
-///
-/// 返回 `(remote, ref) -> 上一条 view`，供 `sync_event` 逐条累积检查。
-pub fn audit_index(events: &[Event]) -> BTreeMap<(String, String), Snapshot> {
-    let mut index = BTreeMap::new();
-    for event in events {
-        if !matches!(event.kind.as_str(), "publish" | "pull")
-            || event.payload.get("schema").and_then(Value::as_str) != Some(sync::SCHEMA)
-            || event.payload.get("transport").and_then(Value::as_str) != Some("http")
-            || !matches!(
-                event.payload.get("side").and_then(Value::as_str),
-                Some("source" | "client")
-            )
-        {
-            continue;
-        }
-        let (Some(remote), Some(name)) = (
-            event.payload.get("remote").and_then(Value::as_str),
-            event.payload.get("name").and_then(Value::as_str),
-        ) else {
-            continue;
-        };
-        if let Some(view) = event.payload.get("view")
-            && let Ok(snapshot) = Snapshot::from_evidence(view)
-        {
-            index.insert((remote.to_string(), name.to_string()), snapshot);
-        }
-    }
-    index
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +387,18 @@ mod tests {
         let mut bad = json;
         bad["root"] = json!("zz");
         assert!(matches!(Snapshot::from_json(&bad), Err(ViewError::Bad(_))));
+    }
+
+    #[test]
+    fn pin_json_requires_height_head_agreement() {
+        let pin = Pin::from(snapshot(2, Some(Hash::of(b"e1"))));
+        assert_eq!(Pin::from_json(&pin.to_json()).unwrap(), pin);
+        let mut bad = pin.to_json();
+        bad["head"] = Value::Null;
+        assert!(matches!(Pin::from_json(&bad), Err(ViewError::Bad(_))));
+        let mut bad = pin.to_json();
+        bad["height"] = json!(0);
+        assert!(matches!(Pin::from_json(&bad), Err(ViewError::Bad(_))));
     }
 
     #[test]
@@ -459,6 +443,60 @@ mod tests {
         assert_eq!(
             verify_pin(Some(&pin), &new, Some(&proof)).unwrap(),
             PinStatus::Advanced
+        );
+    }
+
+    #[test]
+    fn advanced_pin_rejects_tampered_proof() {
+        let old = snapshot(3, Some(Hash::of(b"e2")));
+        let pin = Pin::from(old);
+        let new = snapshot(6, Some(Hash::of(b"e5")));
+        let leaves: Vec<Hash> = (0..6)
+            .map(|i| Hash::of(format!("e{i}").as_bytes()))
+            .collect();
+        let mut proof = consistency::consistency_proof(&leaves, 3).unwrap();
+        proof.old_root = Hash::of(b"other-prefix");
+        assert!(
+            matches!(
+                verify_pin(Some(&pin), &new, Some(&proof)),
+                Err(ViewError::Equivocation(_))
+            ),
+            "旧根被换掉必须拒绝"
+        );
+    }
+
+    #[test]
+    fn advanced_pin_rejects_foreign_valid_proof() {
+        // 另一条历史的 3 叶前缀证明本身能验过，但它不是本 pin 的根；必须靠 old_root 绑定拦住。
+        let old_leaves: Vec<Hash> = (0..3)
+            .map(|i| Hash::of(format!("a{i}").as_bytes()))
+            .collect();
+        let old_head = *old_leaves.last().unwrap();
+        let old = Snapshot {
+            height: 3,
+            head: Some(old_head),
+            root: checkpoint::merkle_root(&old_leaves),
+            tip: None,
+        };
+        let pin = Pin::from(old);
+        let new_height = 6;
+        let new_leaves: Vec<Hash> = (0..new_height)
+            .map(|i| Hash::of(format!("b{i}").as_bytes()))
+            .collect();
+        let new = Snapshot {
+            height: new_height,
+            head: new_leaves.last().copied(),
+            root: checkpoint::merkle_root(&new_leaves),
+            tip: None,
+        };
+        let proof = consistency::consistency_proof(&new_leaves, 3).unwrap();
+        assert!(consistency::verify_consistency(&proof).unwrap());
+        assert!(
+            matches!(
+                verify_pin(Some(&pin), &new, Some(&proof)),
+                Err(ViewError::Equivocation(_))
+            ),
+            "外来但自洽的前缀证明必须因旧根不符被拒"
         );
     }
 

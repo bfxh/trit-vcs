@@ -57,11 +57,24 @@ pub(super) fn handle(
     let snapshot = match Snapshot::of(&repo, name) {
         Ok(snapshot) => snapshot,
         Err(err) => {
+            let status = if matches!(err, crate::repo::RepoError::BadRefName(_)) {
+                400
+            } else {
+                500
+            };
             drop(repo);
+            deny::record_view_rejected(
+                state,
+                request,
+                Some(name),
+                status,
+                "bad_ref",
+                &err.to_string(),
+            );
             return respond_json_value(
                 stream,
-                crate::remote::RemoteError::Repo(err).status(),
-                &json!({"ok": false, "kind": "bad_ref", "message": "ref 名不合法"}),
+                status,
+                &json!({"ok": false, "kind": "bad_ref", "message": err.to_string()}),
                 &request.correlation_headers(),
             );
         }
