@@ -3583,8 +3583,8 @@
  {
   "name": "vcs: Git 桥默认不拒绝 merge 图",
   "file": "src/git_bridge.rs",
-  "old": "    stats.merge_commits = merges;\n    bridge.merge_commits = merges;\n    if merges > 0 && !options.first_parent {",
-  "new": "    stats.merge_commits = merges;\n    bridge.merge_commits = merges;\n    if false && merges > 0 && !options.first_parent {",
+  "old": "    let merges = merge_count(git_dir, false)?;\n    if merges > 0 && !options.first_parent {\n        stats.merge_commits = merges;\n        bridge.merge_commits = merges;\n        return Err(GitError::MergeGraphUnsupported { merges });\n    }",
+  "new": "    let merges = merge_count(git_dir, false)?;\n    if false && merges > 0 && !options.first_parent {\n        stats.merge_commits = merges;\n        bridge.merge_commits = merges;\n        return Err(GitError::MergeGraphUnsupported { merges });\n    }",
   "filter": "merge_graph_is_refused_unless_first_parent_is_explicit",
   "pkg": "trit-vcs",
   "runner": "cargo",
