@@ -178,13 +178,21 @@ impl NetError {
     }
 }
 
-/// 服务器配置。`token` 必须非空（≥16 字节）；没有 token 的服务器不启动。
+/// 服务器配置。`token` 在未配置 `tokens` 时必须非空（≥16 字节）；没有可用 token 的服务器不启动。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenBinding {
+    pub token: String,
+    pub actor: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub repo: PathBuf,
     pub bind: String,
     pub token: String,
     pub actor: Option<String>,
+    /// 多条 token → actor 绑定；非空时替代单个 `token`，让同一服务端按 bearer 区分主体。
+    pub tokens: Vec<TokenBinding>,
     /// 可选的视图签名私钥；不配置则 `/v1/view` 仍返回无签名快照（兼容旧客户端）。
     pub view_key_path: Option<PathBuf>,
     pub limits: Limits,
@@ -204,6 +212,7 @@ impl Config {
             bind: bind.into(),
             token: token.into(),
             actor: None,
+            tokens: Vec::new(),
             view_key_path: None,
             limits: Limits::default(),
             max_body: 256 * 1024 * 1024,
@@ -215,18 +224,28 @@ impl Config {
     /// 一条命令能改的边界都先过闸：token 太短、上限为 0 都不启动。
     /// 绑非回环不拦（跨机可以套 SSH 隧道/反代），但 v0 没有 TLS，README 已写明这条边界。
     pub fn validated(self) -> Result<Self, NetError> {
-        if self.token.len() < 16 {
-            return Err(NetError::BadToken(
-                "至少 16 字节（短 token 等于没有）".to_string(),
-            ));
+        if self.tokens.is_empty() {
+            validate_token(&self.token)?;
+        } else {
+            if self.tokens.len() > 256 {
+                return Err(NetError::BadToken("token 条目至多 256 条".to_string()));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for binding in &self.tokens {
+                validate_token(&binding.token)?;
+                if !seen.insert(binding.token.as_str()) {
+                    return Err(NetError::BadToken(format!(
+                        "token 重复绑定（条目 {}）",
+                        binding.token.len()
+                    )));
+                }
+                if let Some(actor) = &binding.actor {
+                    validate_actor(actor)?;
+                }
+            }
         }
-        if self.token.len() > 256 {
-            return Err(NetError::BadToken("至多 256 字节".to_string()));
-        }
-        if let Some(actor) = &self.actor
-            && (actor.is_empty() || actor.len() > 128 || actor.chars().any(|ch| ch.is_control()))
-        {
-            return Err(NetError::BadActor("1–128 字节且不能含控制字符".to_string()));
+        if let Some(actor) = &self.actor {
+            validate_actor(actor)?;
         }
         if self.max_body == 0 {
             return Err(NetError::BadBind("max_body 不能为 0".to_string()));
@@ -235,9 +254,31 @@ impl Config {
     }
 }
 
+fn validate_token(token: &str) -> Result<(), NetError> {
+    if token.len() < 16 {
+        return Err(NetError::BadToken(
+            "至少 16 字节（短 token 等于没有）".to_string(),
+        ));
+    }
+    if token.len() > 256 {
+        return Err(NetError::BadToken("至多 256 字节".to_string()));
+    }
+    if token.chars().any(|ch| ch.is_control()) {
+        return Err(NetError::BadToken("token 不能含控制字符".to_string()));
+    }
+    Ok(())
+}
+
+fn validate_actor(actor: &str) -> Result<(), NetError> {
+    if actor.is_empty() || actor.len() > 128 || actor.chars().any(|ch| ch.is_control()) {
+        return Err(NetError::BadActor("1–128 字节且不能含控制字符".to_string()));
+    }
+    Ok(())
+}
+
 struct State {
     repo: Mutex<crate::repo::Repo>,
-    token: String,
+    tokens: Vec<TokenBinding>,
     actor: Option<String>,
     view_key: Option<KeyFile>,
     limits: Limits,
@@ -269,9 +310,17 @@ impl Server {
             Some(path) => Some(KeyFile::load(path).map_err(|err| NetError::Repo(err.to_string()))?),
             None => None,
         };
+        let tokens = if config.tokens.is_empty() {
+            vec![TokenBinding {
+                token: config.token.clone(),
+                actor: None,
+            }]
+        } else {
+            config.tokens.clone()
+        };
         let state = Arc::new(State {
             repo: Mutex::new(repo),
-            token: config.token.clone(),
+            tokens,
             actor: config.actor.clone(),
             view_key,
             limits: config.limits,
@@ -355,36 +404,34 @@ fn handle_conn(stream: TcpStream, state: &Arc<State>) -> Result<(), NetError> {
         Some(request) => request,
         None => return Ok(()),
     };
-    if !token_eq(&request.headers, &state.token) {
-        let reason = if request.headers.contains_key("authorization") {
-            "bad_token"
-        } else {
-            "missing_token"
-        };
-        if auth::attempt_should_be_logged(&request) {
-            auth::record_denied(state, &request, reason);
+    let actor = match auth::authenticate(&request.headers, state) {
+        Some(actor) => actor,
+        None => {
+            let reason = if request.headers.contains_key("authorization") {
+                "bad_token"
+            } else {
+                "missing_token"
+            };
+            if auth::attempt_should_be_logged(&request) {
+                auth::record_denied(state, &request, reason);
+            }
+            // 401 在读完 body 前就回，Windows 上服务端带着未读数据关连接会发 RST，
+            // 客户端连已经写好的 401 都读不到。小 body 先排空再回（大 body 仍直接关，见 README）。
+            drain_body(&mut reader, request.length);
+            let headers = [
+                ("WWW-Authenticate", "Bearer"),
+                ("X-Trit-Request-Id", request.request_id.as_str()),
+            ];
+            return respond_json(
+                reader.get_mut(),
+                401,
+                "unauthorized",
+                "缺 Bearer token 或对不上",
+                &headers,
+            );
         }
-        // 401 在读完 body 前就回，Windows 上服务端带着未读数据关连接会发 RST，
-        // 客户端连已经写好的 401 都读不到。小 body 先排空再回（大 body 仍直接关，见 README）。
-        drain_body(&mut reader, request.length);
-        let headers = [
-            ("WWW-Authenticate", "Bearer"),
-            ("X-Trit-Request-Id", request.request_id.as_str()),
-        ];
-        return respond_json(
-            reader.get_mut(),
-            401,
-            "unauthorized",
-            "缺 Bearer token 或对不上",
-            &headers,
-        );
-    }
-    request.actor = Some(
-        state
-            .actor
-            .clone()
-            .unwrap_or_else(|| "bearer:unidentified".to_string()),
-    );
+    };
+    request.actor = Some(actor);
     auth::record_allowed(state, &request);
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/v1/health") => respond_json(
@@ -623,15 +670,10 @@ fn read_publish_body<R: Read>(
     Ok(received)
 }
 
-/// 常量时间比较：先比长度，再逐字节 xor 累积；不因为第一个字节不同就提前返回。
-fn token_eq(headers: &BTreeMap<String, String>, expected: &str) -> bool {
-    let Some(raw) = headers.get("authorization") else {
-        return false;
-    };
-    let Some(token) = raw.strip_prefix("Bearer ") else {
-        return false;
-    };
-    ct_eq(token.as_bytes(), expected.as_bytes())
+/// 从 `Authorization: Bearer …` 取 token；只接受恰好一个 Bearer 前缀。
+pub(super) fn bearer_token(headers: &BTreeMap<String, String>) -> Option<&str> {
+    let raw = headers.get("authorization")?;
+    raw.strip_prefix("Bearer ")
 }
 
 pub fn ct_eq(left: &[u8], right: &[u8]) -> bool {

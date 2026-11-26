@@ -3,6 +3,7 @@
 //! 只记带 `Authorization` 的失败与 `POST /v1/publish` 的失败；裸健康探针不进账，
 //! 避免扫描器把账本刷爆。
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -22,6 +23,28 @@ pub(super) fn request_id() -> String {
     let counter = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
     let now = wall_ms();
     Hash::of(format!("{}:{now}:{counter}", std::process::id()).as_bytes()).to_hex()
+}
+
+/// 逐个 token 常量时间比较；全部扫完再返回，避免匹配位置成为额外时序信号。
+/// 命中后主体取该条目的显式 actor，否则退回 `serve --actor` 的全局身份。
+pub(super) fn authenticate(
+    headers: &BTreeMap<String, String>,
+    state: &Arc<State>,
+) -> Option<String> {
+    let token = super::bearer_token(headers)?;
+    let mut matched = None;
+    for binding in &state.tokens {
+        if super::ct_eq(token.as_bytes(), binding.token.as_bytes()) {
+            matched = Some(
+                binding
+                    .actor
+                    .clone()
+                    .or_else(|| state.actor.clone())
+                    .unwrap_or_else(|| "bearer:unidentified".to_string()),
+            );
+        }
+    }
+    matched
 }
 
 pub(super) fn attempt_should_be_logged(request: &Request) -> bool {

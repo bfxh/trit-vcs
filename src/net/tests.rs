@@ -1,6 +1,7 @@
 //! `net::mod` 的单元测试：协议边界、配置与鉴权事件的端到端接线。
 
 use super::*;
+use serde_json::Value;
 use std::io::BufRead;
 
 #[test]
@@ -47,6 +48,79 @@ fn config_requires_a_real_token() {
     assert!(matches!(short, Err(NetError::BadToken(_))));
     let ok = Config::new(".", "127.0.0.1:0", "0123456789abcdef").validated();
     assert!(ok.is_ok());
+}
+
+#[test]
+fn config_rejects_duplicate_token_bindings() {
+    let token = "0123456789abcdef".to_string();
+    let mut config = Config::new(".", "127.0.0.1:0", token.clone());
+    config.tokens = vec![
+        TokenBinding {
+            token: token.clone(),
+            actor: Some("alice".to_string()),
+        },
+        TokenBinding {
+            token,
+            actor: Some("bob".to_string()),
+        },
+    ];
+    assert!(matches!(config.validated(), Err(NetError::BadToken(_))));
+
+    let mut config = Config::new(".", "127.0.0.1:0", "0123456789abcdef");
+    config.tokens = vec![TokenBinding {
+        token: "fedcba9876543210".to_string(),
+        actor: Some("bob".to_string()),
+    }];
+    assert!(config.validated().is_ok());
+}
+
+#[test]
+fn per_token_bindings_pick_their_own_actor() {
+    let root = std::env::temp_dir().join(format!(
+        "trit-vcs-net-actors-{}-{}",
+        std::process::id(),
+        auth::request_id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut config = Config::new(root.join("central"), "127.0.0.1:0", "0123456789abcdef");
+    config.actor = Some("qoder:fallback".to_string());
+    config.tokens = vec![
+        TokenBinding {
+            token: "0123456789abcdef".to_string(),
+            actor: Some("alice".to_string()),
+        },
+        TokenBinding {
+            token: "fedcba9876543210".to_string(),
+            actor: Some("bob".to_string()),
+        },
+        TokenBinding {
+            token: "0011223344556677".to_string(),
+            actor: None,
+        },
+    ];
+    let server = Server::start(config).unwrap();
+    for token in ["0123456789abcdef", "fedcba9876543210", "0011223344556677"] {
+        let response = raw_get_path_with_token(server.addr(), token, "/v1/health");
+        assert!(response.starts_with("HTTP/1.1 200"), "{token}: {response}");
+    }
+    let denied = raw_get_path_with_token(server.addr(), "ffffffffffffffff", "/v1/health");
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
+    let central = crate::repo::Repo::open(root.join("central")).unwrap();
+    let actors: Vec<&str> = central
+        .journal()
+        .events()
+        .iter()
+        .filter(|event| {
+            event.kind == "auth"
+                && event.payload.get("decision").and_then(Value::as_str) == Some("allowed")
+        })
+        .filter_map(|event| event.payload.get("actor").and_then(Value::as_str))
+        .collect();
+    assert!(actors.contains(&"alice"), "{actors:?}");
+    assert!(actors.contains(&"bob"), "{actors:?}");
+    assert!(actors.contains(&"qoder:fallback"), "{actors:?}");
+    server.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -107,6 +181,10 @@ fn raw_get(addr: SocketAddr, token: &str) -> String {
 }
 
 fn raw_get_path(addr: SocketAddr, token: &str, target: &str) -> String {
+    raw_get_path_with_token(addr, token, target)
+}
+
+fn raw_get_path_with_token(addr: SocketAddr, token: &str, target: &str) -> String {
     let mut stream = TcpStream::connect(addr).unwrap();
     let head = format!(
         "GET {target} HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer {token}\r\n\

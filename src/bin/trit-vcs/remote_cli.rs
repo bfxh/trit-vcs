@@ -3,11 +3,12 @@
 //! token 只从 `--token-file` 或 `TRIT_VCS_TOKEN` 来，**不进 argv**：argv 会进进程列表、
 //! shell 历史和日志，等于把凭据写在公告板上。
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use trit_vcs::net::{Client, Config, Server};
+use trit_vcs::net::{Client, Config, Server, TokenBinding};
 use trit_vcs::remote::{self, RemoteError};
 use trit_vcs::repo::Repo;
 use trit_vcs::view;
@@ -16,28 +17,101 @@ use super::verdict::fail_err;
 use super::{fail, flag, has, positionals, repo_path};
 
 const DEFAULT_BIND: &str = "127.0.0.1:7878";
+const MAX_TOKENS: usize = 256;
 
-fn read_token(args: &[String]) -> Result<String, ExitCode> {
-    let raw = if let Some(path) = flag(args, "--token-file") {
+fn token_source(args: &[String]) -> Result<String, ExitCode> {
+    if let Some(path) = flag(args, "--token-file") {
         match std::fs::read_to_string(path) {
-            Ok(text) => text,
+            Ok(text) => Ok(text),
             Err(err) => {
                 eprintln!("读不到 token 文件 {path}：{err}");
-                return Err(ExitCode::from(2));
+                Err(ExitCode::from(2))
             }
         }
     } else if let Ok(text) = std::env::var("TRIT_VCS_TOKEN") {
-        text
+        Ok(text)
     } else {
         eprintln!("需要 --token-file FILE（或环境变量 TRIT_VCS_TOKEN）：token 不进 argv");
-        return Err(ExitCode::from(2));
+        Err(ExitCode::from(2))
+    }
+}
+
+/// 每行 `<token> [actor]`；`#` 开头与空行跳过。客户端仍只接受单条。
+fn parse_token_bindings(raw: &str) -> Result<Vec<TokenBinding>, String> {
+    let mut bindings = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (index, line) in raw.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let token = fields
+            .next()
+            .ok_or_else(|| format!("第 {} 行缺 token", index + 1))?;
+        let actor = fields.next();
+        if fields.next().is_some() {
+            return Err(format!(
+                "第 {} 行字段过多：只接受 `<token> [actor]`",
+                index + 1
+            ));
+        }
+        if token.len() < 16 || token.len() > 256 {
+            return Err(format!("第 {} 行 token 长度必须 16–256 字节", index + 1));
+        }
+        if token.chars().any(|ch| ch.is_control()) {
+            return Err(format!("第 {} 行 token 不能含控制字符", index + 1));
+        }
+        if let Some(actor) = actor
+            && (actor.is_empty() || actor.len() > 128 || actor.chars().any(|ch| ch.is_control()))
+        {
+            return Err(format!(
+                "第 {} 行 actor 必须 1–128 字节且不能含控制字符",
+                index + 1
+            ));
+        }
+        if !seen.insert(token.to_string()) {
+            return Err(format!("第 {} 行 token 重复", index + 1));
+        }
+        if bindings.len() == MAX_TOKENS {
+            return Err(format!("token 条目至多 {MAX_TOKENS} 条"));
+        }
+        bindings.push(TokenBinding {
+            token: token.to_string(),
+            actor: actor.map(str::to_string),
+        });
+    }
+    if bindings.is_empty() {
+        return Err("token 文件里没有有效条目".to_string());
+    }
+    Ok(bindings)
+}
+
+fn read_token(args: &[String]) -> Result<String, ExitCode> {
+    let raw = token_source(args)?;
+    let bindings = match parse_token_bindings(&raw) {
+        Ok(bindings) => bindings,
+        Err(err) => {
+            eprintln!("token 文件不合法：{err}");
+            return Err(ExitCode::from(2));
+        }
     };
-    let token = raw.trim().to_string();
-    if token.len() < 16 {
-        eprintln!("token 至少 16 字节（现在是 {} 字节）", token.len());
+    if bindings.len() != 1 {
+        eprintln!(
+            "客户端只接受单 token；这个文件有 {} 条。服务端多 token 文件请给客户端单独一行。",
+            bindings.len()
+        );
         return Err(ExitCode::from(2));
     }
-    Ok(token)
+    Ok(bindings.into_iter().next().expect("至少一条").token)
+}
+
+fn read_token_bindings(args: &[String]) -> Result<Vec<TokenBinding>, ExitCode> {
+    let raw = token_source(args)?;
+    parse_token_bindings(&raw).map_err(|err| {
+        eprintln!("token 文件不合法：{err}");
+        ExitCode::from(2)
+    })
 }
 
 pub(crate) fn serve_cmd(args: &[String]) -> ExitCode {
@@ -45,12 +119,14 @@ pub(crate) fn serve_cmd(args: &[String]) -> ExitCode {
         eprintln!("serve 需要 --dir PATH（中央仓目录）");
         return ExitCode::from(2);
     };
-    let token = match read_token(args) {
-        Ok(token) => token,
+    let bindings = match read_token_bindings(args) {
+        Ok(bindings) => bindings,
         Err(code) => return code,
     };
     let bind = flag(args, "--bind").unwrap_or(DEFAULT_BIND);
-    let mut config = Config::new(PathBuf::from(dir), bind, token);
+    let primary = bindings[0].token.clone();
+    let mut config = Config::new(PathBuf::from(dir), bind, primary);
+    config.tokens = bindings;
     if let Some(actor) = flag(args, "--actor") {
         config.actor = Some(actor.to_string());
     }
@@ -354,4 +430,28 @@ pub(crate) fn view_cmd(args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_file_grammar_ignores_comments_and_rejects_bad_lines() {
+        let parsed =
+            parse_token_bindings("# 服务端 token 表\n\n0123456789abcdef alice\nfedcba9876543210\n")
+                .unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].actor.as_deref(), Some("alice"));
+        assert!(parsed[1].actor.is_none());
+
+        for bad in [
+            "0123456789abcdef alice extra\n",
+            "0123456789abcdef\n0123456789abcdef bob\n",
+            "short\n",
+            "# 只有注释\n",
+        ] {
+            assert!(parse_token_bindings(bad).is_err(), "应拒绝：{bad}");
+        }
+    }
 }

@@ -4,7 +4,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStdout, Command, Output, Stdio};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// 这两条测试都会起真实 `serve` 子进程；Windows runner 上并行起两个监听者会互相干扰
@@ -50,6 +50,9 @@ const TOKEN: &str = "0123456789abcdef";
 struct ServerProc {
     child: Child,
     base: String,
+    /// 必须一直持有 stdout 读端：serve 启动会连打两行，读端提前关掉会让服务端在
+    /// Windows 上写管道失败并退出，后续 publish 就 connection refused。
+    _stdout: ChildStdout,
 }
 
 impl Drop for ServerProc {
@@ -92,13 +95,15 @@ fn serve_inner(root: &Path, token_file: &Path, view_key: Option<&Path>) -> Serve
         .stderr(Stdio::piped())
         .spawn()
         .expect("起 serve 失败");
-    let out = child.stdout.take().expect("serve 没有 stdout");
-    let mut lines = BufReader::new(out).lines();
-    let line = lines
-        .next()
-        .transpose()
-        .expect("读 serve 启动行失败")
-        .unwrap_or_default();
+    let mut out = child.stdout.take().expect("serve 没有 stdout");
+    let line = {
+        let mut lines = BufReader::new(&mut out).lines();
+        lines
+            .next()
+            .transpose()
+            .expect("读 serve 启动行失败")
+            .unwrap_or_default()
+    };
     let Some(rest) = line.split("http://").nth(1) else {
         let err = child.stderr.take().map(|mut pipe| {
             let mut text = String::new();
@@ -115,10 +120,11 @@ fn serve_inner(root: &Path, token_file: &Path, view_key: Option<&Path>) -> Serve
         .trim()
         .to_string();
     assert!(!base.is_empty(), "地址是空的：{line}");
-    // stdout 只剩服务日志；继续读会阻塞，直接丢弃尾部，让子进程自己往管道里写。
+    // 保留 stdout 读端，别让服务端写完第二行时撞上断管；它之后不再往 stdout 写。
     ServerProc {
         child,
         base: format!("http://{base}"),
+        _stdout: out,
     }
 }
 
@@ -408,6 +414,90 @@ fn serve_publish_pull_end_to_end() {
         .map(|event| event["payload"]["request_id"].as_str().unwrap())
         .collect();
     assert_eq!(request_ids.len(), allowed.len(), "request id 不得复用");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn serve_token_file_maps_each_token_to_actor() {
+    let _serial = serial();
+    let root = temp("per-actor");
+    let token_a = root.join("token-a.txt");
+    let token_b = root.join("token-b.txt");
+    let tokens = root.join("tokens.txt");
+    fs::write(&token_a, format!("{TOKEN}\n")).unwrap();
+    fs::write(&token_b, "fedcba9876543210\n").unwrap();
+    fs::write(
+        &tokens,
+        format!("# 服务端 token 表\n{TOKEN} alice\nfedcba9876543210 bob\n"),
+    )
+    .unwrap();
+
+    let src = root.join("src");
+    init(&src);
+    commit(&src, "first", &[("a.txt", "a\n")]);
+    let central = root.join("central");
+    fs::create_dir_all(&central).unwrap();
+    let server = serve(&root, &tokens);
+
+    let published = run(
+        &src,
+        &[
+            "publish",
+            "main",
+            "--remote",
+            &server.base,
+            "--token-file",
+            token_a.to_str().unwrap(),
+        ],
+    );
+    assert!(published.status.success(), "{}", stderr(&published));
+
+    let viewed = run(
+        &src,
+        &[
+            "view",
+            "main",
+            "--remote",
+            &server.base,
+            "--token-file",
+            token_b.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(viewed.status.success(), "{}", stderr(&viewed));
+
+    let repo = trit_vcs::repo::Repo::open(&central).unwrap();
+    let actors: Vec<&str> = repo
+        .journal()
+        .events()
+        .iter()
+        .filter(|event| {
+            event.kind == "auth"
+                && event.payload.get("decision").and_then(|v| v.as_str()) == Some("allowed")
+        })
+        .filter_map(|event| event.payload.get("actor").and_then(|v| v.as_str()))
+        .collect();
+    assert!(actors.contains(&"alice"), "{actors:?}");
+    assert!(actors.contains(&"bob"), "{actors:?}");
+
+    let refused = run(
+        &src,
+        &[
+            "view",
+            "main",
+            "--remote",
+            &server.base,
+            "--token-file",
+            tokens.to_str().unwrap(),
+        ],
+    );
+    assert!(!refused.status.success(), "客户端不能拿多行服务端 token 表");
+    assert!(
+        stderr(&refused).contains("客户端只接受单 token"),
+        "{}",
+        stderr(&refused)
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
