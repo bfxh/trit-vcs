@@ -33,7 +33,8 @@
   服务端 token 文件逐行写 `<token> [actor]`，同一个 token 只出现一次；未逐行写 actor 的条目退回
   `serve --actor` 的全局身份，仍未配置时如实记 `bearer:unidentified`。成功与失败鉴权都落 `auth`
   事件，带服务端生成的 request id；客户端的 `X-Trit-Actor` 不被采信；响应通过 `X-Trit-Request-Id`
-  回传同一关联号。该 actor 是 bearer token 对应的部署配置，不是按用户验证的密码学身份；所有 token
+  回传同一关联号。鉴权与 HTTP 拒绝事件另记 `source`：TCP 对端 IP，不记临时端口、不采信
+  `X-Forwarded-For`；反代部署时这里只是反代地址，旧事件可缺。该 actor 是 bearer token 对应的部署配置，不是按用户验证的密码学身份；所有 token
   仍拥有同样的仓库读写权限。失败事件另记原因/401，成功事件不抢报端点最终状态；
   成功 publish/pull 另落 `trit-sync-v1`，用客户端 `op_id` 与服务端 `request_id` 关联源/中央/客户端事件；
   本地同步只有 `op_id`，HTTP 成功响应同时回传 `X-Trit-Request-Id` 与 `X-Trit-Op-Id`。
@@ -347,8 +348,8 @@ trit-vcs sparse --clear     # 清掉索引，退回全量判定
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test                                                     # 21 个集成测试二进制 / 336 条 crate 测试（2026-11-27 实测，含 MSRV 1.88）
-python scripts/mutation_check.py --pkg trit-vcs                    # 383 条登记（视图 pin 14 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / checkout 强制检出 3 / TVAB 20）
+cargo test                                                     # 21 个集成测试二进制 / 338 条 crate 测试（2026-11-27 实测，含 MSRV 1.88）
+python scripts/mutation_check.py --pkg trit-vcs                    # 387 条登记（视图 pin 14 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / checkout 强制检出 3 / 请求来源 4 / TVAB 20）
 python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/change_policy.py --pkg scripts/ci_integrity.py --pkg scripts/docs_hygiene.py --pkg scripts/module_budget.py --pkg scripts/mutation_check.py --pkg scripts/repo_triage.py --pkg scripts/test_surface.py  # 脚本面 111 条
 ```
 

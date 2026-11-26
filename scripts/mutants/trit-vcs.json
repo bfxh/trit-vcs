@@ -3829,5 +3829,45 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: 鉴权事件丢失对端地址（来源不可追溯）",
+  "file": "src/net/auth.rs",
+  "old": "\"source\": request.source,",
+  "new": "\"source\": serde_json::Value::Null,",
+  "filter": "allowed_auth_binds_server_actor_and_response_request_id",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: HTTP 拒绝事件丢失对端地址（来源不可追溯）",
+  "file": "src/net/deny.rs",
+  "old": "            \"actor\": request.actor,\n            \"source\": request.source,\n            \"length\": request.length,",
+  "new": "            \"actor\": request.actor,\n            \"source\": serde_json::Value::Null,\n            \"length\": request.length,",
+  "filter": "malformed_op_id_is_rejected_and_audited_on_both_sync_routes",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计放行非法来源地址（source 可以是任意串）",
+  "file": "src/audit/auth_event.rs",
+  "old": "    if event\n        .payload\n        .get(\"source\")\n        .is_some_and(|source| !valid_source(source))\n    {",
+  "new": "    if false {",
+  "filter": "audit::auth_event::tests::source_must_be_an_ip_when_present",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计放行 deny 事件的非法来源地址",
+  "file": "src/audit/deny_event.rs",
+  "old": "    if event\n        .payload\n        .get(\"detail\")\n        .and_then(Value::as_object)\n        .and_then(|detail| detail.get(\"source\"))\n        .is_some_and(|source| !valid_source(source))\n    {",
+  "new": "    if false {",
+  "filter": "audit::deny_event::tests::deny_source_must_be_an_ip_when_present",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]

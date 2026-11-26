@@ -225,6 +225,7 @@ fn allowed_auth_binds_server_actor_and_response_request_id() {
         .collect();
     assert_eq!(allowed.len(), 2);
     assert_eq!(allowed[0].payload["actor"], "qoder:ci");
+    assert_eq!(allowed[0].payload["source"], "127.0.0.1");
     assert_eq!(allowed[0].payload["request_id"], first_id);
     assert_eq!(allowed[1].payload["request_id"], second_id);
     assert_eq!(
@@ -259,6 +260,7 @@ fn denied_auth_returns_the_same_request_id_without_trusting_client_actor() {
         .expect("鉴权拒绝必须落账");
     assert_eq!(denied.payload["request_id"], request_id);
     assert!(denied.payload["actor"].is_null());
+    assert_eq!(denied.payload["source"], "127.0.0.1");
     assert_eq!(denied.payload["status"], 401);
     server.shutdown();
     let _ = std::fs::remove_dir_all(&root);
@@ -328,6 +330,12 @@ fn malformed_op_id_is_rejected_and_audited_on_both_sync_routes() {
     assert_eq!(denies[0].payload["action"], "publish");
     assert_eq!(denies[1].payload["action"], "pull");
     assert_eq!(denies[2].payload["action"], "pull");
+    assert!(
+        denies
+            .iter()
+            .all(|deny| deny.payload["detail"]["source"] == "127.0.0.1"),
+        "{denies:?}"
+    );
     server.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -355,8 +363,12 @@ fn fake_response(extra: &str, body: &str) -> (String, thread::JoinHandle<()>) {
                 length = value.trim().parse().unwrap();
             }
         }
-        std::io::copy(&mut reader.take(length), &mut std::io::sink()).unwrap();
+        std::io::copy(&mut reader.by_ref().take(length), &mut std::io::sink()).unwrap();
         stream.write_all(response.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        // 先半关写端让客户端读到 EOF；再读到客户端关闭，避免 Windows 上服务端先全关发 RST。
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = std::io::copy(&mut reader, &mut std::io::sink());
     });
     (format!("http://{addr}"), join)
 }
