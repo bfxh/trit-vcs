@@ -72,7 +72,7 @@ pub(crate) fn commit_request(args: &[String]) -> Result<CommitRequest, CliFail> 
         allow_unclaimed: has(args, "--allow-unclaimed"),
         witness,
         intent,
-        parent_override: None,
+        parents_override: None,
         now_secs: now_secs(),
     })
 }

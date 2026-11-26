@@ -266,7 +266,7 @@ pub fn kind_git(err: &GitError) -> &'static str {
         GitError::Git { .. } => "git_command_failed",
         GitError::BadPath(_) => "git_bad_path",
         GitError::NoCommits => "git_no_commits",
-        GitError::MergeGraphUnsupported { .. } => "git_merge_graph_unsupported",
+        GitError::Graph(_) => "git_graph_invalid",
     }
 }
 
@@ -293,15 +293,15 @@ pub fn commands_git(err: &GitError, ctx: Context<'_>) -> Vec<String> {
                 "{VCS} add <文件或目录> --repo {repo}，然后 {VCS} commit --repo {repo} …   # 空仓没什么可导"
             ),
         ],
-        GitError::MergeGraphUnsupported { merges } => vec![
+        GitError::Graph(detail) => vec![
             format!(
-                "git log --graph --oneline --all   # 先看这 {merges} 个 merge 的图；v1 不保留多父关系"
+                "git log --graph --oneline --all   # 图不成立：{detail}；先确认源仓没有坏对象/环"
             ),
             format!(
-                "{VCS} git-import <git目录> --repo {repo} --first-parent   # 确认只保留第一父链后，显式接受线性化"
+                "{VCS} verify --repo {repo}   # 若源仓是 trit，先跑 verify；确认对象与 HEAD 链完整"
             ),
             format!(
-                "{VCS} git-export <git目录> --repo {repo} --first-parent   # 导出方向同理；不加这个旗标会直接拒绝"
+                "{VCS} git-import <git目录> --repo {repo} --first-parent   # 只为先拿到线性历史时可显式降级"
             ),
         ],
     }

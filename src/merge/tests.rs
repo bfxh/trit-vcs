@@ -25,7 +25,7 @@ fn commit(repo: &mut Repo, files: &[(&str, &str)], parent: Option<Hash>, now: u6
             acquired_at: 1,
             expires_at: u64::MAX / 2,
         }],
-        parent_override: parent,
+        parents_override: parent.map(|id| vec![id]),
         now_secs: now,
         ..Default::default()
     })
@@ -236,7 +236,7 @@ fn binary_files_are_conflicts_not_line_merges() {
                 acquired_at: 1,
                 expires_at: u64::MAX / 2,
             }],
-            parent_override: parent,
+            parents_override: parent.map(|id| vec![id]),
             now_secs: now,
             ..Default::default()
         })

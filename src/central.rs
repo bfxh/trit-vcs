@@ -591,7 +591,7 @@ mod tests {
                     acquired_at: 1,
                     expires_at: u64::MAX / 2,
                 }],
-                parent_override: Some(first),
+                parents_override: Some(vec![first]),
                 now_secs: 1_005,
                 ..Default::default()
             })

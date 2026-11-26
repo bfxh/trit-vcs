@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use super::*;
 use crate::gate::ClaimSpec;
-use crate::model::{Commit, Hlc};
 
 fn temp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("trit-vcs-git-{name}-{}", std::process::id()));
@@ -10,7 +9,12 @@ fn temp(name: &str) -> PathBuf {
     dir
 }
 
-fn commit(repo: &mut Repo, files: &[(&str, &str)], now: u64) -> Hash {
+fn commit_with(
+    repo: &mut Repo,
+    files: &[(&str, &str)],
+    now: u64,
+    parents: Option<Vec<Hash>>,
+) -> Hash {
     let map: BTreeMap<String, Vec<u8>> = files
         .iter()
         .map(|(path, body)| (path.to_string(), body.as_bytes().to_vec()))
@@ -27,11 +31,16 @@ fn commit(repo: &mut Repo, files: &[(&str, &str)], now: u64) -> Hash {
             expires_at: u64::MAX / 2,
         }],
         tags: vec!["vcs".to_string()],
+        parents_override: parents,
         now_secs: now,
         ..Default::default()
     })
     .unwrap()
     .id
+}
+
+fn commit(repo: &mut Repo, files: &[(&str, &str)], now: u64) -> Hash {
+    commit_with(repo, files, now, None)
 }
 
 fn head_files(repo: &Repo) -> BTreeMap<String, Vec<u8>> {
@@ -127,41 +136,57 @@ fn imported_git_metadata_is_audited_and_exported_back() {
 }
 
 #[test]
-fn export_refuses_trit_merge_graph() {
+fn export_preserves_trit_merge_graph() {
     let root = temp("export-merge");
     let mut repo = Repo::init(root.join("src")).unwrap();
-    let first = commit(&mut repo, &[("a.txt", "one")], 1_000);
-    let second = commit(&mut repo, &[("a.txt", "two")], 2_000);
-    let tree = repo.commit_at(&second).unwrap().tree;
-    let merge = Commit::new(tree, "qoder:merge", "merge", Hlc::zero().tick(3))
-        .with_parent(first)
-        .with_parent(second);
-    let merge_id = repo.store().put_chunk(&merge.encode().unwrap()).unwrap().0;
-    std::fs::write(
-        root.join("src").join(".tritvcs").join("HEAD"),
-        format!("{merge_id}\n"),
-    )
-    .unwrap();
+    let base = commit(&mut repo, &[("base.txt", "base")], 1_000);
+    let left = commit_with(&mut repo, &[("base.txt", "left")], 1_001, Some(vec![base]));
+    let right = commit_with(&mut repo, &[("base.txt", "right")], 1_002, Some(vec![base]));
+    let merge = commit_with(
+        &mut repo,
+        &[("base.txt", "merged")],
+        1_003,
+        Some(vec![left, right]),
+    );
+    assert_eq!(repo.head().unwrap().unwrap(), merge);
+    assert_eq!(repo.commit_at(&merge).unwrap().parents, vec![left, right]);
 
-    assert!(matches!(
-        export(&mut repo, &root.join("git")),
-        Err(GitError::MergeGraphUnsupported { merges: 1 })
-    ));
-    let failed = repo
-        .journal()
-        .events()
-        .iter()
-        .rev()
-        .find(|event| event.kind == "git_bridge")
-        .expect("拒绝导出也要落事件");
-    assert_eq!(failed.payload["action"], "export");
-    assert_eq!(failed.payload["status"], "failed");
-    assert_eq!(failed.payload["merge_commits"], 1);
+    let out = root.join("git");
+    let exported = export(&mut repo, &out).unwrap();
+    assert_eq!(exported.commits, 4);
+    assert_eq!(exported.merge_commits, 1, "多父图不能只导出第一父链");
+    let count = git_text(&out, &["rev-list", "--count", "HEAD"]).unwrap();
+    assert_eq!(count.trim(), "4");
+    let parents = git_text(&out, &["log", "-1", "--format=%P", "HEAD"]).unwrap();
+    assert_eq!(
+        parents.split_whitespace().count(),
+        2,
+        "Git HEAD 应该是 merge：{parents}"
+    );
+
+    let mut dst = Repo::init(root.join("dst")).unwrap();
+    let imported = import(&mut dst, &out).unwrap();
+    assert_eq!(imported.commits, 4);
+    assert_eq!(imported.merge_commits, 1);
+    let imported_merge = dst.head().unwrap().unwrap();
+    let commit = dst.commit_at(&imported_merge).unwrap();
+    assert_eq!(commit.parents.len(), 2, "导入后仍应有两个父");
+    assert!(commit.tags.contains(&"git-merge".to_string()));
+
+    let flat = root.join("git-flat");
+    let degraded =
+        export_with_options(&mut repo, &flat, &BridgeOptions { first_parent: true }).unwrap();
+    assert_eq!(degraded.commits, 3, "第一父链：base、left、merge");
+    assert_eq!(degraded.merge_commits, 1);
+    let count = git_text(&flat, &["rev-list", "--count", "HEAD"]).unwrap();
+    assert_eq!(count.trim(), "3");
+    let parents = git_text(&flat, &["log", "-1", "--format=%P", "HEAD"]).unwrap();
+    assert_eq!(parents.split_whitespace().count(), 1, "{parents}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
-fn merge_graph_is_refused_unless_first_parent_is_explicit() {
+fn git_merge_graph_imports_by_default_and_first_parent_can_degrade() {
     let root = temp("merge");
     let git_dir = root.join("git");
     init_git(&git_dir);
@@ -180,31 +205,46 @@ fn merge_graph_is_refused_unless_first_parent_is_explicit() {
     );
 
     let mut dst = Repo::init(root.join("dst")).unwrap();
-    assert!(matches!(
-        import(&mut dst, &git_dir),
-        Err(GitError::MergeGraphUnsupported { merges: 1 })
-    ));
-    let events = dst.journal().events();
-    let failed = events
+    let imported = import(&mut dst, &git_dir).unwrap();
+    assert_eq!(imported.commits, 3, "base、feature、merge 都在图里");
+    assert_eq!(imported.merge_commits, 1);
+    let head = dst.head().unwrap().unwrap();
+    let commit = dst.commit_at(&head).unwrap();
+    assert_eq!(commit.parents.len(), 2, "默认导入必须保留两个父");
+    assert_eq!(commit.message, "merge");
+    assert!(commit.tags.contains(&"git-merge".to_string()));
+    let event = dst
+        .journal()
+        .events()
         .iter()
         .rev()
         .find(|event| event.kind == "git_bridge")
-        .expect("拒绝 merge 也要落事件");
-    assert_eq!(failed.payload["status"], "failed");
-    assert_eq!(failed.payload["merge_commits"], 1);
+        .expect("导入应落事件");
+    assert_eq!(event.payload["status"], "ok");
+    assert_eq!(event.payload["merge_commits"], 1);
+    assert_eq!(event.payload["first_parent"], false);
 
-    let imported =
-        import_with_options(&mut dst, &git_dir, &BridgeOptions { first_parent: true }).unwrap();
-    assert_eq!(imported.commits, 2, "第一父链：base、merge");
-    assert_eq!(imported.merge_commits, 1);
-    let head = dst.head().unwrap().unwrap();
+    let mut flat = Repo::init(root.join("flat")).unwrap();
+    let degraded =
+        import_with_options(&mut flat, &git_dir, &BridgeOptions { first_parent: true }).unwrap();
+    assert_eq!(degraded.commits, 2, "第一父链：base、merge");
+    assert_eq!(degraded.merge_commits, 1);
+    let flat_head = flat.head().unwrap().unwrap();
+    let flat_merge = flat.commit_at(&flat_head).unwrap();
+    assert_eq!(flat_merge.parents.len(), 1, "显式降级只保留第一父");
     assert!(
-        dst.commit_at(&head)
-            .unwrap()
-            .tags
-            .contains(&"git-merge".to_string()),
-        "merge 提交应显式带 git-merge 标签"
+        flat_merge.tags.contains(&"git-merge".to_string()),
+        "证据仍应记下它原本是 merge"
     );
+    let flat_event = flat
+        .journal()
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.kind == "git_bridge")
+        .expect("降级导入也应落事件");
+    assert_eq!(flat_event.payload["first_parent"], true);
+    assert_eq!(flat_event.payload["merge_commits"], 1);
     let _ = std::fs::remove_dir_all(&root);
 }
 

@@ -88,7 +88,7 @@ fn usage() -> ExitCode {
          trit-vcs key add --key-id <指纹> --principal <主体> [--role author|auditor|release|reader] --owner <宿主:会话id> [--json] [--repo PATH]\n  \
          trit-vcs key revoke --key-id <指纹> --reason <原因> --owner <宿主:会话id> [--json] [--repo PATH]\n  \
          trit-vcs checkout <提交id> [--prefix DIR] [--force] [--repo PATH]\n  \
-         trit-vcs log [--json] [--budget N] [--tag T] [--evidence 文本] [--session S] [--grep 文本] [--repo PATH]\n  \
+         trit-vcs log [--all] [--json] [--budget N] [--tag T] [--evidence 文本] [--session S] [--grep 文本] [--repo PATH]\n  \
          trit-vcs where <路径/测试/标签> --techmap FILE [--json]\n  \
          trit-vcs tests <路径/测试/标签> --techmap FILE\n  \
          trit-vcs explain <提交id> [--techmap FILE] [--json] [--repo PATH]\n  \
@@ -549,10 +549,15 @@ fn main() -> ExitCode {
                 session: flag(&args, "--session").map(str::to_string),
                 grep: flag(&args, "--grep").map(str::to_string),
             };
-            let log = match repo.query(&filter) {
+            let mut log = match if has(&args, "--all") {
+                repo.log_all()
+            } else {
+                repo.log()
+            } {
                 Ok(log) => log,
                 Err(err) => return fail_err(&err, &root, "", &args),
             };
+            log.retain(|(_, commit)| filter.matches(commit));
             if has(&args, "--json") {
                 let rows: Vec<_> = log
                     .iter()
