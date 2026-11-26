@@ -22,12 +22,12 @@ mod auth_event;
 mod checkpoint_event;
 mod claim_signature_event;
 mod deny_event;
+mod force_event;
 mod key_event;
 mod ops;
 mod policy_event;
 mod signature_event;
 mod sync_event;
-
 #[derive(Clone, Debug, Serialize)]
 pub struct AuditIssue {
     pub kind: String,
@@ -80,7 +80,6 @@ fn parse_hash(value: Option<&Value>) -> Option<Hash> {
 fn push_issue(issues: &mut Vec<AuditIssue>, kind: &str, detail: impl Into<String>) {
     issues.push(AuditIssue::new(kind, detail));
 }
-
 fn state_present(repo: &Repo) -> Result<bool, AuditError> {
     Ok(repo.head()?.is_some() || !repo.list_refs()?.is_empty())
 }
@@ -425,6 +424,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
             }
             "auth" => auth_event::check_auth(event, &mut issues, &mut warnings),
             "deny" => deny_event::check_deny(event, &mut issues, &mut warnings),
+            "force" => force_event::check_force(events, event, &mut issues),
             "accept" => {
                 let Some(receipt) = parse_hash(event.payload.get("receipt")) else {
                     push_issue(
