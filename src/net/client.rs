@@ -81,6 +81,73 @@ impl Client {
         Ok(out)
     }
 
+    /// 读服务端视图；`from` 是本地 pin 的高度与前缀根，服务端据此附一致性证明。
+    pub fn view(
+        &self,
+        name: &str,
+        from: Option<(usize, crate::hash::Hash)>,
+    ) -> Result<ViewReply, NetError> {
+        crate::repo::Repo::validate_ref(name)
+            .map_err(|err| NetError::BadView(format!("ref 名不合法：{err}")))?;
+        let mut path = format!("/v1/view?ref={}", percent_encode(name));
+        if let Some((height, root)) = from {
+            path.push_str(&format!(
+                "&from_height={height}&from_root={}",
+                percent_encode(&root.to_hex())
+            ));
+        }
+        let mut stream = self.connect()?;
+        let head = format!(
+            "GET {path} HTTP/1.1\r\nhost: {}\r\nauthorization: Bearer {}\r\nconnection: close\r\n\r\n",
+            self.authority(),
+            self.token
+        );
+        stream.write_all(head.as_bytes())?;
+        let mut reader = BufReader::new(stream);
+        let response = read_response_head(&mut reader)?;
+        if response.status != 200 {
+            let body = read_body(&mut reader, MAX_ERROR_BODY)?;
+            return Err(NetError::Status(response.status, error_message(&body)));
+        }
+        let body = read_body(&mut reader, MAX_ERROR_BODY)?;
+        let value: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|err| NetError::BadView(format!("视图不是 JSON：{err}")))?;
+        let request_id = response
+            .header("x-trit-request-id")
+            .filter(|raw| crate::hash::Hash::from_hex(raw).is_some())
+            .ok_or(NetError::BadResponse)?
+            .to_string();
+        if value.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+            || value.get("ref").and_then(serde_json::Value::as_str) != Some(name)
+        {
+            return Err(NetError::BadView(
+                "视图缺 ok/ref 或 ref 与请求不符".to_string(),
+            ));
+        }
+        let snapshot = crate::view::Snapshot::from_json(&serde_json::json!({
+            "schema": value.get("schema"),
+            "height": value.get("height"),
+            "head": value.get("head"),
+            "root": value.get("root"),
+            "tip": value.get("tip"),
+        }))
+        .map_err(|err| NetError::BadView(err.to_string()))?;
+        let consistency = match value.get("consistency") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(proof) => Some(
+                serde_json::from_value::<crate::checkpoint::consistency::ConsistencyProof>(
+                    proof.clone(),
+                )
+                .map_err(|err| NetError::BadView(format!("一致性证明解不开：{err}")))?,
+            ),
+        };
+        Ok(ViewReply {
+            snapshot,
+            consistency,
+            request_id,
+        })
+    }
+
     /// 把 `body` 发到 `ref`；服务端返回 publish 读数。
     pub fn publish(
         &self,
@@ -228,6 +295,14 @@ impl Client {
 
 #[derive(Clone, Debug)]
 pub struct PublishReply {
+    pub request_id: String,
+}
+
+/// 服务端视图：快照 + 可选的旧→新一致性证明 + 关联号。
+#[derive(Clone, Debug)]
+pub struct ViewReply {
+    pub snapshot: crate::view::Snapshot,
+    pub consistency: Option<crate::checkpoint::consistency::ConsistencyProof>,
     pub request_id: String,
 }
 

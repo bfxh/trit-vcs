@@ -87,6 +87,7 @@ pub(super) fn check_sync(
     {
         bad(issues, event, "缺 name/commit/state_before/state_after");
     }
+    check_view(events, index, event, transport, side, issues);
     if let (Some("http"), Some("central"), Some(request_id)) =
         (transport, side, parse_hash(request_id))
         && !events[..index].iter().any(|prior| {
@@ -139,6 +140,125 @@ pub(super) fn check_sync(
 
 fn valid_actor(actor: &str) -> bool {
     !actor.is_empty() && actor.len() <= 128 && !actor.chars().any(char::is_control)
+}
+
+/// 客户端视图/pin 只允许出现在 source/client 的 HTTP 同步上；其它组合只能留空。
+fn check_view(
+    events: &[Event],
+    index: usize,
+    event: &Event,
+    transport: Option<&str>,
+    side: Option<&str>,
+    issues: &mut Vec<AuditIssue>,
+) {
+    let remote = event.payload.get("remote");
+    let view = event.payload.get("view");
+    let is_client_http = transport == Some("http") && matches!(side, Some("source" | "client"));
+    if !is_client_http {
+        let remote_set = remote.is_some_and(|value| !value.is_null());
+        let view_set = view.is_some_and(|value| !value.is_null());
+        if remote_set || view_set {
+            view_bad(issues, event, "中央仓/本地同步不得携带 remote/view");
+        }
+        return;
+    }
+    if remote.is_none() && view.is_none() {
+        return;
+    }
+    let Some(remote) = remote.and_then(Value::as_str) else {
+        view_bad(issues, event, "带视图的同步缺 remote");
+        return;
+    };
+    if !crate::view::valid_remote(remote) {
+        view_bad(issues, event, "remote 不是 http://host:port");
+        return;
+    }
+    let Some(view_value) = view.filter(|value| !value.is_null()) else {
+        // `--no-pin` 的显式降级：只记 remote，不记视图。
+        return;
+    };
+    let snapshot = match crate::view::Snapshot::from_evidence(view_value) {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            view_bad(issues, event, &format!("view 形状不合法：{err}"));
+            return;
+        }
+    };
+    if snapshot.tip != parse_hash(event.payload.get("commit")) {
+        view_bad(issues, event, "view.tip 与 commit 不一致");
+    }
+    let status = view_value.get("pin_status").and_then(Value::as_str);
+    let pin_before = view_value.get("pin_before");
+    match status {
+        Some("first") => {
+            if !pin_before.is_some_and(Value::is_null) {
+                view_bad(issues, event, "首次 pin 的 pin_before 必须为空");
+            }
+        }
+        Some("unchanged" | "advanced") => {
+            let Some(pin_value) = pin_before else {
+                view_bad(issues, event, "非首次 pin 缺 pin_before");
+                return;
+            };
+            let pin = match crate::view::Pin::from_json(pin_value) {
+                Ok(pin) => pin,
+                Err(err) => {
+                    view_bad(issues, event, &format!("pin_before 形状不合法：{err}"));
+                    return;
+                }
+            };
+            if pin.height > snapshot.height {
+                view_bad(issues, event, "pin_before 比本次视图还长");
+            } else if pin.height == snapshot.height && pin.root != snapshot.root {
+                view_bad(issues, event, "同高度的 pin_before 与视图根不同");
+            }
+        }
+        _ => view_bad(issues, event, "pin_status 不合法"),
+    }
+
+    // 同一 remote/ref 的已落账视图只能单调往后长：先找最近一条同键事件。
+    for prior in events[..index].iter().rev() {
+        if prior.payload.get("schema").and_then(Value::as_str) != Some(SCHEMA)
+            || !matches!(prior.kind.as_str(), "publish" | "pull")
+            || prior.payload.get("transport").and_then(Value::as_str) != Some("http")
+            || !matches!(
+                prior.payload.get("side").and_then(Value::as_str),
+                Some("source" | "client")
+            )
+            || prior.payload.get("remote").and_then(Value::as_str) != Some(remote)
+            || prior.payload.get("name").and_then(Value::as_str)
+                != Some(event.payload["name"].as_str().unwrap_or_default())
+        {
+            continue;
+        }
+        let Some(prior_view) = prior.payload.get("view") else {
+            continue;
+        };
+        let Ok(prior) = crate::view::Snapshot::from_evidence(prior_view) else {
+            continue;
+        };
+        if snapshot.height < prior.height {
+            issues.push(AuditIssue::new(
+                "sync_view_rollback",
+                format!(
+                    "第 {} 条同步的视图高度 {} 小于同 remote/ref 上一条 {}",
+                    event.seq, snapshot.height, prior.height
+                ),
+            ));
+        } else if snapshot.height == prior.height
+            && (snapshot.root != prior.root || snapshot.head != prior.head)
+        {
+            view_bad(issues, event, "同高度视图换根/换头，已落账的 pin 被改写");
+        }
+        break;
+    }
+}
+
+fn view_bad(issues: &mut Vec<AuditIssue>, event: &Event, detail: &str) {
+    issues.push(AuditIssue::new(
+        "sync_view_bad",
+        format!("第 {} 条 {} {detail}", event.seq, event.kind),
+    ));
 }
 
 fn bad(issues: &mut Vec<AuditIssue>, event: &Event, detail: &str) {
@@ -304,5 +424,75 @@ mod tests {
         let mut pull = sync(1, "pull", "http", "client");
         pull.payload["stage"] = json!("response_sent");
         assert!(issues(&[pull]).iter().any(|issue| issue.kind == "sync_bad"));
+    }
+
+    fn snapshot_json(height: usize, tip: Hash) -> Value {
+        let leaves: Vec<Hash> = (0..height)
+            .map(|i| Hash::of(format!("view-e{i}").as_bytes()))
+            .collect();
+        json!({
+            "schema": crate::view::SCHEMA,
+            "height": height,
+            "head": leaves.last().map(|id| id.to_hex()),
+            "root": crate::checkpoint::merkle_root(&leaves).to_hex(),
+            "tip": tip.to_hex(),
+            "pin_before": null,
+            "pin_status": "first",
+        })
+    }
+
+    fn view_event(seq: u64, height: usize, remote: &str, prompt: &str) -> Event {
+        let mut event = sync(seq, "publish", "http", "source");
+        event.payload["op_id"] = json!(Hash::of(prompt.as_bytes()).to_hex());
+        event.payload["remote"] = json!(remote);
+        event.payload["view"] = snapshot_json(height, Hash::of(b"commit"));
+        event
+    }
+
+    #[test]
+    fn valid_client_view_evidence_passes() {
+        let event = view_event(1, 3, "http://127.0.0.1:7878", "op-valid");
+        assert!(issues(&[event]).is_empty(), "合法的 pin 证据不该报红");
+    }
+
+    #[test]
+    fn central_and_local_events_must_not_carry_view() {
+        let mut central = sync(1, "publish", "http", "central");
+        central.payload["remote"] = json!("http://127.0.0.1:7878");
+        central.payload["view"] = snapshot_json(2, Hash::of(b"commit"));
+        assert!(
+            issues(&[central])
+                .iter()
+                .any(|issue| issue.kind == "sync_view_bad")
+        );
+    }
+
+    #[test]
+    fn view_height_must_not_go_backwards() {
+        let first = view_event(1, 3, "http://127.0.0.1:7878", "op-first");
+        let second = view_event(2, 2, "http://127.0.0.1:7878", "op-second");
+        assert!(
+            issues(&[first, second])
+                .iter()
+                .any(|issue| issue.kind == "sync_view_rollback")
+        );
+    }
+
+    #[test]
+    fn view_tip_must_match_commit_and_remote_must_be_narrow() {
+        let mut event = view_event(1, 3, "http://127.0.0.1:7878", "op-bad-tip");
+        event.payload["view"]["tip"] = json!(Hash::of(b"other").to_hex());
+        assert!(
+            issues(&[event])
+                .iter()
+                .any(|issue| issue.kind == "sync_view_bad")
+        );
+
+        let event = view_event(1, 3, "http://127.0.0.1:7878/path", "op-bad-remote");
+        assert!(
+            issues(&[event])
+                .iter()
+                .any(|issue| issue.kind == "sync_view_bad")
+        );
     }
 }

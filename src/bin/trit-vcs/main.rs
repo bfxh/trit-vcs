@@ -174,6 +174,7 @@ fn main() -> ExitCode {
             }
         }
         "serve" => remote_cli::serve_cmd(&args),
+        "view" => remote_cli::view_cmd(&args),
         "policy" => policy_cli::policy_cmd(&args),
         "key" => key_cli::key_cmd(&args),
         "attest" => attest_cli::attest_cmd(&args),

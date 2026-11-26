@@ -7,12 +7,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use trit_vcs::net::{Config, Server};
+use trit_vcs::net::{Client, Config, Server};
 use trit_vcs::remote::{self, RemoteError};
 use trit_vcs::repo::Repo;
+use trit_vcs::view;
 
 use super::verdict::fail_err;
-use super::{fail, flag, has, repo_path};
+use super::{fail, flag, has, positionals, repo_path};
 
 const DEFAULT_BIND: &str = "127.0.0.1:7878";
 
@@ -115,7 +116,15 @@ pub(crate) fn remote_publish(args: &[String], name: &str) -> ExitCode {
         },
         None => None,
     };
-    match remote::publish_to(remote_url, &token, &mut client, name, commit.as_ref()) {
+    let pin_enabled = !has(args, "--no-pin");
+    match remote::publish_to_with(
+        remote_url,
+        &token,
+        &mut client,
+        name,
+        commit.as_ref(),
+        pin_enabled,
+    ) {
         Ok(stats) => {
             println!(
                 "已发布 {} → {remote_url} 的 ref {name}（{} 个对象，字节 {}）",
@@ -130,6 +139,17 @@ pub(crate) fn remote_publish(args: &[String], name: &str) -> ExitCode {
                 "  关联 op_id {}，request_id {}",
                 stats.op_id, stats.request_id
             );
+            if let Some(view) = &stats.view {
+                println!(
+                    "  服务端视图：{} 条事件，根 {}，pin {}",
+                    view.height,
+                    view.root.short(),
+                    stats
+                        .pin_status
+                        .map(|status| status.as_str())
+                        .unwrap_or("unknown")
+                );
+            }
             ExitCode::SUCCESS
         }
         Err(err) => fail_err(&err, client.root(), "", args),
@@ -149,13 +169,15 @@ pub(crate) fn remote_pull(args: &[String], name: &str) -> ExitCode {
         Err(err) => return fail_err(&err, &repo_path(args), "", args),
     };
     let prefix = flag(args, "--prefix");
-    match remote::pull_from(
+    let pin_enabled = !has(args, "--no-pin");
+    match remote::pull_from_with(
         remote_url,
         &token,
         &mut client,
         name,
         prefix,
         has(args, "--force"),
+        pin_enabled,
     ) {
         Ok(stats) => {
             println!(
@@ -171,6 +193,17 @@ pub(crate) fn remote_pull(args: &[String], name: &str) -> ExitCode {
                 "  关联 op_id {}，request_id {}",
                 stats.op_id, stats.request_id
             );
+            if let Some(view) = &stats.view {
+                println!(
+                    "  服务端视图：{} 条事件，根 {}，pin {}",
+                    view.height,
+                    view.root.short(),
+                    stats
+                        .pin_status
+                        .map(|status| status.as_str())
+                        .unwrap_or("unknown")
+                );
+            }
             if prefix.is_none() {
                 println!("  HEAD 与索引已落到该提交（status 从这里开始算）。");
             } else {
@@ -180,4 +213,92 @@ pub(crate) fn remote_pull(args: &[String], name: &str) -> ExitCode {
         }
         Err(err) => fail_err(&err, client.root(), "", args),
     }
+}
+
+/// `view`：只读服务端视图，并与本地 pin 对账；不改工作树、不更新 pin。
+pub(crate) fn view_cmd(args: &[String]) -> ExitCode {
+    let ids = positionals(args, &["--repo", "--remote", "--token-file"]);
+    let Some(name) = ids.first() else {
+        eprintln!(
+            "view 需要 ref 名：trit-vcs view main --remote http://host:port --token-file FILE"
+        );
+        return ExitCode::from(2);
+    };
+    let Some(remote_url) = flag(args, "--remote") else {
+        eprintln!("view 需要 --remote http://host:port");
+        return ExitCode::from(2);
+    };
+    let token = match read_token(args) {
+        Ok(token) => token,
+        Err(code) => return code,
+    };
+    let repo = match Repo::open(repo_path(args)) {
+        Ok(repo) => repo,
+        Err(err) => return fail_err(&err, &repo_path(args), "", args),
+    };
+    let client = match Client::new(remote_url, &token) {
+        Ok(client) => client,
+        Err(err) => return fail_err(&RemoteError::from(err), repo.root(), "", args),
+    };
+    let pin = match view::latest_pin(&repo, client.base(), name) {
+        Ok(pin) => pin,
+        Err(err) => return fail_err(&RemoteError::from(err), repo.root(), "", args),
+    };
+    let reply = match client.view(name, pin.as_ref().map(|pin| (pin.height, pin.root))) {
+        Ok(reply) => reply,
+        Err(err) => return fail_err(&RemoteError::from(err), repo.root(), "", args),
+    };
+    let status = match view::verify_pin(pin.as_ref(), &reply.snapshot, reply.consistency.as_ref()) {
+        Ok(status) => status,
+        Err(err) => {
+            if has(args, "--json") {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": false,
+                        "kind": err.kind(),
+                        "message": err.to_string(),
+                        "pin": pin.as_ref().map(view::Pin::to_json),
+                        "view": reply.snapshot.to_json(),
+                    })
+                );
+            }
+            return fail_err(&RemoteError::from(err), repo.root(), "", args);
+        }
+    };
+    if has(args, "--json") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "remote": client.base(),
+                "ref": name,
+                "view": reply.snapshot.to_json(),
+                "pin_before": pin.as_ref().map(view::Pin::to_json),
+                "pin_status": status.as_str(),
+                "request_id": reply.request_id,
+            })
+        );
+    } else {
+        println!(
+            "服务端 {remote_url} 的 ref {name}：tip {}，{} 条事件，根 {}",
+            reply
+                .snapshot
+                .tip
+                .map(|id| id.short())
+                .unwrap_or_else(|| "-".to_string()),
+            reply.snapshot.height,
+            reply.snapshot.root.short()
+        );
+        match &pin {
+            Some(pin) => println!(
+                "  本地 pin：{} 条事件，根 {}；对账 {}",
+                pin.height,
+                pin.root.short(),
+                status.as_str()
+            ),
+            None => println!("  本地还没有 pin：这是首次信任（TOFU），成功后才会记进 journal"),
+        }
+    }
+    ExitCode::SUCCESS
 }

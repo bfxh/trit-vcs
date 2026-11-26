@@ -50,6 +50,7 @@ pub mod store;
 pub(crate) mod sync;
 pub mod techmap;
 pub mod tokens;
+pub mod view;
 pub mod wire;
 pub mod witness;
 pub mod worktree;
