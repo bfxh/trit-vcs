@@ -311,6 +311,22 @@ mod tests {
         .id
     }
 
+    fn commit_node(repo: &mut Repo, name: &str, parents: Vec<Hash>, now: u64) -> Hash {
+        let files = BTreeMap::from([(format!("{name}.txt"), name.as_bytes().to_vec())]);
+        repo.stage(&files, now).unwrap();
+        repo.commit(CommitRequest {
+            message: name.to_string(),
+            session: "qoder:central".to_string(),
+            claims: Vec::new(),
+            allow_unclaimed: true,
+            parents_override: Some(parents),
+            now_secs: now,
+            ..Default::default()
+        })
+        .unwrap()
+        .id
+    }
+
     fn open_repo(path: &std::path::Path) -> Repo {
         std::fs::create_dir_all(path).unwrap();
         Repo::init(path).unwrap()
@@ -410,6 +426,29 @@ mod tests {
         assert_audit_clean(&src);
         assert_audit_clean(&central);
         assert_audit_clean(&client);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn publish_carries_side_branch_commit_objects() {
+        let root = temp("publish-side-parent");
+        let mut src = open_repo(&root.join("src"));
+        let base = commit_node(&mut src, "base", vec![], 1_000);
+        let left = commit_node(&mut src, "left", vec![base], 1_001);
+        let right = commit_node(&mut src, "right", vec![base], 1_002);
+        let merge = commit_node(&mut src, "merge", vec![left, right], 1_003);
+        let tip = commit_node(&mut src, "tip", vec![merge], 1_004);
+
+        let mut central = open_repo(&root.join("central"));
+        publish(&mut src, &mut central, "main", Some(&left), false).unwrap();
+        publish(&mut src, &mut central, "main", Some(&tip), false).unwrap();
+        assert_eq!(central.ref_commit("main").unwrap(), Some(tip));
+        for id in [base, left, right, merge, tip] {
+            assert!(
+                central.store().has_chunk(&id),
+                "中央仓缺父提交 {id}：publish 不能只走第一父"
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

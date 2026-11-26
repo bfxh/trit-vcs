@@ -6,6 +6,8 @@
 ## [Unreleased]
 
 ### Added
+- 中央仓本地 `publish` 的缺父闭包改走全部父图：`bundle::missing_ancestors` 用显式栈逐父补齐并去重，
+  多父/嵌套 merge 的侧分支提交对象不再漏收；封顶 `ANCESTOR_CAP` 不变。
 - Git 桥保真 v2：`git-import` / `git-export` 默认保留完整多父图，不再拒绝 merge；`--first-parent`
   仍是显式降级。导入按 `rev-list --reverse --topo-order` 逐提交重建所有父，导出用
   `commit-tree -p` 复原 Git merge；提交模型 `parents` 支持多父，`log --all` 可查看全图。导入仍把
