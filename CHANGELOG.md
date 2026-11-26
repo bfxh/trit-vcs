@@ -20,7 +20,12 @@
   Git 作者/提交者/时间/原始 parents/签名状态写进提交证据，导出恢复作者与提交时间。两个方向都落
   `git_bridge` v2 事件（成功/失败、first_parent、提交数、文件数、merge 数、元数据数、map digest）；
   已有 HEAD 的目标仓会保留旧历史（trit 根挂旧 HEAD）；物化会删除树外文件并 `reset --hard`，
-  目标目录不能含要保留的未提交/未跟踪内容；Git 签名信任映射、submodule/tag 仍未搬。
+  目标目录不能含要保留的未提交/未跟踪内容；Git 签名信任映射与 submodule 仍未搬（标签名见下一条）。
+- Git 桥标签名往返：`git-import` 读 `refs/tags`，把指向已导入提交的轻量/附注标签名写进证据
+  （`git-tag:` / `git-tag-annotated:`），不在导入图里的标签计入 `tags_skipped`；`git-export`
+  从证据重建轻量标签，附注标签的 message/签名不保留、计入 `annotated_tags_degraded`。`git_bridge`
+  v2 事件增加 `tags`/`annotated_tags`/`tags_skipped`：图外标签只计数、不保留名字，不凭空造标签；
+  submodule 仍未搬。
 - 每 actor 独立 token：`serve --token-file` 改为逐行解析 `<token> [actor]`（空行与 `#` 注释忽略，
   最多 256 条，token 16–256 字节且不得重复），同一服务端可按 Bearer token 把 `auth` 事件的
   actor 区分到不同主体；逐行 actor 优先，缺省退回 `--actor`，再退回 `bearer:unidentified`。
