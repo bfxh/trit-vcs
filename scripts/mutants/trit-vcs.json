@@ -3799,5 +3799,35 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: 强制检出不留独立事件（覆盖别人的改动没账）",
+  "file": "src/bin/trit-vcs/checkout_cli.rs",
+  "old": "if let Err(err) = repo.append_audit(\"checkout\", event, now_ms()) {",
+  "new": "if let Err(err) = repo.append_audit(\"checkout_disabled\", event, now_ms()) {",
+  "filter": "force_checkout_records_bypassed_dirty_state",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_cli"
+ },
+ {
+  "name": "vcs: 强制检出事件把脏改动记成 0（审计看不出绕过守卫）",
+  "file": "src/bin/trit-vcs/checkout_cli.rs",
+  "old": "\"dirty\": stats.dirty,",
+  "new": "\"dirty\": 0usize,",
+  "filter": "force_checkout_records_bypassed_dirty_state",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:audit_cli"
+ },
+ {
+  "name": "vcs: 审计不检查 checkout 的 force 标记（普通检出也能冒充强制）",
+  "file": "src/audit/checkout_event.rs",
+  "old": "    if payload.get(\"force\").and_then(Value::as_bool) != Some(true) {",
+  "new": "    if false {",
+  "filter": "audit::checkout_event::tests::missing_force_zero_dirty_or_bad_sample_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]
