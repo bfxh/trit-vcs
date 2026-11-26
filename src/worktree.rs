@@ -15,6 +15,11 @@ use crate::sparse::SparseIndex;
 use crate::status_cache::{CachedFile, StatusCache};
 use crate::store::StoreError;
 
+/// `checkout --force` 放行未提交改动时追加的独立事件 schema。
+pub const CHECKOUT_SCHEMA: &str = "trit-checkout-v1";
+/// 事件里最多列出多少条被放行的脏路径；完整集合由 `dirty_digest` 承诺。
+pub const CHECKOUT_DIRTY_SAMPLE_MAX: usize = 8;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -257,9 +262,29 @@ pub fn checkout_scoped(
             blocking.iter().take(5).map(|c| c.path.clone()).collect(),
         ));
     }
+    // 只有 `--force` 才可能带着未提交改动走到这里；把被放行的集合按内容承诺下来。
+    // 事件里只放前几条路径，完整集合由摘要绑定，避免一个脏工作树把 journal 撑大。
+    let (dirty, dirty_sample, dirty_digest) = if force && !blocking.is_empty() {
+        (
+            blocking.len(),
+            blocking
+                .iter()
+                .take(CHECKOUT_DIRTY_SAMPLE_MAX)
+                .map(|change| change.path.clone())
+                .collect(),
+            Some(dirty_commitment(&blocking)),
+        )
+    } else {
+        (0, Vec::new(), None)
+    };
     let commit = repo.commit_at(commit_id)?;
     let tree = repo.store().tree_entries(&commit.tree)?;
-    let mut stats = CheckoutStats::default();
+    let mut stats = CheckoutStats {
+        dirty,
+        dirty_sample,
+        dirty_digest,
+        ..CheckoutStats::default()
+    };
     for (path, file_id) in &tree {
         if !in_scope(path, prefix) {
             stats.skipped += 1;
@@ -285,11 +310,35 @@ pub fn checkout_scoped(
     Ok(stats)
 }
 
-/// 一次检出的读数：写了多少、按前缀跳过了多少。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// 一次检出的读数：写了多少、按前缀跳过了多少、`--force` 放行了多少未提交改动。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CheckoutStats {
     pub written: usize,
     pub skipped: usize,
+    /// `--force` 放行的未提交改动条数；普通检出恒为 0。
+    pub dirty: usize,
+    /// 被放行路径的前若干条（最多 `CHECKOUT_DIRTY_SAMPLE_MAX`），供审计日志直接点名。
+    pub dirty_sample: Vec<String>,
+    /// 被放行路径集合的完整承诺；`dirty > 0` 时必然存在。
+    pub dirty_digest: Option<Hash>,
+}
+
+/// 把被 `--force` 放行的脏改动（类型 + 路径）按长度前缀拼起来再做内容哈希。
+/// 不用换行分隔，避免路径里本身带换行时两组不同集合拼出同一字节串。
+fn dirty_commitment(changes: &[&Change]) -> Hash {
+    let mut bytes = Vec::new();
+    for change in changes {
+        let kind = match change.kind {
+            Kind::Added => "added",
+            Kind::Modified => "modified",
+            Kind::Deleted => "deleted",
+        };
+        bytes.extend_from_slice(&(kind.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(kind.as_bytes());
+        bytes.extend_from_slice(&(change.path.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(change.path.as_bytes());
+    }
+    Hash::of(&bytes)
 }
 
 /// 按需物化：把某棵树的文件写进 `root`（只写 `prefix` 内）。
@@ -654,6 +703,9 @@ mod tests {
         ));
         let stats = checkout_scoped(&repo, &id, Some("keep"), true).unwrap();
         assert_eq!(stats.written, 1);
+        assert_eq!(stats.dirty, 1, "强制检出要记住被放行的脏改动");
+        assert_eq!(stats.dirty_sample, vec!["keep/a.txt".to_string()]);
+        assert!(stats.dirty_digest.is_some(), "完整脏集合要有内容承诺");
         let _ = fs::remove_dir_all(&root);
     }
 }

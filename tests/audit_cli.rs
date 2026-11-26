@@ -447,3 +447,71 @@ fn policy_event_accepts_legacy_shape_but_rejects_non_boolean_signed_witness() {
     );
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn force_checkout_records_bypassed_dirty_state() {
+    let root = temp("checkout-force");
+    seed_commit(&root);
+    let rows: serde_json::Value =
+        serde_json::from_str(&stdout(&run(&root, &["log", "--json"]))).unwrap();
+    let id = rows[0]["id"].as_str().unwrap().to_string();
+
+    // seed_commit 为导出认领快照留下的 claims.json 是未跟踪文件；先清掉，只留一个脏文件。
+    let _ = fs::remove_file(root.join("claims.json"));
+    fs::write(root.join("a.txt"), "dirty\n").unwrap();
+    let checkout = run(&root, &["checkout", &id, "--force"]);
+    assert!(checkout.status.success(), "{}", stderr(&checkout));
+    assert!(
+        stdout(&checkout).contains("放行 1 个未提交改动"),
+        "强制检出要在读数里点名：{}",
+        stdout(&checkout)
+    );
+
+    let events: serde_json::Value = serde_json::from_str(&stdout(&run(
+        &root,
+        &["audit", "log", "checkout", "--json"],
+    )))
+    .unwrap();
+    let events = events.as_array().unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let event = &events[0];
+    assert_eq!(event["payload"]["schema"], "trit-checkout-v1");
+    assert_eq!(event["payload"]["force"], true);
+    assert_eq!(event["payload"]["reason"], "dirty_worktree");
+    assert_eq!(event["payload"]["commit"], id);
+    assert_eq!(event["payload"]["dirty"], 1);
+    assert_eq!(
+        event["payload"]["dirty_sample"],
+        serde_json::json!(["a.txt"])
+    );
+    assert_eq!(
+        event["payload"]["state_before"], event["payload"]["state_after"],
+        "检出不改 HEAD/refs/index，前后状态必须相同"
+    );
+
+    let status: serde_json::Value =
+        serde_json::from_str(&stdout(&run(&root, &["audit", "status", "--json"]))).unwrap();
+    assert_eq!(status["ok"], true, "{status}");
+    assert_eq!(status["level"], "L2");
+    assert_eq!(status["open_ops"], 0);
+
+    fs::write(root.join("a.txt"), "dirty again\n").unwrap();
+    let refused = run(&root, &["checkout", &id]);
+    assert!(!refused.status.success(), "不带 --force 必须拒绝覆盖");
+    assert!(
+        stderr(&refused).contains("worktree_dirty"),
+        "{}",
+        stderr(&refused)
+    );
+    let after: serde_json::Value = serde_json::from_str(&stdout(&run(
+        &root,
+        &["audit", "log", "checkout", "--json"],
+    )))
+    .unwrap();
+    assert_eq!(
+        after.as_array().unwrap().len(),
+        1,
+        "被拒的检出不能伪造成功事件"
+    );
+    let _ = fs::remove_dir_all(&root);
+}

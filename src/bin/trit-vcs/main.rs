@@ -20,6 +20,7 @@ mod audit_bundle_cli;
 mod audit_cli;
 mod bridge;
 mod central_sync;
+mod checkout_cli;
 mod claims_cli;
 mod cli_args;
 mod cli_fail;
@@ -645,35 +646,7 @@ fn main() -> ExitCode {
                 Err(err) => fail_err(&err, &root, "", &args),
             }
         }
-        "checkout" => {
-            let root = repo_path(&args);
-            let repo = match Repo::open(&root) {
-                Ok(repo) => repo,
-                Err(err) => return fail_repo(&err, &root, "", &args),
-            };
-            let ids = positionals(&args, &["--repo", "--prefix"]);
-            let Some(target) = ids.first() else {
-                eprintln!("checkout 需要提交 id");
-                return ExitCode::from(2);
-            };
-            let Some(id) = trit_vcs::Hash::from_hex(target) else {
-                return fail(format!("不是合法提交 id：{target}"));
-            };
-            let prefix = flag(&args, "--prefix");
-            match worktree::checkout_scoped(&repo, &id, prefix, has(&args, "--force")) {
-                Ok(stats) => {
-                    println!(
-                        "已还原 {} 个文件、按范围跳过 {} 个（{}，前缀 {:?}）",
-                        stats.written,
-                        stats.skipped,
-                        id.short(),
-                        prefix.unwrap_or("全量")
-                    );
-                    ExitCode::SUCCESS
-                }
-                Err(err) => fail_err(&err, &root, "", &args),
-            }
-        }
+        "checkout" => checkout_cli::checkout_cmd(&args),
         "diff" => {
             let root = repo_path(&args);
             let repo = match Repo::open(&root) {

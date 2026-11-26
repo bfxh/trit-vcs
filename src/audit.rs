@@ -7,18 +7,17 @@
 //! - 最新事件里如果带 `state_after`，它是否等于当前状态摘要。
 //!   提交签名、密钥轮换、检查点/锚、认领签名与 witness attestation 已接入。
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
-
-use serde::Serialize;
-use serde_json::Value;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::claims::ClaimSet;
 use crate::hash::Hash;
 use crate::journal::{Event, Journal, JournalError};
 use crate::repo::{Repo, RepoError};
+use serde::Serialize;
+use serde_json::Value;
 pub(crate) mod attestation_event;
 mod auth_event;
+mod checkout_event;
 mod checkpoint_event;
 mod claim_signature_event;
 mod deny_event;
@@ -425,6 +424,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
             "auth" => auth_event::check_auth(event, &mut issues, &mut warnings),
             "deny" => deny_event::check_deny(event, &mut issues, &mut warnings),
             "force" => force_event::check_force(events, event, &mut issues),
+            "checkout" => checkout_event::check_checkout(repo, event, &mut issues),
             "accept" => {
                 let Some(receipt) = parse_hash(event.payload.get("receipt")) else {
                     push_issue(

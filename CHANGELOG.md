@@ -9,7 +9,11 @@
 - 显式 `--force` 的审计事件 `trit-force-v1`：`publish --force` 非快进改写与 `pull --force`
   （本地/HTTP 客户端）成功应用后追加 `force` 事件，记录 action/transport/side/name/op_id/commit/
   previous/reason 与前后状态；审计要求同 op_id/side 的成功 `trit-sync-v1` 事件带 `forced=true`，
-  publish 的 previous 还必须与该同步事件一致。`checkout --force` 只覆盖工作树，仍未独立记账。
+  publish 的 previous 还必须与该同步事件一致。
+- `checkout --force` 独立审计事件 `trit-checkout-v1`：强制检出实际放行未提交改动时追加
+  `checkout` 事件，记录目标提交、前缀、被放行条数/前 8 条路径/完整集合摘要、写入/跳过数与前后状态；
+  审计要求 `force=true`、`dirty>0`、脏样本不超限且 `state_before`/`state_after` 相等（检出只改工作树）。
+  普通 `checkout` 与 `sparse` 仍只改工作树、不进入 `state_digest` 对账。
 - MCP `log` 新增 `all` 参数：`all=true` 走 `Repo::query_all` / `log_all`，可看到 merge 的侧分支；
   默认仍只走第一父链，保持原有输出与 token 预算。
 - 中央仓本地 `publish` 的缺父闭包改走全部父图：`bundle::missing_ancestors` 用显式栈逐父补齐并去重，
