@@ -76,3 +76,31 @@ pub(super) fn record_pull_in_repo(
         }),
     );
 }
+
+/// 视图请求的入口拒绝：坏 ref 名/坏的 pin 查询同样要留账，不能只在响应里报 400。
+pub(super) fn record_view_rejected(
+    state: &Arc<State>,
+    request: &Request,
+    name: Option<&str>,
+    status: u16,
+    reason: &str,
+    message: &str,
+) {
+    let Ok(mut repo) = state.repo.lock() else {
+        return;
+    };
+    repo.record_deny(
+        "view",
+        reason,
+        message,
+        serde_json::json!({
+            "ref": name,
+            "method": request.method,
+            "path": request.path,
+            "request_id": request.request_id,
+            "op_id": request.valid_op_id(),
+            "actor": request.actor,
+            "status": status,
+        }),
+    );
+}

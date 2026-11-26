@@ -170,6 +170,42 @@ fn serve_publish_pull_end_to_end() {
         "发布要报告结果：{}",
         stdout(&published)
     );
+    // 1b) 只读 view 必须能对上刚落的 pin，且不因查询本身改工作树或再落 pin。
+    let viewed = run(
+        &src,
+        &[
+            "view",
+            "main",
+            "--remote",
+            &server.base,
+            "--token-file",
+            token_file.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(viewed.status.success(), "{}", stderr(&viewed));
+    let view: serde_json::Value = serde_json::from_str(&stdout(&viewed)).unwrap();
+    assert_eq!(view["ok"], true);
+    let status = view["pin_status"].as_str().unwrap_or_default();
+    assert!(
+        matches!(status, "advanced" | "unchanged"),
+        "只读 view 自己的 auth 事件会让高度前进，但绝不该回滚：{status}"
+    );
+    let pinned_height = view["pin_before"]["height"].as_u64().unwrap_or(0);
+    assert!(pinned_height > 0, "发布后应已有 pin：{view}");
+    if status == "advanced" {
+        assert!(
+            view["view"]["height"].as_u64().unwrap_or(0) > pinned_height,
+            "advanced 必须真的更高：{view}"
+        );
+    }
+    let log = run(&src, &["log", "--json"]);
+    assert!(log.status.success(), "{}", stderr(&log));
+    let rows: serde_json::Value = serde_json::from_str(&stdout(&log)).unwrap();
+    assert_eq!(
+        view["view"]["tip"], rows[0]["id"],
+        "view 的 ref tip 必须指向刚发布的提交"
+    );
 
     // 2) 另一个侧从零拉全量：文件落盘、HEAD 与索引一起落，status 立刻干净。
     let client = root.join("client");

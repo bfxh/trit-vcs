@@ -228,6 +228,17 @@
   台账只防改薄）、`scripts/repo_triage.py` PR 分诊台、CI 并发取消 + 变异门按面并行。
   自测 28/28 与 22/22；两道新门登记 17 条变异，复跑全抓。
 
+- 跨机视图固定 v0：服务端新增只读 `GET /v1/view?ref=NAME`，返回当前 journal 高度/头/Merkle 根与
+  ref tip；客户端带 `from_height`/`from_root` 时可附旧前缀→新前缀的 consistency proof。成功 HTTP
+  publish/pull 把视图写进 `trit-sync-v1` 的 `view`（含 `pin_before`/`pin_status`），pin 从本地 journal
+  最近一条同 `(remote, ref)` 事件派生，不另放可变文件。下一次同步先验 pin：服务端更短报
+  `remote_rollback`，同高换根/换头报 `remote_equivocation`，历史变长但证明缺失/复算不过也报
+  `remote_equivocation`；预检失败在发 publish / 收对象前中止并落本地 `deny`。新增 `trit-vcs view`
+  只读对账（`--json`），publish/pull 支持显式降级 `--no-pin`（只记 `remote`、不记视图）。审计新增
+  `sync_view_bad`/`sync_view_rollback`，拒绝视图出现在中央/本地事件、`view.tip` 与 `commit` 不一致、
+  非法 `remote`、同 remote/ref 高度倒退或同高换根。该 pin 只覆盖单客户端见过的历史，跨客户端分裂
+  视图仍需签名检查点/gossip/共享锚（未做）。
+
 ### Changed
 - `CI` 的改动分级只在 PR 上执行；`push → main` 不再拿没有 PR 标签的事件重新判 L3，避免已人工批准的契约改动在合并后被重复判红。
 - `trit-core` / `trit-orch` 的 git pin 从拆库提交 `2400fb9d` 显式抬到 `79542df8`（改 pin 单独一笔，不跟 main 漂）。

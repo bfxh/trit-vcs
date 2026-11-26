@@ -29,6 +29,7 @@ mod deny;
 mod pull;
 mod reject;
 mod request;
+mod view;
 
 use self::reject::{drain_body, reject_json};
 use self::request::{Request, read_request};
@@ -76,6 +77,8 @@ pub enum NetError {
     Wire(String),
     #[error("响应头不完整或超过上限")]
     BadResponse,
+    #[error("视图响应不合法：{0}")]
+    BadView(String),
     #[error("连接数已满（上限 {0}）")]
     Busy(usize),
 }
@@ -100,6 +103,7 @@ impl NetError {
             | NetError::BadToken(_)
             | NetError::BadActor(_)
             | NetError::BadOpId
+            | NetError::BadView(_)
             | NetError::Wire(_)
             | NetError::BadResponse => 400,
             _ => 500,
@@ -116,6 +120,7 @@ impl NetError {
             NetError::BadToken(_) => "bad_token",
             NetError::BadActor(_) => "bad_actor",
             NetError::BadOpId => "bad_op_id",
+            NetError::BadView(_) => "bad_view",
             NetError::BadBind(_) => "bad_bind",
             NetError::Repo(_) => "server_repo",
             NetError::NotHttp(_) | NetError::MissingPort(_) => "bad_remote_url",
@@ -406,6 +411,7 @@ fn handle_conn(stream: TcpStream, state: &Arc<State>) -> Result<(), NetError> {
         }
         ("POST", "/v1/publish") => publish(&mut reader, &request, state),
         ("GET", "/v1/pull") => pull::handle(reader.get_mut(), &request, state),
+        ("GET", "/v1/view") => view::handle(reader.get_mut(), &request, state),
         _ => respond_json(
             reader.get_mut(),
             404,
@@ -697,7 +703,7 @@ fn respond_remote(
 // ---- 客户端 ----
 
 mod client;
-pub use client::{Client, PullReply};
+pub use client::{Client, PullReply, ViewReply};
 
 // ---- 客户端共用的 URL 助手 ----
 

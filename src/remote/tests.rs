@@ -8,15 +8,15 @@ use crate::gate::ClaimSpec;
 use crate::net::{Config, Server};
 use crate::repo::CommitRequest;
 
-const TOKEN: &str = "0123456789abcdef";
+pub(super) const TOKEN: &str = "0123456789abcdef";
 
-fn temp(name: &str) -> std::path::PathBuf {
+pub(super) fn temp(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("trit-vcs-remote-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     dir
 }
 
-fn commit_all(repo: &mut Repo, files: &BTreeMap<String, Vec<u8>>, now: u64) -> Hash {
+pub(super) fn commit_all(repo: &mut Repo, files: &BTreeMap<String, Vec<u8>>, now: u64) -> Hash {
     repo.stage(files, now).unwrap();
     repo.commit(CommitRequest {
         message: format!("c{now}"),
@@ -36,7 +36,11 @@ fn commit_all(repo: &mut Repo, files: &BTreeMap<String, Vec<u8>>, now: u64) -> H
 }
 
 fn start(root: &std::path::Path) -> Server {
-    let mut config = Config::new(root.join("central"), "127.0.0.1:0", TOKEN);
+    start_on(root, "127.0.0.1:0")
+}
+
+pub(super) fn start_on(root: &std::path::Path, addr: &str) -> Server {
+    let mut config = Config::new(root.join("central"), addr, TOKEN);
     config.actor = Some("qoder:ci".to_string());
     config.read_timeout = Duration::from_secs(20);
     config.max_body = 64 * 1024 * 1024;
@@ -88,7 +92,7 @@ fn assert_sync(
     assert!(crate::hash::Hash::from_hex(event.payload["state_after"].as_str().unwrap()).is_some());
 }
 
-fn assert_audit_clean(repo: &Repo) {
+pub(super) fn assert_audit_clean(repo: &Repo) {
     let report = crate::audit::status(repo).unwrap();
     assert!(report.ok, "{}: {:#?}", repo.root().display(), report.issues);
 }
@@ -293,6 +297,8 @@ fn pull_refuses_missing_commit_evidence_before_materializing() {
         false,
         "main",
         &Hash::of(b"op").to_hex(),
+        "http://test",
+        None,
     )
     .unwrap_err();
     assert!(matches!(err, RemoteError::HistoryGap(_)), "{err}");
@@ -549,16 +555,21 @@ fn wrong_token_and_non_fast_forward_are_loud() {
         "{err}"
     );
     let central = Repo::open(root.join("central")).unwrap();
-    let auth = central
+    let denied: Vec<_> = central
         .journal()
         .events()
         .iter()
-        .find(|event| event.kind == "auth" && event.payload["decision"].as_str() == Some("denied"))
-        .expect("错的 token 必须留下 auth 事件");
+        .filter(|event| {
+            event.kind == "auth" && event.payload["decision"].as_str() == Some("denied")
+        })
+        .collect();
+    // 已有 pin 时先做只读 view 预检；token 错就在发 publish 之前被挡住，只留一条 GET 拒绝。
+    assert_eq!(denied.len(), 1, "预检失败不应再发 publish");
+    let auth = denied[0];
     assert_eq!(auth.payload["decision"], "denied");
     assert_eq!(auth.payload["reason"], "bad_token");
-    assert_eq!(auth.payload["method"], "POST");
-    assert_eq!(auth.payload["path"], "/v1/publish");
+    assert_eq!(auth.payload["method"], "GET");
+    assert_eq!(auth.payload["path"], "/v1/view");
     assert_eq!(
         auth.payload["state_before"], auth.payload["state_after"],
         "鉴权失败不改仓库状态"
@@ -637,11 +648,32 @@ fn state_lock_blocks_publish_and_pull() {
         .unwrap();
     let guard = crate::claims::lock(client.root()).unwrap();
     assert!(matches!(
-        apply_pull(&mut client, &reply, Some("gen/d00"), false, "main", &op_id),
+        apply_pull(
+            &mut client,
+            &reply,
+            Some("gen/d00"),
+            false,
+            "main",
+            &op_id,
+            "http://test",
+            None
+        ),
         Err(RemoteError::Repo(RepoError::StateLocked(_)))
     ));
     drop(guard);
-    assert!(apply_pull(&mut client, &reply, Some("gen/d00"), false, "main", &op_id).is_ok());
+    assert!(
+        apply_pull(
+            &mut client,
+            &reply,
+            Some("gen/d00"),
+            false,
+            "main",
+            &op_id,
+            "http://test",
+            None
+        )
+        .is_ok()
+    );
     server.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }

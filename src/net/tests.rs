@@ -103,9 +103,13 @@ fn response_request_id(response: &str) -> String {
 }
 
 fn raw_get(addr: SocketAddr, token: &str) -> String {
+    raw_get_path(addr, token, "/v1/health")
+}
+
+fn raw_get_path(addr: SocketAddr, token: &str, target: &str) -> String {
     let mut stream = TcpStream::connect(addr).unwrap();
     let head = format!(
-        "GET /v1/health HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer {token}\r\n\
+        "GET {target} HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer {token}\r\n\
          x-trit-actor: attacker\r\nconnection: close\r\n\r\n"
     );
     stream.write_all(head.as_bytes()).unwrap();
@@ -323,5 +327,40 @@ fn clients_reject_missing_or_mismatched_correlation_headers() {
         ));
         join.join().unwrap();
     }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn view_endpoint_is_json_and_bad_ref_is_denied() {
+    let root = std::env::temp_dir().join(format!(
+        "trit-vcs-net-view-{}-{}",
+        std::process::id(),
+        auth::request_id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut config = Config::new(root.join("central"), "127.0.0.1:0", "0123456789abcdef");
+    config.actor = Some("qoder:ci".to_string());
+    let server = Server::start(config).unwrap();
+    let good = raw_get_path(server.addr(), "0123456789abcdef", "/v1/view?ref=main");
+    assert!(good.starts_with("HTTP/1.1 200"), "{good}");
+    assert!(good.contains("trit-view-v1"), "{good}");
+    assert_eq!(response_request_id(&good).len(), 64);
+
+    let bad = raw_get_path(server.addr(), "0123456789abcdef", "/v1/view?ref=bad%2Fname");
+    assert!(bad.starts_with("HTTP/1.1 400"), "{bad}");
+    let central = crate::repo::Repo::open(root.join("central")).unwrap();
+    let deny = central
+        .journal()
+        .events()
+        .iter()
+        .find(|event| {
+            event.kind == "deny"
+                && event.payload["action"] == "view"
+                && event.payload["reason"] == "bad_ref"
+        })
+        .expect("坏 ref 的 view 必须落 deny");
+    assert_eq!(deny.payload["detail"]["status"], 400);
+    assert_eq!(deny.payload["state_before"], deny.payload["state_after"]);
+    server.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }

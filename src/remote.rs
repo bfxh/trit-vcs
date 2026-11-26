@@ -16,6 +16,7 @@ use crate::remediation::{Context, Remediable};
 use crate::repo::{Repo, RepoError};
 use crate::store::{Store, StoreError};
 use crate::sync;
+use crate::view::{self, Pin, PinStatus, Snapshot, ViewError};
 use crate::wire::{self, WireError};
 use crate::worktree::{self, WorktreeError};
 
@@ -42,6 +43,10 @@ pub enum RemoteError {
     HistoryGap(String),
     #[error("树不完整：{0}")]
     TreeIncomplete(String),
+    #[error("跨机视图：{0}")]
+    View(#[from] ViewError),
+    #[error("服务端视图与同步回执不一致：{0}")]
+    ViewMismatch(String),
 }
 
 impl RemoteError {
@@ -56,6 +61,8 @@ impl RemoteError {
             RemoteError::TipMissing(_)
             | RemoteError::HistoryGap(_)
             | RemoteError::TreeIncomplete(_)
+            | RemoteError::View(_)
+            | RemoteError::ViewMismatch(_)
             | RemoteError::Repo(RepoError::UnknownCommit(_)) => 409,
             RemoteError::Repo(RepoError::Store(StoreError::Missing(_))) => 404,
             RemoteError::Store(StoreError::Missing(_)) => 404,
@@ -74,6 +81,8 @@ impl RemoteError {
             RemoteError::TipMissing(_) => "tip_missing",
             RemoteError::HistoryGap(_) => "history_gap",
             RemoteError::TreeIncomplete(_) => "tree_incomplete",
+            RemoteError::View(inner) => inner.kind(),
+            RemoteError::ViewMismatch(_) => "remote_view_mismatch",
         }
     }
 }
@@ -86,6 +95,8 @@ pub struct PublishStats {
     pub bytes: u64,
     pub op_id: String,
     pub request_id: String,
+    pub view: Option<Snapshot>,
+    pub pin_status: Option<PinStatus>,
 }
 
 /// 拉取读数：服务端声明与实际收到的对象、物化结果。
@@ -97,6 +108,8 @@ pub struct PullStats {
     pub objects: usize,
     pub op_id: String,
     pub request_id: String,
+    pub view: Option<Snapshot>,
+    pub pin_status: Option<PinStatus>,
 }
 
 impl Remediable for RemoteError {
@@ -139,6 +152,12 @@ impl Remediable for RemoteError {
                     "重跑一次 publish（对象流会补齐缺的块）；或先 `trit-vcs verify --repo {repo}`"
                 ),
             ],
+            RemoteError::View(inner) => inner.commands(),
+            RemoteError::ViewMismatch(detail) => vec![
+                detail.to_string(),
+                "不要改写工作树；先 `trit-vcs view <ref> --remote http://… --token-file <文件> --json` 对服务端视图".to_string(),
+                "如果服务端刚换过 ref，重跑一次 pull；仍然不一致就按回滚/分裂视图处理".to_string(),
+            ],
         }
     }
 }
@@ -151,6 +170,18 @@ pub fn publish_to(
     name: &str,
     commit: Option<&Hash>,
 ) -> Result<PublishStats, RemoteError> {
+    publish_to_with(remote, token, repo, name, commit, true)
+}
+
+/// `pin=false` 只用于明确的兼容降级：不读/不写视图，也就不检测服务端回滚与改写。
+pub fn publish_to_with(
+    remote: &str,
+    token: &str,
+    repo: &mut Repo,
+    name: &str,
+    commit: Option<&Hash>,
+    pin_enabled: bool,
+) -> Result<PublishStats, RemoteError> {
     Repo::validate_ref(name)?;
     let tip = match commit {
         Some(id) => *id,
@@ -160,7 +191,51 @@ pub fn publish_to(
     let bytes = body.byte_len(repo.store())?;
     let op_id = sync::new_op_id();
     let client = Client::new(remote, token)?;
+    let remote_base = client.base().to_string();
+    let pinned = if pin_enabled {
+        match precheck_pin(&client, repo, name) {
+            Ok(pin) => pin,
+            Err(err) => {
+                repo.record_deny(
+                    "publish",
+                    err.kind(),
+                    &err.to_string(),
+                    serde_json::json!({
+                        "ref": name,
+                        "commit": tip.to_hex(),
+                        "op_id": op_id,
+                        "remote": remote_base,
+                    }),
+                );
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
     let reply = client.publish(name, &tip, &body, repo.store(), &op_id)?;
+    let (snapshot, pin_status) = if pin_enabled {
+        match finish_view(&client, name, &pinned, tip) {
+            Ok((view, status)) => (Some(view), Some(status)),
+            Err(err) => {
+                repo.record_deny(
+                    "publish",
+                    err.kind(),
+                    &err.to_string(),
+                    serde_json::json!({
+                        "ref": name,
+                        "commit": tip.to_hex(),
+                        "request_id": reply.request_id,
+                        "op_id": op_id,
+                        "remote": remote_base,
+                    }),
+                );
+                return Err(err);
+            }
+        }
+    } else {
+        (None, None)
+    };
     sync::append(
         repo,
         &sync::SyncSuccess {
@@ -173,7 +248,14 @@ pub fn publish_to(
             name,
             commit: tip,
             stage: "recorded",
-            detail: serde_json::json!({"objects": body.count(), "bytes": bytes}),
+            detail: serde_json::json!({
+                "objects": body.count(),
+                "bytes": bytes,
+                "remote": remote_base,
+                "view": snapshot.as_ref().map(|view| {
+                    crate::view::evidence_json(view, pinned.as_ref(), pin_status.unwrap_or(PinStatus::First))
+                }),
+            }),
         },
         sync::now_ms(),
     )?;
@@ -183,7 +265,42 @@ pub fn publish_to(
         bytes,
         op_id,
         request_id: reply.request_id,
+        view: snapshot,
+        pin_status,
     })
+}
+
+/// 联网前先验本地 pin：服务端如果已经回滚/换链，连对象都不要发、不要收。
+fn precheck_pin(client: &Client, repo: &Repo, name: &str) -> Result<Option<Pin>, RemoteError> {
+    let Some(pin) = view::latest_pin(repo, client.base(), name)? else {
+        return Ok(None);
+    };
+    let reply = client.view(name, Some((pin.height, pin.root)))?;
+    view::verify_pin(Some(&pin), &reply.snapshot, reply.consistency.as_ref())?;
+    Ok(Some(pin))
+}
+
+/// 同步成功后取服务端视图：证明这次仍扩展了上一次 pin，并核对 ref tip 与回执一致。
+fn finish_view(
+    client: &Client,
+    name: &str,
+    pin: &Option<Pin>,
+    expected_tip: Hash,
+) -> Result<(Snapshot, PinStatus), RemoteError> {
+    let reply = client.view(name, pin.as_ref().map(|pin| (pin.height, pin.root)))?;
+    let status = view::verify_pin(pin.as_ref(), &reply.snapshot, reply.consistency.as_ref())?;
+    if reply.snapshot.tip != Some(expected_tip) {
+        return Err(RemoteError::ViewMismatch(format!(
+            "服务端视图的 ref {name} 指向 {:?}，同步回执是 {}",
+            reply
+                .snapshot
+                .tip
+                .map(|id| id.short())
+                .unwrap_or_else(|| "-".to_string()),
+            expected_tip.short()
+        )));
+    }
+    Ok((reply.snapshot, status))
 }
 
 /// 发布要发的对象：提交闭包（tip 的树/文件映射/块）+ 第一父链的提交对象（去重）。
@@ -358,6 +475,19 @@ pub fn pull_from(
     prefix: Option<&str>,
     force: bool,
 ) -> Result<PullStats, RemoteError> {
+    pull_from_with(remote, token, repo, name, prefix, force, true)
+}
+
+/// `pin=false` 只用于明确的兼容降级：不读/不写视图，也就不检测服务端回滚与改写。
+pub fn pull_from_with(
+    remote: &str,
+    token: &str,
+    repo: &mut Repo,
+    name: &str,
+    prefix: Option<&str>,
+    force: bool,
+    pin_enabled: bool,
+) -> Result<PullStats, RemoteError> {
     // 全量 pull 会覆盖工作树；在发请求、收对象之前就把脏工作树挡住。
     // 否则拒绝虽然会记账，但对象库里已经多出一批不可达对象，写前约束就漏了。
     if prefix.is_none() && !force {
@@ -376,8 +506,69 @@ pub fn pull_from(
     }
     let op_id = sync::new_op_id();
     let client = Client::new(remote, token)?;
+    let remote_base = client.base().to_string();
+    let pinned = if pin_enabled {
+        match precheck_pin(&client, repo, name) {
+            Ok(pin) => pin,
+            Err(err) => {
+                repo.record_deny(
+                    "pull",
+                    err.kind(),
+                    &err.to_string(),
+                    serde_json::json!({
+                        "ref": name,
+                        "prefix": prefix,
+                        "op_id": op_id,
+                        "remote": remote_base,
+                    }),
+                );
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
     let reply = client.pull(name, prefix, repo.store(), Limits::default(), &op_id)?;
-    let result = apply_pull(repo, &reply, prefix, force, name, &op_id);
+    let (snapshot, pin_status) = if pin_enabled {
+        match finish_view(&client, name, &pinned, reply.tip) {
+            Ok((view, status)) => (Some(view), Some(status)),
+            Err(err) => {
+                repo.record_deny(
+                    "pull",
+                    err.kind(),
+                    &err.to_string(),
+                    serde_json::json!({
+                        "ref": name,
+                        "prefix": prefix,
+                        "tip": reply.tip.to_hex(),
+                        "request_id": reply.request_id,
+                        "op_id": op_id,
+                        "remote": remote_base,
+                    }),
+                );
+                return Err(err);
+            }
+        }
+    } else {
+        (None, None)
+    };
+    let view_evidence = snapshot.as_ref().map(|view| {
+        view::evidence_json(
+            view,
+            pinned.as_ref(),
+            pin_status.unwrap_or(PinStatus::First),
+        )
+    });
+    let result = apply_pull(
+        repo,
+        &reply,
+        prefix,
+        force,
+        name,
+        &op_id,
+        &remote_base,
+        view_evidence,
+    );
     if let Err(err) = &result {
         repo.record_deny(
             "pull",
@@ -392,9 +583,13 @@ pub fn pull_from(
             }),
         );
     }
-    result
+    let mut stats = result?;
+    stats.view = snapshot;
+    stats.pin_status = pin_status;
+    Ok(stats)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_pull(
     repo: &mut Repo,
     reply: &PullReply,
@@ -402,6 +597,8 @@ fn apply_pull(
     force: bool,
     name: &str,
     op_id: &str,
+    remote: &str,
+    view_evidence: Option<serde_json::Value>,
 ) -> Result<PullStats, RemoteError> {
     if !repo.store().has_chunk(&reply.tip) {
         return Err(RemoteError::TipMissing(reply.tip.to_hex()));
@@ -465,6 +662,8 @@ fn apply_pull(
                 "forced": force,
                 "written": stats.written,
                 "skipped": stats.skipped,
+                "remote": remote,
+                "view": view_evidence,
             }),
         },
         state_before,
@@ -477,6 +676,7 @@ fn apply_pull(
         objects: reply.objects,
         op_id: op_id.to_string(),
         request_id: reply.request_id.clone(),
+        ..Default::default()
     })
 }
 
@@ -530,3 +730,5 @@ pub fn ensure_tree_present(store: &Store, tree: &Hash) -> Result<(), RemoteError
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod view_tests;
