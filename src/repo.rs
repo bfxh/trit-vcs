@@ -657,6 +657,15 @@ impl Repo {
             .collect())
     }
 
+    /// 按标签/证据/会话/说明过滤全部父图可达的提交（新→旧）。
+    pub fn query_all(&self, filter: &CommitFilter) -> Result<Vec<(Hash, Commit)>, RepoError> {
+        Ok(self
+            .log_all()?
+            .into_iter()
+            .filter(|(_, commit)| filter.matches(commit))
+            .collect())
+    }
+
     /// 两个提交的最近公共祖先（走全部父，不只看第一父链）。
     pub fn merge_base(&self, a: &Hash, b: &Hash) -> Result<Option<Hash>, RepoError> {
         let ancestors: std::collections::HashSet<Hash> =
