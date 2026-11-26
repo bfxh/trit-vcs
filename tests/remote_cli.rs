@@ -5,6 +5,16 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+/// 这两条测试都会起真实 `serve` 子进程；Windows runner 上并行起两个监听者会互相干扰
+/// （复现为其中一条在首个 publish 时 connection refused），所以进程级网络用例串行跑。
+fn serial() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_trit-vcs")
@@ -50,21 +60,33 @@ impl Drop for ServerProc {
 }
 
 fn serve(root: &Path, token_file: &Path) -> ServerProc {
+    serve_inner(root, token_file, None)
+}
+
+fn serve_keyed(root: &Path, token_file: &Path, key: &Path) -> ServerProc {
+    serve_inner(root, token_file, Some(key))
+}
+
+fn serve_inner(root: &Path, token_file: &Path, view_key: Option<&Path>) -> ServerProc {
     let token = token_file.to_string_lossy().to_string();
-    let mut child = Command::new(bin())
-        .args([
-            "serve",
-            "--dir",
-            &root.join("central").to_string_lossy(),
-            "--bind",
-            "127.0.0.1:0",
-            "--actor",
-            "qoder:remote-cli",
-            "--token-file",
-            &token,
-            "--read-timeout",
-            "20",
-        ])
+    let mut command = Command::new(bin());
+    command.args([
+        "serve",
+        "--dir",
+        &root.join("central").to_string_lossy(),
+        "--bind",
+        "127.0.0.1:0",
+        "--actor",
+        "qoder:remote-cli",
+        "--token-file",
+        &token,
+        "--read-timeout",
+        "20",
+    ]);
+    if let Some(key) = view_key {
+        command.arg("--view-key").arg(key);
+    }
+    let mut child = command
         .current_dir(root)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -132,6 +154,7 @@ fn commit(dir: &Path, message: &str, files: &[(&str, &str)]) {
 
 #[test]
 fn serve_publish_pull_end_to_end() {
+    let _serial = serial();
     let root = temp("flow");
     let token_file = root.join("token.txt");
     fs::write(&token_file, format!("{TOKEN}\n")).unwrap();
@@ -385,6 +408,81 @@ fn serve_publish_pull_end_to_end() {
         .map(|event| event["payload"]["request_id"].as_str().unwrap())
         .collect();
     assert_eq!(request_ids.len(), allowed.len(), "request id 不得复用");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn view_reports_and_checks_server_signer() {
+    let _serial = serial();
+    let root = temp("view-signer");
+    let token_file = root.join("token.txt");
+    fs::write(&token_file, format!("{TOKEN}\n")).unwrap();
+    let key_path = root.join("view-key.json");
+    let keyed = run(
+        &root,
+        &["key", "init", "--out", key_path.to_str().unwrap(), "--json"],
+    );
+    assert!(keyed.status.success(), "{}", stderr(&keyed));
+    let key: serde_json::Value = serde_json::from_str(&stdout(&keyed)).unwrap();
+    let key_id = key["key_id"].as_str().unwrap();
+
+    let src = root.join("src");
+    init(&src);
+    commit(&src, "first", &[("a.txt", "a\n")]);
+    let central = root.join("central");
+    fs::create_dir_all(&central).unwrap();
+    let server = serve_keyed(&root, &token_file, &key_path);
+    let published = run(
+        &src,
+        &[
+            "publish",
+            "main",
+            "--remote",
+            &server.base,
+            "--token-file",
+            token_file.to_str().unwrap(),
+        ],
+    );
+    assert!(published.status.success(), "{}", stderr(&published));
+
+    let viewed = run(
+        &src,
+        &[
+            "view",
+            "main",
+            "--remote",
+            &server.base,
+            "--token-file",
+            token_file.to_str().unwrap(),
+            "--expect-view-key",
+            key_id,
+            "--json",
+        ],
+    );
+    assert!(viewed.status.success(), "{}", stderr(&viewed));
+    let payload: serde_json::Value = serde_json::from_str(&stdout(&viewed)).unwrap();
+    assert_eq!(payload["signature"]["key_id"], key_id, "{payload}");
+
+    let wrong = run(
+        &src,
+        &[
+            "view",
+            "main",
+            "--remote",
+            &server.base,
+            "--token-file",
+            token_file.to_str().unwrap(),
+            "--expect-view-key",
+            "ed25519:0000000000000000",
+        ],
+    );
+    assert!(!wrong.status.success(), "不匹配的指纹必须拒绝");
+    assert!(
+        stderr(&wrong).contains("不是 --expect-view-key 要求"),
+        "{:?}",
+        stderr(&wrong)
+    );
 
     let _ = fs::remove_dir_all(&root);
 }

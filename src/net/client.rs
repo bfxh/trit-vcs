@@ -141,9 +141,22 @@ impl Client {
                 .map_err(|err| NetError::BadView(format!("一致性证明解不开：{err}")))?,
             ),
         };
+        let signature = match value.get("signature") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(raw) => Some(
+                crate::view::ViewSignature::from_json(raw)
+                    .map_err(|err| NetError::BadView(err.to_string()))?,
+            ),
+        };
+        if let Some(signature) = &signature {
+            signature
+                .verify(name, &snapshot)
+                .map_err(|err| NetError::BadView(err.to_string()))?;
+        }
         Ok(ViewReply {
             snapshot,
             consistency,
+            signature,
             request_id,
         })
     }
@@ -303,6 +316,7 @@ pub struct PublishReply {
 pub struct ViewReply {
     pub snapshot: crate::view::Snapshot,
     pub consistency: Option<crate::checkpoint::consistency::ConsistencyProof>,
+    pub signature: Option<crate::view::ViewSignature>,
     pub request_id: String,
 }
 

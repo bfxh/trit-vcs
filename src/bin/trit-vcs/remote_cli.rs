@@ -54,6 +54,9 @@ pub(crate) fn serve_cmd(args: &[String]) -> ExitCode {
     if let Some(actor) = flag(args, "--actor") {
         config.actor = Some(actor.to_string());
     }
+    if let Some(path) = flag(args, "--view-key") {
+        config.view_key_path = Some(PathBuf::from(path));
+    }
     if let Some(raw) = flag(args, "--max-body-mb") {
         match raw.parse::<u64>() {
             Ok(mb) if mb > 0 => config.max_body = mb * 1024 * 1024,
@@ -149,6 +152,10 @@ pub(crate) fn remote_publish(args: &[String], name: &str) -> ExitCode {
                         .map(|status| status.as_str())
                         .unwrap_or("unknown")
                 );
+                match &stats.view_signer {
+                    Some(signer) => println!("  视图签名：{signer}"),
+                    None => println!("  视图没有签名（服务端未配置 --view-key）"),
+                }
             }
             ExitCode::SUCCESS
         }
@@ -203,6 +210,10 @@ pub(crate) fn remote_pull(args: &[String], name: &str) -> ExitCode {
                         .map(|status| status.as_str())
                         .unwrap_or("unknown")
                 );
+                match &stats.view_signer {
+                    Some(signer) => println!("  视图签名：{signer}"),
+                    None => println!("  视图没有签名（服务端未配置 --view-key）"),
+                }
             }
             if prefix.is_none() {
                 println!("  HEAD 与索引已落到该提交（status 从这里开始算）。");
@@ -217,7 +228,10 @@ pub(crate) fn remote_pull(args: &[String], name: &str) -> ExitCode {
 
 /// `view`：只读服务端视图，并与本地 pin 对账；不改工作树、不更新 pin。
 pub(crate) fn view_cmd(args: &[String]) -> ExitCode {
-    let ids = positionals(args, &["--repo", "--remote", "--token-file"]);
+    let ids = positionals(
+        args,
+        &["--repo", "--remote", "--token-file", "--expect-view-key"],
+    );
     let Some(name) = ids.first() else {
         eprintln!(
             "view 需要 ref 名：trit-vcs view main --remote http://host:port --token-file FILE"
@@ -248,8 +262,32 @@ pub(crate) fn view_cmd(args: &[String]) -> ExitCode {
         Ok(reply) => reply,
         Err(err) => return fail_err(&RemoteError::from(err), repo.root(), "", args),
     };
-    let status = match view::verify_pin(pin.as_ref(), &reply.snapshot, reply.consistency.as_ref()) {
-        Ok(status) => status,
+    let status = match view::verify_view_signature(
+        pin.as_ref(),
+        name,
+        &reply.snapshot,
+        reply.signature.as_ref(),
+    ) {
+        Ok(()) => match view::verify_pin(pin.as_ref(), &reply.snapshot, reply.consistency.as_ref())
+        {
+            Ok(status) => status,
+            Err(err) => {
+                if has(args, "--json") {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "ok": false,
+                            "kind": err.kind(),
+                            "message": err.to_string(),
+                            "pin": pin.as_ref().map(view::Pin::to_json),
+                            "view": reply.snapshot.to_json(),
+                            "signature": reply.signature.as_ref().map(view::ViewSignature::to_json),
+                        })
+                    );
+                }
+                return fail_err(&RemoteError::from(err), repo.root(), "", args);
+            }
+        },
         Err(err) => {
             if has(args, "--json") {
                 println!(
@@ -260,12 +298,22 @@ pub(crate) fn view_cmd(args: &[String]) -> ExitCode {
                         "message": err.to_string(),
                         "pin": pin.as_ref().map(view::Pin::to_json),
                         "view": reply.snapshot.to_json(),
+                        "signature": reply.signature.as_ref().map(view::ViewSignature::to_json),
                     })
                 );
             }
             return fail_err(&RemoteError::from(err), repo.root(), "", args);
         }
     };
+    if let Some(expected) = flag(args, "--expect-view-key") {
+        let actual = reply.signature.as_ref().map(|sig| sig.key_id.as_str());
+        if actual != Some(expected) {
+            return fail(format!(
+                "服务端视图签名者是 {:?}，不是 --expect-view-key 要求 {expected}",
+                actual.unwrap_or("未签名")
+            ));
+        }
+    }
     if has(args, "--json") {
         println!(
             "{}",
@@ -275,6 +323,7 @@ pub(crate) fn view_cmd(args: &[String]) -> ExitCode {
                 "ref": name,
                 "view": reply.snapshot.to_json(),
                 "pin_before": pin.as_ref().map(view::Pin::to_json),
+                "signature": reply.signature.as_ref().map(view::ViewSignature::to_json),
                 "pin_status": status.as_str(),
                 "request_id": reply.request_id,
             })
@@ -290,6 +339,10 @@ pub(crate) fn view_cmd(args: &[String]) -> ExitCode {
             reply.snapshot.height,
             reply.snapshot.root.short()
         );
+        match &reply.signature {
+            Some(signature) => println!("  服务端签名：{}", signature.key_id),
+            None => println!("  服务端没有签名：只能按单客户端 pin 对账，不能证明签名者身份"),
+        }
         match &pin {
             Some(pin) => println!(
                 "  本地 pin：{} 条事件，根 {}；对账 {}",

@@ -3499,5 +3499,45 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: 视图签名不复验（自证签名形同虚设）",
+  "file": "src/view.rs",
+  "old": "        verify_signature(\n            &self.public_key,\n            &self.signature,\n            &signing_message(name, snapshot),\n        )\n        .map_err(|err| ViewError::Bad(format!(\"视图签名不通过：{err}\")))",
+  "new": "        let _ = (name, snapshot);\n        Ok(())",
+  "filter": "signed_view_roundtrips_and_rejects_tampering",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 已签名 pin 换钥也放行（签名者连续性不查）",
+  "file": "src/view.rs",
+  "old": "    if signature.public_key != *expected || pin.signer.as_deref() != Some(signature.key_id.as_str())\n    {",
+  "new": "    if signature.public_key.is_empty() && pin.signer.is_none()\n    {",
+  "filter": "pinned_signer_must_not_change_or_disappear",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不验视图签名，坏签名也放行",
+  "file": "src/audit/sync_event.rs",
+  "old": "    if let Some(signature) = &signature\n        && let Err(err) = signature.verify(name, &snapshot)\n    {\n        view_bad(issues, event, &format!(\"view 签名复验失败：{err}\"));\n    }",
+  "new": "    if let Some(signature) = &signature {\n        let _ = signature;\n    }",
+  "filter": "valid_client_view_evidence_passes",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 视图签名 key_id 不核对公钥指纹",
+  "file": "src/view.rs",
+  "old": "        if key_id != public_key_id(&public) {",
+  "new": "        if key_id.is_empty() && key_id != public_key_id(&public) {",
+  "filter": "signed_view_roundtrips_and_rejects_tampering",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]

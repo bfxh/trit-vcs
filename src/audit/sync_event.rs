@@ -184,6 +184,26 @@ fn check_view(
             return;
         }
     };
+    let name = event.payload["name"].as_str().unwrap_or_default();
+    if name.is_empty() {
+        view_bad(issues, event, "带视图的同步缺 ref 名");
+        return;
+    }
+    let signature = match view_value.get("signature") {
+        None | Some(Value::Null) => None,
+        Some(raw) => match crate::view::ViewSignature::from_json(raw) {
+            Ok(signature) => Some(signature),
+            Err(err) => {
+                view_bad(issues, event, &format!("view 签名不合法：{err}"));
+                return;
+            }
+        },
+    };
+    if let Some(signature) = &signature
+        && let Err(err) = signature.verify(name, &snapshot)
+    {
+        view_bad(issues, event, &format!("view 签名复验失败：{err}"));
+    }
     if snapshot.tip != parse_hash(event.payload.get("commit")) {
         view_bad(issues, event, "view.tip 与 commit 不一致");
     }
@@ -215,6 +235,18 @@ fn check_view(
                 view_bad(issues, event, "unchanged 的 pin_before 高度必须与视图相同");
             } else if status == Some("advanced") && pin.height == snapshot.height {
                 view_bad(issues, event, "advanced 的视图必须比 pin_before 长");
+            }
+            if let Some(expected) = &pin.signer_key {
+                match &signature {
+                    None => view_bad(issues, event, "已签名的 pin 本次视图没有签名"),
+                    Some(signature)
+                        if signature.public_key != *expected
+                            || pin.signer.as_deref() != Some(signature.key_id.as_str()) =>
+                    {
+                        view_bad(issues, event, "视图签名者与 pin_before 不一致");
+                    }
+                    Some(_) => {}
+                }
             }
         }
         _ => view_bad(issues, event, "pin_status 不合法"),
@@ -455,8 +487,28 @@ mod tests {
 
     #[test]
     fn valid_client_view_evidence_passes() {
-        let event = view_event(1, 3, "http://127.0.0.1:7878", "op-valid");
+        let key = crate::signing::KeyFile::generate().unwrap();
+        let mut event = view_event(1, 3, "http://127.0.0.1:7878", "op-valid");
+        let snapshot = crate::view::Snapshot::from_evidence(&event.payload["view"]).unwrap();
+        event.payload["view"]["signature"] =
+            crate::view::ViewSignature::sign(&key, "main", &snapshot)
+                .unwrap()
+                .to_json();
         assert!(issues(&[event]).is_empty(), "合法的 pin 证据不该报红");
+
+        let mut tampered = view_event(2, 4, "http://127.0.0.1:7878", "op-tampered");
+        tampered.payload["view"]["signature"] = serde_json::json!({
+            "schema": crate::view::SIG_SCHEMA,
+            "algorithm": "ed25519",
+            "key_id": key.key_id,
+            "public_key": key.public,
+            "signature": "00".repeat(crate::signing::SIGNATURE_LEN),
+        });
+        assert!(
+            issues(&[tampered])
+                .iter()
+                .any(|issue| issue.kind == "sync_view_bad")
+        );
     }
 
     #[test]
