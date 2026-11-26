@@ -380,17 +380,18 @@ fn clients_reject_missing_or_mismatched_correlation_headers() {
     ] {
         let (remote, join) = fake_response(&extra, "{}");
         let client = Client::new(&remote, "0123456789abcdef").unwrap();
-        assert!(matches!(
-            client.publish(
-                "main",
-                &crate::hash::Hash::of(b"tip"),
-                &wire::Body::default(),
-                repo.store(),
-                &op_id
-            ),
-            Err(NetError::BadResponse)
-        ));
+        let publish = client.publish(
+            "main",
+            &crate::hash::Hash::of(b"tip"),
+            &wire::Body::default(),
+            repo.store(),
+            &op_id,
+        );
         join.join().unwrap();
+        assert!(
+            matches!(publish, Err(NetError::BadResponse)),
+            "publish={publish:?}"
+        );
     }
     for extra in [
         format!("x-trit-op-id: {op_id}\r\n"),
