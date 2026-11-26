@@ -304,15 +304,15 @@ trit-vcs sparse --clear     # 清掉索引，退回全量判定
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test                                                     # 21 个集成测试二进制 / 311 条 crate 测试（2026-11-26 实测，含 MSRV 1.88）
-python scripts/mutation_check.py --pkg trit-vcs                    # 349 条登记（视图 pin 9 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / TVAB 20）
+cargo test                                                     # 21 个集成测试二进制 / 312 条 crate 测试（2026-11-26 实测，含 MSRV 1.88）
+python scripts/mutation_check.py --pkg trit-vcs                    # 350 条登记（视图 pin 10 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / TVAB 20）
 python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/change_policy.py --pkg scripts/ci_integrity.py --pkg scripts/docs_hygiene.py --pkg scripts/module_budget.py --pkg scripts/mutation_check.py --pkg scripts/repo_triage.py --pkg scripts/test_surface.py  # 脚本面 111 条
 ```
 
 最后一条在本仓就能跑（`scripts/mutation_check.py` + `scripts/mutants/` 已随拆分一起搬过来，
 路径口径改成新仓根：`src/…`）。门自身的自测面在镜像仓会 SKIP 掉只对单体仓成立的 7 条夹具，并大声打 SKIP。
 变异登记的口径：每条 = 一个单点文本改动 + 点名的那条测试；测试必须变红，否则算存活。
-349 条 Rust 变异全部声明最小 Cargo 目标，门会拒绝目标不存在
+350 条 Rust 变异全部声明最小 Cargo 目标，门会拒绝目标不存在
 或过滤后零测试的条目，不再为每条变异重编整包。
 
 ## 库面

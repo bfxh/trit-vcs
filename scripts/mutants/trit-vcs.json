@@ -3489,5 +3489,15 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: advanced 视图与 pin 同高也放行（pin_status 不核对高度关系）",
+  "file": "src/audit/sync_event.rs",
+  "old": "            } else if status == Some(\"advanced\") && pin.height == snapshot.height {",
+  "new": "            } else if status == Some(\"advanced\") && pin.height == 0 {",
+  "filter": "pin_status_must_match_height_relation",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]

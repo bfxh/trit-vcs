@@ -211,6 +211,10 @@ fn check_view(
                 view_bad(issues, event, "pin_before 比本次视图还长");
             } else if pin.height == snapshot.height && pin.root != snapshot.root {
                 view_bad(issues, event, "同高度的 pin_before 与视图根不同");
+            } else if status == Some("unchanged") && pin.height != snapshot.height {
+                view_bad(issues, event, "unchanged 的 pin_before 高度必须与视图相同");
+            } else if status == Some("advanced") && pin.height == snapshot.height {
+                view_bad(issues, event, "advanced 的视图必须比 pin_before 长");
             }
         }
         _ => view_bad(issues, event, "pin_status 不合法"),
@@ -475,6 +479,34 @@ mod tests {
             issues(&[first, second])
                 .iter()
                 .any(|issue| issue.kind == "sync_view_rollback")
+        );
+    }
+
+    #[test]
+    fn pin_status_must_match_height_relation() {
+        let first = view_event(1, 3, "http://127.0.0.1:7878", "op-first");
+        let mut pin = first.payload["view"].clone();
+        let object = pin.as_object_mut().unwrap();
+        object.remove("schema");
+        object.remove("pin_before");
+        object.remove("pin_status");
+
+        let mut advanced = view_event(2, 3, "http://127.0.0.1:7878", "op-same-height");
+        advanced.payload["view"]["pin_before"] = pin.clone();
+        advanced.payload["view"]["pin_status"] = json!("advanced");
+        assert!(
+            issues(&[first.clone(), advanced])
+                .iter()
+                .any(|issue| issue.kind == "sync_view_bad")
+        );
+
+        let mut unchanged = view_event(2, 4, "http://127.0.0.1:7878", "op-grew");
+        unchanged.payload["view"]["pin_before"] = pin;
+        unchanged.payload["view"]["pin_status"] = json!("unchanged");
+        assert!(
+            issues(&[first, unchanged])
+                .iter()
+                .any(|issue| issue.kind == "sync_view_bad")
         );
     }
 
