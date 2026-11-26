@@ -3749,5 +3749,15 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: MCP log 忽略 all（侧分支提交看不到）",
+  "file": "src/mcp.rs",
+  "old": "                let log = if all {",
+  "new": "                let log = if !all {",
+  "filter": "log_all_includes_side_branch_commits",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]

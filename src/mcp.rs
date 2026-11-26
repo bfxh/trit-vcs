@@ -42,11 +42,11 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "log",
-            "按 tag/evidence/session/grep 过滤提交",
+            "按 tag/evidence/session/grep 过滤提交；all=true 走完整父图",
             json!({
                 "tag": {"type": "string"}, "evidence": {"type": "string"},
                 "session": {"type": "string"}, "grep": {"type": "string"},
-                "limit": {"type": "integer"},
+                "limit": {"type": "integer"}, "all": {"type": "boolean"},
             }),
             &[],
         ),
@@ -423,9 +423,13 @@ impl Mcp {
                     .and_then(Value::as_u64)
                     .map(|n| n as usize)
                     .unwrap_or(20);
-                let rows: Vec<Value> = self
-                    .repo
-                    .query(&filter)
+                let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+                let log = if all {
+                    self.repo.query_all(&filter)
+                } else {
+                    self.repo.query(&filter)
+                };
+                let rows: Vec<Value> = log
                     .map_err(|err| McpFail::from_error(&err, self.ctx()))?
                     .into_iter()
                     .take(limit)

@@ -11,6 +11,23 @@ fn server(root: &Path) -> Mcp {
     Mcp::new(Repo::init(root).unwrap())
 }
 
+fn commit_node(repo: &mut Repo, name: &str, parents: Vec<Hash>, now: u64) -> Hash {
+    let files =
+        std::collections::BTreeMap::from([(format!("{name}.txt"), name.as_bytes().to_vec())]);
+    repo.stage(&files, now).unwrap();
+    repo.commit(CommitRequest {
+        message: name.to_string(),
+        session: "qoder:mcp".to_string(),
+        claims: Vec::new(),
+        allow_unclaimed: true,
+        parents_override: Some(parents),
+        now_secs: now,
+        ..Default::default()
+    })
+    .unwrap()
+    .id
+}
+
 fn rpc(id: u64, method: &str, params: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 }
@@ -102,6 +119,33 @@ fn add_commit_log_and_status_roundtrip() {
     let status = call(&mut server, "status", json!({}));
     let payload: Value = serde_json::from_str(&text_of(&status)).unwrap();
     assert_eq!(payload["changes"].as_array().unwrap().len(), 0);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn log_all_includes_side_branch_commits() {
+    let root = temp("log-all");
+    let mut repo = Repo::init(&root).unwrap();
+    let base = commit_node(&mut repo, "base", vec![], 1_000);
+    let left = commit_node(&mut repo, "left", vec![base], 1_001);
+    let right = commit_node(&mut repo, "right", vec![base], 1_002);
+    let merge = commit_node(&mut repo, "merge", vec![left, right], 1_003);
+    assert_eq!(repo.head().unwrap(), Some(merge));
+    let mut server = Mcp::new(repo);
+
+    let default = call(&mut server, "log", json!({"limit": 10}));
+    let payload: Value = serde_json::from_str(&text_of(&default)).unwrap();
+    assert_eq!(payload["count"], 3, "{payload}");
+    assert!(
+        !text_of(&default).contains("\"right\""),
+        "默认 log 只走第一父链：{}",
+        text_of(&default)
+    );
+
+    let all = call(&mut server, "log", json!({"all": true, "limit": 10}));
+    let payload: Value = serde_json::from_str(&text_of(&all)).unwrap();
+    assert_eq!(payload["count"], 4, "{payload}");
+    assert!(text_of(&all).contains("\"right\""), "{}", text_of(&all));
     let _ = std::fs::remove_dir_all(&root);
 }
 

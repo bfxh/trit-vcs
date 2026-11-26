@@ -6,6 +6,8 @@
 ## [Unreleased]
 
 ### Added
+- MCP `log` 新增 `all` 参数：`all=true` 走 `Repo::query_all` / `log_all`，可看到 merge 的侧分支；
+  默认仍只走第一父链，保持原有输出与 token 预算。
 - 中央仓本地 `publish` 的缺父闭包改走全部父图：`bundle::missing_ancestors` 用显式栈逐父补齐并去重，
   多父/嵌套 merge 的侧分支提交对象不再漏收；封顶 `ANCESTOR_CAP` 不变。
 - Git 桥保真 v2：`git-import` / `git-export` 默认保留完整多父图，不再拒绝 merge；`--first-parent`
