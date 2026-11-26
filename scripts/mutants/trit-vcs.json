@@ -3863,9 +3863,29 @@
  {
   "name": "vcs: 审计放行 deny 事件的非法来源地址",
   "file": "src/audit/deny_event.rs",
-  "old": "    if event\n        .payload\n        .get(\"detail\")\n        .and_then(Value::as_object)\n        .and_then(|detail| detail.get(\"source\"))\n        .is_some_and(|source| !valid_source(source))\n    {",
-  "new": "    if false {",
+  "old": "        if !valid_source(source) {",
+  "new": "        if !valid_source(source) && false {",
   "filter": "audit::deny_event::tests::deny_source_must_be_an_ip_when_present",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不核对 deny 的前置放行鉴权（request id 可悬空）",
+  "file": "src/audit/deny_event.rs",
+  "old": "            check_auth_binding(events, index, event, detail, issues);",
+  "new": "            let _ = (events, index, event, detail, issues);",
+  "filter": "audit::deny_event::tests::source_bearing_deny_must_match_preceding_allowed_auth",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不比对 deny 与放行鉴权的来源地址",
+  "file": "src/audit/deny_event.rs",
+  "old": "    ) && deny_source != auth_source",
+  "new": "    ) && deny_source != auth_source && false",
+  "filter": "audit::deny_event::tests::source_bearing_deny_must_match_preceding_allowed_auth",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
