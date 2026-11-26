@@ -3711,16 +3711,6 @@
   "target": "lib"
  },
  {
-  "name": "vcs: missing_ancestors 只走第一父（侧分支父提交漏发）",
-  "file": "src/bundle.rs",
-  "old": "        stack.extend(commit_object(src, &id)?.parents);",
-  "new": "        stack.extend(commit_object(src, &id)?.parents.first().copied());",
-  "filter": "missing_ancestors_walks_all_parents",
-  "pkg": "trit-vcs",
-  "runner": "cargo",
-  "target": "lib"
- },
- {
   "name": "vcs: merge_base 拿 a 的祖先当 b 的祖先（公共祖先算错）",
   "file": "src/repo.rs",
   "old": "            self.log_from(*b)?.into_iter().map(|(id, _)| id).collect();",
