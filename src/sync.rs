@@ -10,6 +10,7 @@ use crate::journal::Event;
 use crate::repo::{Repo, RepoError};
 
 pub(crate) const SCHEMA: &str = "trit-sync-v1";
+pub(crate) const FORCE_SCHEMA: &str = "trit-force-v1";
 
 static NEXT_OP: AtomicU64 = AtomicU64::new(0);
 
@@ -84,6 +85,45 @@ pub(crate) fn append(
     let _guard = repo.lock_state()?;
     let before = repo.state_digest()?;
     append_locked(repo, success, before, at_ms)
+}
+
+pub(crate) struct ForceRecord<'a> {
+    pub(crate) action: &'a str,
+    pub(crate) transport: &'a str,
+    pub(crate) side: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) op_id: &'a str,
+    pub(crate) commit: Hash,
+    pub(crate) previous: Option<Hash>,
+    pub(crate) reason: &'a str,
+}
+
+/// 显式 `--force` 成功改了 ref/HEAD 时单独立账。`sync` 事件里的 `forced` 布尔只说明
+/// 本次调用带了开关；独立事件才把“谁在什么状态上把哪条线从哪个提交改写到哪里、绕过了
+/// 哪道守卫”写进链。调用方必须已持状态锁，且只在成功应用之后追加。
+pub(crate) fn append_force_locked(
+    repo: &mut Repo,
+    force: &ForceRecord<'_>,
+    at_ms: u64,
+) -> Result<Event, RepoError> {
+    // force 事件写在改写成功之后，本身不再改状态；state_before 取追加时的当前摘要，
+    // 才能和上一条 `op_result`/`sync` 的 state_after 接上。被替换的旧 ref/HEAD
+    // 由 `previous` 单独记录，不用状态摘要冒充。
+    let state = repo.state_digest()?.to_hex();
+    let payload = json!({
+        "schema": FORCE_SCHEMA,
+        "action": force.action,
+        "transport": force.transport,
+        "side": force.side,
+        "name": force.name,
+        "op_id": force.op_id,
+        "commit": force.commit.to_hex(),
+        "previous": force.previous.map(|id| id.to_hex()),
+        "reason": force.reason,
+        "state_before": state,
+        "state_after": state,
+    });
+    repo.append_audit_locked("force", payload, at_ms)
 }
 
 fn wall_ms() -> u64 {

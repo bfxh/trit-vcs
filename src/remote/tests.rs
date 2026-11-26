@@ -570,6 +570,22 @@ fn dirty_worktree_pull_is_denied_and_audited() {
         "被拒的 pull 不改 HEAD/index"
     );
     assert!(client.head().unwrap().is_none(), "被拒的 pull 不落 HEAD");
+
+    let forced = pull_from(&remote, TOKEN, &mut client, "main", None, true).unwrap();
+    let force = client
+        .journal()
+        .events()
+        .iter()
+        .find(|event| event.kind == "force")
+        .expect("--force 成功应用后必须留下独立的 force 事件");
+    assert_eq!(force.payload["schema"], sync::FORCE_SCHEMA);
+    assert_eq!(force.payload["action"], "pull");
+    assert_eq!(force.payload["side"], "client");
+    assert_eq!(force.payload["op_id"], forced.op_id);
+    assert_eq!(force.payload["commit"], forced.commit.unwrap().to_hex());
+    assert!(force.payload["previous"].is_null(), "空仓 HEAD 没有旧 tip");
+    assert_eq!(force.payload["reason"], "dirty_worktree");
+    assert_audit_clean(&client);
     server.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }

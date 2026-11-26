@@ -649,11 +649,28 @@ fn apply_pull(
     ensure_tree_present(repo.store(), &reply.manifest)?;
     let _guard = repo.lock_state()?;
     let state_before = repo.state_digest()?;
+    let previous = repo.head()?;
+    let mut force_reason = None;
     if prefix.is_none() {
-        check_fast_forward(repo, reply.tip, name, force)?;
-        if !force && let Some(paths) = repo.staged_paths()? {
-            return Err(WorktreeError::Dirty(paths.len(), paths).into());
+        if force {
+            if let Some(head) = previous
+                && head != reply.tip
+                && repo.merge_base(&reply.tip, &head)? != Some(head)
+            {
+                force_reason = Some("non_fast_forward");
+            }
+            if repo.staged_paths()?.is_some() {
+                force_reason.get_or_insert("dirty_worktree");
+            }
+        } else {
+            check_fast_forward(repo, reply.tip, name)?;
+            if let Some(paths) = repo.staged_paths()? {
+                return Err(WorktreeError::Dirty(paths.len(), paths).into());
+            }
         }
+    }
+    if force {
+        force_reason.get_or_insert("requested");
     }
     let stats = worktree::materialize(repo.store(), &reply.manifest, repo.root(), prefix, force)?;
     if prefix.is_none() {
@@ -663,6 +680,22 @@ fn apply_pull(
         let index = crate::sparse::SparseIndex::new(prefix, reply.manifest, Some(reply.tip))
             .map_err(WorktreeError::Sparse)?;
         index.save(repo.root()).map_err(WorktreeError::Sparse)?;
+    }
+    if let Some(reason) = force_reason {
+        sync::append_force_locked(
+            repo,
+            &sync::ForceRecord {
+                action: "pull",
+                transport: "http",
+                side: "client",
+                name,
+                op_id,
+                commit: reply.tip,
+                previous,
+                reason,
+            },
+            sync::now_ms(),
+        )?;
     }
     sync::append_locked(
         repo,
@@ -699,12 +732,7 @@ fn apply_pull(
     })
 }
 
-fn check_fast_forward(
-    repo: &Repo,
-    commit: Hash,
-    name: &str,
-    force: bool,
-) -> Result<(), RemoteError> {
+fn check_fast_forward(repo: &Repo, commit: Hash, name: &str) -> Result<(), RemoteError> {
     let Some(head) = repo.head()? else {
         return Ok(());
     };
@@ -712,7 +740,7 @@ fn check_fast_forward(
         return Ok(());
     }
     let base = repo.merge_base(&commit, &head)?;
-    if force || base == Some(head) {
+    if base == Some(head) {
         return Ok(());
     }
     Err(RepoError::NonFastForward {

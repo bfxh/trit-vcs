@@ -3759,5 +3759,15 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: force 事件不落账（改写历史没有独立凭证）",
+  "file": "src/sync.rs",
+  "old": "repo.append_audit_locked(\"force\", payload, at_ms)",
+  "new": "repo.append_audit_locked(\"force_disabled\", payload, at_ms)",
+  "filter": "publish_only_moves_a_ref_forwards",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]

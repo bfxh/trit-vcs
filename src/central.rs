@@ -103,6 +103,22 @@ pub fn publish(
         }
     }
     central.set_ref_audited_locked(name, &resolved)?;
+    if forced {
+        sync::append_force_locked(
+            central,
+            &sync::ForceRecord {
+                action: "publish",
+                transport: "local",
+                side: "central",
+                name,
+                op_id: &op_id,
+                commit: resolved,
+                previous,
+                reason: "non_fast_forward",
+            },
+            now_ms(),
+        )?;
+    }
     sync::append_locked(
         central,
         &sync::SyncSuccess {
@@ -167,27 +183,41 @@ pub fn pull(
     let list = bundle::manifest(central.store(), commit_obj.tree, prefix)?;
     let _guard = client.lock_state()?;
     let state_before = client.state_digest()?;
+    let previous = client.head()?;
+    let mut force_reason = None;
     if prefix.is_none() {
         // 全量 pull 会动 HEAD 与索引：先判快进、再判"有没有 add 了没 commit 的东西"，
         // 两件都过了才开始写工作树（失败时一个字节都不该动）。
-        if let Some(head) = client.head()?
+        if let Some(head) = previous
             && head != commit
         {
             let base = client.merge_base(&commit, &head)?;
-            if !force && base != Some(head) {
-                return Err(CentralError::Repo(RepoError::NonFastForward {
-                    name: name.to_string(),
-                    current: head.short(),
-                    incoming: commit.short(),
-                }));
+            if base != Some(head) {
+                if !force {
+                    return Err(CentralError::Repo(RepoError::NonFastForward {
+                        name: name.to_string(),
+                        current: head.short(),
+                        incoming: commit.short(),
+                    }));
+                }
+                force_reason = Some("non_fast_forward");
             }
         }
-        if !force && let Some(paths) = client.staged_paths()? {
-            return Err(CentralError::Worktree(WorktreeError::Dirty(
-                paths.len(),
-                paths,
-            )));
+        match client.staged_paths()? {
+            Some(paths) if !force => {
+                return Err(CentralError::Worktree(WorktreeError::Dirty(
+                    paths.len(),
+                    paths,
+                )));
+            }
+            Some(_) => {
+                force_reason.get_or_insert("dirty_worktree");
+            }
+            None => {}
         }
+    }
+    if force {
+        force_reason.get_or_insert("requested");
     }
     let mut objects = vec![commit];
     objects.extend(bundle::entries_closure(central.store(), &list.entries)?);
@@ -228,6 +258,22 @@ pub fn pull(
                 .map_err(WorktreeError::Sparse)?;
             index.save(client.root()).map_err(WorktreeError::Sparse)?;
         }
+    }
+    if let Some(reason) = force_reason {
+        sync::append_force_locked(
+            client,
+            &sync::ForceRecord {
+                action: "pull",
+                transport: "local",
+                side: "client",
+                name,
+                op_id: &op_id,
+                commit,
+                previous,
+                reason,
+            },
+            now_ms(),
+        )?;
     }
     sync::append_locked(
         client,
@@ -353,6 +399,34 @@ mod tests {
     fn assert_audit_clean(repo: &Repo) {
         let report = crate::audit::status(repo).unwrap();
         assert!(report.ok, "{}: {:#?}", repo.root().display(), report.issues);
+    }
+
+    fn assert_force_event(
+        repo: &Repo,
+        action: &str,
+        side: &str,
+        op_id: &str,
+        previous: Option<Hash>,
+        commit: Hash,
+        reason: &str,
+    ) {
+        let event = repo
+            .journal()
+            .events()
+            .iter()
+            .find(|event| event.kind == "force" && event.payload["op_id"] == op_id)
+            .unwrap_or_else(|| panic!("缺 {action}/{side} 的 force 事件"));
+        assert_eq!(event.payload["schema"], sync::FORCE_SCHEMA);
+        assert_eq!(event.payload["action"], action);
+        assert_eq!(event.payload["side"], side);
+        assert_eq!(event.payload["commit"], commit.to_hex());
+        assert_eq!(
+            event.payload["previous"].as_str().and_then(Hash::from_hex),
+            previous
+        );
+        assert_eq!(event.payload["reason"], reason);
+        assert!(event.payload["state_before"].is_string());
+        assert!(event.payload["state_after"].is_string());
     }
 
     #[test]
@@ -520,6 +594,16 @@ mod tests {
         );
         let forced = pull(&mut central, &mut client, "main", Some("gen/d00"), true).unwrap();
         assert_eq!(forced.written, 1);
+        assert_force_event(
+            &client,
+            "pull",
+            "client",
+            &forced.op_id,
+            None,
+            forced.commit,
+            "requested",
+        );
+        assert_audit_clean(&client);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -648,8 +732,18 @@ mod tests {
         );
 
         // 显式改写（--force）才允许
-        publish(&mut src, &mut central, "main", Some(&diverged), true).unwrap();
+        let forced = publish(&mut src, &mut central, "main", Some(&diverged), true).unwrap();
         assert_eq!(central.ref_commit("main").unwrap(), Some(diverged));
+        assert_force_event(
+            &central,
+            "publish",
+            "central",
+            &forced.op_id,
+            Some(second),
+            diverged,
+            "non_fast_forward",
+        );
+        assert_audit_clean(&central);
         // 幂等重推同一个提交不算倒退
         publish(&mut src, &mut central, "main", Some(&diverged), false).unwrap();
         let _ = std::fs::remove_dir_all(&root);
