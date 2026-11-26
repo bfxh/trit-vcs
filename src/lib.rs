@@ -47,6 +47,7 @@ pub mod signing;
 pub mod sparse;
 pub mod status_cache;
 pub mod store;
+pub(crate) mod sync;
 pub mod techmap;
 pub mod tokens;
 pub mod wire;

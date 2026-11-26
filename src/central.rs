@@ -6,7 +6,16 @@
 use crate::bundle::{self, TransferStats};
 use crate::hash::Hash;
 use crate::repo::{Repo, RepoError};
+use crate::sync;
 use crate::worktree::{self, WorktreeError};
+
+fn same_repository(left: &Repo, right: &Repo) -> bool {
+    fn identity(repo: &Repo) -> std::path::PathBuf {
+        let path = repo.root().join(crate::repo::DIR);
+        path.canonicalize().unwrap_or(path)
+    }
+    identity(left) == identity(right)
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -29,6 +38,7 @@ pub enum CentralError {
 pub struct PublishStats {
     pub commit: Hash,
     pub transfer: TransferStats,
+    pub op_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +47,7 @@ pub struct PullStats {
     pub transfer: TransferStats,
     pub written: usize,
     pub skipped: usize,
+    pub op_id: String,
 }
 
 /// 补父链的上限：再多也不该一次搬完整个仓库历史。
@@ -49,7 +60,7 @@ const ANCESTOR_CAP: usize = 4_096;
 /// 顺序是先搬对象再判 ref：对象内容寻址且不可变，搬了不挪 ref 盖不掉任何东西；
 /// 判红时 ref 一定还在原位（非法名字在搬任何东西之前就被拒）。
 pub fn publish(
-    client: &Repo,
+    client: &mut Repo,
     central: &mut Repo,
     name: &str,
     commit: Option<&Hash>,
@@ -61,14 +72,20 @@ pub fn publish(
         None => client.head()?.ok_or(RepoError::NothingStaged)?,
     };
     let mut objects = bundle::commit_closure(client.store(), resolved)?;
-    objects.extend(bundle::missing_ancestors(
-        client.store(),
-        central.store(),
-        resolved,
-        ANCESTOR_CAP,
-    )?);
+    let ancestors =
+        bundle::missing_ancestors(client.store(), central.store(), resolved, ANCESTOR_CAP)?;
+    objects.extend(ancestors.iter().copied());
+    for id in std::iter::once(resolved).chain(ancestors) {
+        for evidence in sync::commit_evidence(client, &id)? {
+            if !objects.contains(&evidence) {
+                objects.push(evidence);
+            }
+        }
+    }
     let transfer = bundle::transfer(client.store(), central.store(), &objects)?;
+    let op_id = sync::new_op_id();
     let _guard = central.lock_state()?;
+    let state_before = central.state_digest()?;
     let previous = central.ref_commit(name)?;
     let mut forced = false;
     if let Some(current) = previous {
@@ -86,28 +103,56 @@ pub fn publish(
         }
     }
     central.set_ref_audited_locked(name, &resolved)?;
-    central
-        .journal_mut()
-        .append(
-            "publish",
-            serde_json::json!({
-                "name": name,
-                "commit": resolved.to_hex(),
+    sync::append_locked(
+        central,
+        &sync::SyncSuccess {
+            action: "publish",
+            op_id: &op_id,
+            transport: "local",
+            side: "central",
+            request_id: None,
+            actor: None,
+            name,
+            commit: resolved,
+            stage: "applied",
+            detail: serde_json::json!({
                 "previous": previous.map(|id| id.to_hex()),
                 "forced": forced,
             }),
-            now_ms(),
-        )
-        .map_err(|err| CentralError::Repo(RepoError::Journal(err)))?;
+        },
+        state_before,
+        now_ms(),
+    )?;
+    drop(_guard);
+    sync::append(
+        client,
+        &sync::SyncSuccess {
+            action: "publish",
+            op_id: &op_id,
+            transport: "local",
+            side: "source",
+            request_id: None,
+            actor: None,
+            name,
+            commit: resolved,
+            stage: "recorded",
+            detail: serde_json::json!({
+                "objects": transfer.objects,
+                "bytes": transfer.sent_bytes,
+            }),
+        },
+        now_ms(),
+    )?;
     Ok(PublishStats {
         commit: resolved,
         transfer,
+        op_id,
     })
 }
 
 /// 从中央仓拉一个 ref：`prefix` 给定时只搬该目录的树清单与对象闭包，并只物化该目录。
 pub fn pull(
-    central: &Repo,
+    central: &mut Repo,
     client: &mut Repo,
     name: &str,
     prefix: Option<&str>,
@@ -121,6 +166,7 @@ pub fn pull(
     // 走和包传输同一条路：发"过滤后的树清单"，原树整体不进客户端。
     let list = bundle::manifest(central.store(), commit_obj.tree, prefix)?;
     let _guard = client.lock_state()?;
+    let state_before = client.state_digest()?;
     if prefix.is_none() {
         // 全量 pull 会动 HEAD 与索引：先判快进、再判"有没有 add 了没 commit 的东西"，
         // 两件都过了才开始写工作树（失败时一个字节都不该动）。
@@ -145,7 +191,30 @@ pub fn pull(
     }
     let mut objects = vec![commit];
     objects.extend(bundle::entries_closure(central.store(), &list.entries)?);
+    for evidence in sync::commit_evidence(central, &commit)? {
+        if !objects.contains(&evidence) {
+            objects.push(evidence);
+        }
+    }
     let transfer = bundle::transfer_scoped(central.store(), client.store(), &objects, &list)?;
+    let op_id = sync::new_op_id();
+    let central_success = sync::SyncSuccess {
+        action: "pull",
+        op_id: &op_id,
+        transport: "local",
+        side: "central",
+        request_id: None,
+        actor: None,
+        name,
+        commit,
+        stage: "prepared",
+        detail: serde_json::json!({"prefix": prefix, "files": list.entries.len()}),
+    };
+    if same_repository(central, client) {
+        sync::append_locked(central, &central_success, state_before, now_ms())?;
+    } else {
+        sync::append(central, &central_success, now_ms())?;
+    }
     let stats = worktree::materialize(client.store(), &list.id, client.root(), prefix, force)?;
     match prefix {
         None => {
@@ -160,26 +229,34 @@ pub fn pull(
             index.save(client.root()).map_err(WorktreeError::Sparse)?;
         }
     }
-    client
-        .journal_mut()
-        .append(
-            "pull",
-            serde_json::json!({
-                "name": name,
-                "commit": commit.to_hex(),
+    sync::append_locked(
+        client,
+        &sync::SyncSuccess {
+            action: "pull",
+            op_id: &op_id,
+            transport: "local",
+            side: "client",
+            request_id: None,
+            actor: None,
+            name,
+            commit,
+            stage: "applied",
+            detail: serde_json::json!({
                 "prefix": prefix,
                 "forced": force,
                 "written": stats.written,
                 "skipped": stats.skipped,
             }),
-            now_ms(),
-        )
-        .map_err(|err| CentralError::Repo(RepoError::Journal(err)))?;
+        },
+        state_before,
+        now_ms(),
+    )?;
     Ok(PullStats {
         commit,
         transfer,
         written: stats.written,
         skipped: stats.skipped,
+        op_id,
     })
 }
 
@@ -239,6 +316,29 @@ mod tests {
         Repo::init(path).unwrap()
     }
 
+    fn assert_local_sync(repo: &Repo, action: &str, side: &str, op_id: &str) {
+        let event = repo
+            .journal()
+            .events()
+            .iter()
+            .find(|event| {
+                event.kind == action
+                    && event.payload["schema"] == sync::SCHEMA
+                    && event.payload["side"] == side
+            })
+            .unwrap_or_else(|| panic!("缺 {action}/{side} 本地事件"));
+        assert_eq!(event.payload["op_id"], op_id);
+        assert_eq!(event.payload["transport"], "local");
+        assert!(event.payload["request_id"].is_null());
+        assert!(event.payload["actor"].is_null());
+        assert_eq!(event.payload["name"], "main");
+    }
+
+    fn assert_audit_clean(repo: &Repo) {
+        let report = crate::audit::status(repo).unwrap();
+        assert!(report.ok, "{}: {:#?}", repo.root().display(), report.issues);
+    }
+
     #[test]
     fn state_lock_blocks_publish_and_pull() {
         let root = temp("state-lock");
@@ -246,42 +346,49 @@ mod tests {
         let mut src = open_repo(&root.join("src"));
         commit_all(&mut src, &files, 1_000);
         let mut central = open_repo(&root.join("central"));
-        publish(&src, &mut central, "main", None, false).unwrap();
+        publish(&mut src, &mut central, "main", None, false).unwrap();
         let mut client = open_repo(&root.join("client"));
 
         let guard = crate::claims::lock(central.root()).unwrap();
         assert!(matches!(
-            publish(&src, &mut central, "main", None, false),
+            publish(&mut src, &mut central, "main", None, false),
             Err(CentralError::Repo(RepoError::StateLocked(_)))
         ));
         drop(guard);
 
         let guard = crate::claims::lock(client.root()).unwrap();
         assert!(matches!(
-            pull(&central, &mut client, "main", Some("gen/d00"), false),
+            pull(&mut central, &mut client, "main", Some("gen/d00"), false),
             Err(CentralError::Repo(RepoError::StateLocked(_)))
         ));
         drop(guard);
-        assert!(pull(&central, &mut client, "main", Some("gen/d00"), false).is_ok());
+        assert!(pull(&mut central, &mut client, "main", Some("gen/d00"), false).is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn publish_then_pull_prefix_sends_only_that_closure() {
         let root = temp("pull");
-        let files = corpus(20, 5);
+        let files = corpus(20, 10)
+            .into_iter()
+            .map(|(path, body)| (path, body.repeat(40)))
+            .collect();
         let mut src = open_repo(&root.join("src"));
         let commit = commit_all(&mut src, &files, 1_000);
 
         let mut central = open_repo(&root.join("central"));
-        let published = publish(&src, &mut central, "main", None, false).unwrap();
+        let published = publish(&mut src, &mut central, "main", None, false).unwrap();
         assert_eq!(published.commit, commit);
+        assert_local_sync(&src, "publish", "source", &published.op_id);
+        assert_local_sync(&central, "publish", "central", &published.op_id);
         assert!(published.transfer.sent_bytes > 0);
         assert_eq!(central.ref_commit("main").unwrap(), Some(commit));
 
         let client_dir = root.join("client");
         let mut client = open_repo(&client_dir);
-        let pulled = pull(&central, &mut client, "main", Some("gen/d00"), false).unwrap();
+        let pulled = pull(&mut central, &mut client, "main", Some("gen/d00"), false).unwrap();
+        assert_local_sync(&central, "pull", "central", &pulled.op_id);
+        assert_local_sync(&client, "pull", "client", &pulled.op_id);
         assert!(
             pulled.transfer.sent_bytes * 10 < published.transfer.total_bytes,
             "单目录应远小于全量：{} vs {}",
@@ -290,16 +397,58 @@ mod tests {
         );
         assert!(client_dir.join("gen/d00/f0.txt").is_file());
         assert!(!client_dir.join("gen/d01").exists(), "范围外不该被物化");
-        assert_eq!(pulled.written, 5, "只该写这个目录的 5 个文件");
+        assert_eq!(pulled.written, 10, "只该写这个目录的 10 个文件");
         let full_tree = central.commit_at(&commit).unwrap().tree;
         assert!(
             !client.store().has_chunk(&full_tree),
             "整棵原树不该进客户端（否则单目录 = 全量）"
         );
 
-        let again = pull(&central, &mut client, "main", Some("gen/d00"), false).unwrap();
+        let again = pull(&mut central, &mut client, "main", Some("gen/d00"), false).unwrap();
         assert_eq!(again.transfer.sent_bytes, 0, "第二次不该再传内容");
         assert_eq!(again.written, 0, "已一致就不该重写");
+        assert_audit_clean(&src);
+        assert_audit_clean(&central);
+        assert_audit_clean(&client);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn same_repository_pull_uses_one_state_lock() {
+        let root = temp("same-repository-pull");
+        let files = corpus(1, 1);
+        let shared_dir = root.join("shared");
+        let mut client = open_repo(&shared_dir);
+        let commit = commit_all(&mut client, &files, 1_000);
+        client.set_ref("main", &commit).unwrap();
+        let mut central = crate::repo::Repo::open(&shared_dir).unwrap();
+        let other = open_repo(&root.join("other"));
+        assert!(same_repository(&central, &client));
+        assert!(!same_repository(&central, &other));
+        drop(other);
+        let state_before = client.state_digest().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = pull(&mut central, &mut client, "main", Some("gen/d00"), false);
+            tx.send((result, central, client)).unwrap();
+        });
+        let (result, central, client) = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("同仓 pull 递归抢锁，五秒内没有返回");
+        let pulled = result.unwrap();
+        assert_local_sync(&central, "pull", "central", &pulled.op_id);
+        assert_local_sync(&client, "pull", "client", &pulled.op_id);
+        let prepared = central
+            .journal()
+            .events()
+            .iter()
+            .find(|event| event.kind == "pull" && event.payload["side"] == "central")
+            .unwrap();
+        assert_eq!(prepared.payload["state_before"], state_before.to_hex());
+        assert_audit_clean(&central);
+        assert_audit_clean(&client);
+        worker.join().unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -310,14 +459,14 @@ mod tests {
         let mut src = open_repo(&root.join("src"));
         commit_all(&mut src, &files, 1_000);
         let mut central = open_repo(&root.join("central"));
-        publish(&src, &mut central, "main", None, false).unwrap();
+        publish(&mut src, &mut central, "main", None, false).unwrap();
 
         let client_dir = root.join("client");
         let mut client = open_repo(&client_dir);
-        pull(&central, &mut client, "main", Some("gen/d00"), false).unwrap();
+        pull(&mut central, &mut client, "main", Some("gen/d00"), false).unwrap();
         std::fs::write(client_dir.join("gen/d00/f0.txt"), b"local edit").unwrap();
 
-        let err = pull(&central, &mut client, "main", Some("gen/d00"), false).unwrap_err();
+        let err = pull(&mut central, &mut client, "main", Some("gen/d00"), false).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -330,7 +479,7 @@ mod tests {
             b"local edit",
             "报错时一个字节都不该动"
         );
-        let forced = pull(&central, &mut client, "main", Some("gen/d00"), true).unwrap();
+        let forced = pull(&mut central, &mut client, "main", Some("gen/d00"), true).unwrap();
         assert_eq!(forced.written, 1);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -342,8 +491,8 @@ mod tests {
         let files = corpus(2, 1);
         let first = commit_all(&mut src, &files, 1_000);
         let mut central = open_repo(&root.join("central"));
-        publish(&src, &mut central, "nightly", Some(&first), false).unwrap();
-        publish(&src, &mut central, "main", Some(&first), false).unwrap();
+        publish(&mut src, &mut central, "nightly", Some(&first), false).unwrap();
+        publish(&mut src, &mut central, "main", Some(&first), false).unwrap();
         let refs = central.list_refs().unwrap();
         assert_eq!(
             refs.iter()
@@ -372,7 +521,7 @@ mod tests {
         for name in ["", "a/b", "..", ".hidden", "a b", &"x".repeat(65)] {
             assert!(
                 matches!(
-                    publish(&src, &mut central, name, None, false),
+                    publish(&mut src, &mut central, name, None, false),
                     Err(CentralError::Repo(RepoError::BadRefName(_)))
                 ),
                 "{name:?} 必须被拒"
@@ -385,12 +534,12 @@ mod tests {
         );
         let mut client = open_repo(&root.join("client"));
         assert!(matches!(
-            pull(&central, &mut client, "main", None, false).unwrap_err(),
+            pull(&mut central, &mut client, "main", None, false).unwrap_err(),
             CentralError::Repo(RepoError::UnknownRef(_))
         ));
         assert!(
             matches!(
-                pull(&central, &mut client, "a/b", None, false).unwrap_err(),
+                pull(&mut central, &mut client, "a/b", None, false).unwrap_err(),
                 CentralError::Repo(RepoError::BadRefName(_))
             ),
             "pull 侧的非法名由 ref_commit 挡住，且不能落到别处"
@@ -413,7 +562,7 @@ mod tests {
 
         // 中央仓是空的：先推 HEAD（second），父链得跟着补齐
         let mut central = open_repo(&root.join("central"));
-        publish(&src, &mut central, "main", Some(&second), false).unwrap();
+        publish(&mut src, &mut central, "main", Some(&second), false).unwrap();
         assert_eq!(central.ref_commit("main").unwrap(), Some(second));
         assert!(
             central.commit_at(&first).is_ok(),
@@ -421,7 +570,7 @@ mod tests {
         );
 
         // 直接退回父提交 ⇒ 判红，且 ref 还在原位
-        let err = publish(&src, &mut central, "main", Some(&first), false).unwrap_err();
+        let err = publish(&mut src, &mut central, "main", Some(&first), false).unwrap_err();
         assert!(
             matches!(err, CentralError::Repo(RepoError::NonFastForward { .. })),
             "{err:?}"
@@ -450,7 +599,7 @@ mod tests {
             .id
         };
         assert!(matches!(
-            publish(&src, &mut central, "main", Some(&diverged), false).unwrap_err(),
+            publish(&mut src, &mut central, "main", Some(&diverged), false).unwrap_err(),
             CentralError::Repo(RepoError::NonFastForward { .. })
         ));
         assert_eq!(
@@ -460,10 +609,10 @@ mod tests {
         );
 
         // 显式改写（--force）才允许
-        publish(&src, &mut central, "main", Some(&diverged), true).unwrap();
+        publish(&mut src, &mut central, "main", Some(&diverged), true).unwrap();
         assert_eq!(central.ref_commit("main").unwrap(), Some(diverged));
         // 幂等重推同一个提交不算倒退
-        publish(&src, &mut central, "main", Some(&diverged), false).unwrap();
+        publish(&mut src, &mut central, "main", Some(&diverged), false).unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -474,11 +623,11 @@ mod tests {
         let mut src = open_repo(&root.join("src"));
         commit_all(&mut src, &files, 1_000);
         let mut central = open_repo(&root.join("central"));
-        publish(&src, &mut central, "main", None, false).unwrap();
+        publish(&mut src, &mut central, "main", None, false).unwrap();
 
         let client_dir = root.join("client");
         let mut client = open_repo(&client_dir);
-        let pulled = pull(&central, &mut client, "main", None, false).unwrap();
+        let pulled = pull(&mut central, &mut client, "main", None, false).unwrap();
         assert_eq!(pulled.written, 8, "全量 pull 该写满 8 个文件");
         let full_tree = central.commit_at(&pulled.commit).unwrap().tree;
         assert!(

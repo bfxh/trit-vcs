@@ -104,7 +104,7 @@ pub(crate) fn remote_publish(args: &[String], name: &str) -> ExitCode {
         Ok(token) => token,
         Err(code) => return code,
     };
-    let client = match Repo::open(repo_path(args)) {
+    let mut client = match Repo::open(repo_path(args)) {
         Ok(repo) => repo,
         Err(err) => return fail_err(&err, &repo_path(args), "", args),
     };
@@ -115,7 +115,7 @@ pub(crate) fn remote_publish(args: &[String], name: &str) -> ExitCode {
         },
         None => None,
     };
-    match remote::publish_to(remote_url, &token, &client, name, commit.as_ref()) {
+    match remote::publish_to(remote_url, &token, &mut client, name, commit.as_ref()) {
         Ok(stats) => {
             println!(
                 "已发布 {} → {remote_url} 的 ref {name}（{} 个对象，字节 {}）",
@@ -125,6 +125,10 @@ pub(crate) fn remote_publish(args: &[String], name: &str) -> ExitCode {
                     .unwrap_or_else(|| "-".to_string()),
                 stats.objects,
                 stats.bytes
+            );
+            println!(
+                "  关联 op_id {}，request_id {}",
+                stats.op_id, stats.request_id
             );
             ExitCode::SUCCESS
         }
@@ -162,6 +166,10 @@ pub(crate) fn remote_pull(args: &[String], name: &str) -> ExitCode {
                     .unwrap_or_else(|| "-".to_string()),
                 stats.objects,
                 stats.written
+            );
+            println!(
+                "  关联 op_id {}，request_id {}",
+                stats.op_id, stats.request_id
             );
             if prefix.is_none() {
                 println!("  HEAD 与索引已落到该提交（status 从这里开始算）。");

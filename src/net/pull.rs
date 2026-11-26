@@ -15,6 +15,28 @@ pub(super) fn handle(
     request: &Request,
     state: &Arc<State>,
 ) -> Result<(), NetError> {
+    let op_id = match request.require_op_id() {
+        Ok(Some(op_id)) => op_id,
+        Ok(None) => crate::sync::new_op_id(),
+        Err(err) => {
+            deny::record_pull_rejected(
+                state,
+                request,
+                None,
+                None,
+                err.status(),
+                err.kind(),
+                &err.to_string(),
+            );
+            return respond_json(
+                stream,
+                err.status(),
+                "bad_request",
+                &err.to_string(),
+                &request.correlation_headers(),
+            );
+        }
+    };
     let Some(name) = request.query.get("ref") else {
         deny::record_pull_rejected(
             state,
@@ -72,7 +94,7 @@ pub(super) fn handle(
     };
     let head = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {total}\r\n\
-         x-trit-request-id: {}\r\nx-trit-ref: {name}\r\nx-trit-tip: {}\r\nx-trit-manifest: {}\r\nx-trit-files: {}\r\n\
+         x-trit-request-id: {}\r\nx-trit-op-id: {op_id}\r\nx-trit-ref: {name}\r\nx-trit-tip: {}\r\nx-trit-manifest: {}\r\nx-trit-files: {}\r\n\
          x-trit-objects: {}\r\nconnection: close\r\n\r\n",
         request.request_id,
         plan.tip.to_hex(),
@@ -85,5 +107,22 @@ pub(super) fn handle(
         // 头已经发出去了，只能在流上直接断；客户端会读到截断并判红。
         return Err(NetError::Wire(err.to_string()));
     }
+    crate::sync::append(
+        &mut repo,
+        &crate::sync::SyncSuccess {
+            action: "pull",
+            op_id: &op_id,
+            transport: "http",
+            side: "central",
+            request_id: Some(&request.request_id),
+            actor: request.actor.as_deref(),
+            name,
+            commit: plan.tip,
+            stage: "response_sent",
+            detail: serde_json::json!({"prefix": prefix, "files": plan.files}),
+        },
+        crate::sync::now_ms(),
+    )
+    .map_err(|err| NetError::Repo(err.to_string()))?;
     Ok(())
 }

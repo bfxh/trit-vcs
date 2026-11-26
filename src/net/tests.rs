@@ -1,6 +1,7 @@
 //! `net::mod` 的单元测试：协议边界、配置与鉴权事件的端到端接线。
 
 use super::*;
+use std::io::BufRead;
 
 #[test]
 fn ct_eq_is_length_safe_and_exact() {
@@ -58,6 +59,36 @@ fn config_rejects_empty_oversized_or_control_actor() {
     let mut config = Config::new(".", "127.0.0.1:0", "0123456789abcdef");
     config.actor = Some("qoder:ci".to_string());
     assert!(config.validated().is_ok());
+}
+
+#[test]
+fn client_rejects_malformed_op_id_before_connecting() {
+    let root = std::env::temp_dir().join(format!(
+        "trit-vcs-net-bad-op-{}-{}",
+        std::process::id(),
+        auth::request_id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let repo = crate::repo::Repo::init(&root).unwrap();
+    let client = Client::new("http://127.0.0.1:1", "0123456789abcdef").unwrap();
+    let id = crate::hash::Hash::of(b"op").to_hex();
+    for bad in [format!("\r\n{id}\r\n"), "broken".to_string()] {
+        assert!(matches!(
+            client.publish(
+                "main",
+                &crate::hash::Hash::of(b"tip"),
+                &crate::wire::Body::default(),
+                repo.store(),
+                &bad,
+            ),
+            Err(NetError::BadOpId)
+        ));
+        assert!(matches!(
+            client.pull("main", None, repo.store(), Limits::default(), &bad),
+            Err(NetError::BadOpId)
+        ));
+    }
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 fn response_request_id(response: &str) -> String {
@@ -148,5 +179,149 @@ fn denied_auth_returns_the_same_request_id_without_trusting_client_actor() {
     assert!(denied.payload["actor"].is_null());
     assert_eq!(denied.payload["status"], 401);
     server.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn raw_op_request(addr: SocketAddr, method: &str, target: &str, op_id: &str) -> String {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let length = if method == "POST" {
+        "content-length: 1\r\n"
+    } else {
+        ""
+    };
+    let op_header = if method == "POST" {
+        format!("x-trit-op-id: {op_id}\r\n")
+    } else {
+        String::new()
+    };
+    let target = if method == "POST" {
+        target.to_string()
+    } else {
+        format!("{target}&op_id={}", percent_encode(op_id))
+    };
+    let head = format!(
+        "{method} {target} HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer 0123456789abcdef\r\n{op_header}{length}connection: close\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    if method == "POST" {
+        stream.write_all(b"x").unwrap();
+    }
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut response = String::new();
+    std::io::Read::read_to_string(&mut stream, &mut response).unwrap();
+    response
+}
+
+#[test]
+fn malformed_op_id_is_rejected_and_audited_on_both_sync_routes() {
+    let root = std::env::temp_dir().join(format!("trit-vcs-bad-op-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let server = Server::start(Config::new(
+        root.join("central"),
+        "127.0.0.1:0",
+        "0123456789abcdef",
+    ))
+    .unwrap();
+    let publish = raw_op_request(server.addr(), "POST", "/v1/publish?ref=main", "broken");
+    let pull = raw_op_request(server.addr(), "GET", "/v1/pull?ref=main", "broken");
+    let wrapped = format!("\r\n{}\r\n", crate::hash::Hash::of(b"op").to_hex());
+    let injected = raw_op_request(server.addr(), "GET", "/v1/pull?ref=main", &wrapped);
+    assert!(publish.starts_with("HTTP/1.1 400"), "{publish}");
+    assert!(pull.starts_with("HTTP/1.1 400"), "{pull}");
+    assert!(injected.starts_with("HTTP/1.1 400"), "{injected}");
+    assert!(publish.contains("op_id"));
+    assert!(pull.contains("op_id"));
+    assert!(injected.contains("op_id"));
+
+    let central = crate::repo::Repo::open(root.join("central")).unwrap();
+    let denies: Vec<_> = central
+        .journal()
+        .events()
+        .iter()
+        .filter(|event| event.kind == "deny" && event.payload["reason"] == "bad_op_id")
+        .collect();
+    assert_eq!(denies.len(), 3);
+    assert_eq!(denies[0].payload["action"], "publish");
+    assert_eq!(denies[1].payload["action"], "pull");
+    assert_eq!(denies[2].payload["action"], "pull");
+    server.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn fake_response(extra: &str, body: &str) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n{extra}connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let join = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut length = 0u64;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        std::io::copy(&mut reader.take(length), &mut std::io::sink()).unwrap();
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+    (format!("http://{addr}"), join)
+}
+
+#[test]
+fn clients_reject_missing_or_mismatched_correlation_headers() {
+    let root = std::env::temp_dir().join(format!(
+        "trit-vcs-client-correlation-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let repo = crate::repo::Repo::init(&root).unwrap();
+    let op_id = crate::hash::Hash::of(b"op").to_hex();
+    let request_id = crate::hash::Hash::of(b"request").to_hex();
+    let other = crate::hash::Hash::of(b"other").to_hex();
+
+    for extra in [
+        format!("x-trit-request-id: {request_id}\r\n"),
+        format!("x-trit-request-id: broken\r\nx-trit-op-id: {op_id}\r\n"),
+        format!("x-trit-request-id: {request_id}\r\nx-trit-op-id: {other}\r\n"),
+    ] {
+        let (remote, join) = fake_response(&extra, "{}");
+        let client = Client::new(&remote, "0123456789abcdef").unwrap();
+        assert!(matches!(
+            client.publish(
+                "main",
+                &crate::hash::Hash::of(b"tip"),
+                &wire::Body::default(),
+                repo.store(),
+                &op_id
+            ),
+            Err(NetError::BadResponse)
+        ));
+        join.join().unwrap();
+    }
+    for extra in [
+        format!("x-trit-op-id: {op_id}\r\n"),
+        format!("x-trit-request-id: {request_id}\r\n"),
+        format!("x-trit-request-id: {request_id}\r\nx-trit-op-id: {other}\r\n"),
+    ] {
+        let (remote, join) = fake_response(&extra, "");
+        let client = Client::new(&remote, "0123456789abcdef").unwrap();
+        assert!(matches!(
+            client.pull("main", None, repo.store(), Limits::default(), &op_id),
+            Err(NetError::BadResponse)
+        ));
+        join.join().unwrap();
+    }
     let _ = std::fs::remove_dir_all(&root);
 }

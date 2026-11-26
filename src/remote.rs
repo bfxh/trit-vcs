@@ -15,6 +15,7 @@ use crate::net::{Client, Limits, NetError, PullReply};
 use crate::remediation::{Context, Remediable};
 use crate::repo::{Repo, RepoError};
 use crate::store::{Store, StoreError};
+use crate::sync;
 use crate::wire::{self, WireError};
 use crate::worktree::{self, WorktreeError};
 
@@ -78,20 +79,24 @@ impl RemoteError {
 }
 
 /// 发布读数：发了多少对象、多少字节。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PublishStats {
     pub commit: Option<Hash>,
     pub objects: usize,
     pub bytes: u64,
+    pub op_id: String,
+    pub request_id: String,
 }
 
 /// 拉取读数：服务端声明与实际收到的对象、物化结果。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PullStats {
     pub commit: Option<Hash>,
     pub written: usize,
     pub skipped: usize,
     pub objects: usize,
+    pub op_id: String,
+    pub request_id: String,
 }
 
 impl Remediable for RemoteError {
@@ -142,7 +147,7 @@ impl Remediable for RemoteError {
 pub fn publish_to(
     remote: &str,
     token: &str,
-    repo: &Repo,
+    repo: &mut Repo,
     name: &str,
     commit: Option<&Hash>,
 ) -> Result<PublishStats, RemoteError> {
@@ -152,13 +157,32 @@ pub fn publish_to(
         None => repo.head()?.ok_or(RepoError::NothingStaged)?,
     };
     let body = publish_body(repo, tip)?;
+    let bytes = body.byte_len(repo.store())?;
+    let op_id = sync::new_op_id();
     let client = Client::new(remote, token)?;
-    let reply = client.publish(name, &tip, &body, repo.store())?;
-    let _ = reply;
+    let reply = client.publish(name, &tip, &body, repo.store(), &op_id)?;
+    sync::append(
+        repo,
+        &sync::SyncSuccess {
+            action: "publish",
+            op_id: &op_id,
+            transport: "http",
+            side: "source",
+            request_id: Some(&reply.request_id),
+            actor: None,
+            name,
+            commit: tip,
+            stage: "recorded",
+            detail: serde_json::json!({"objects": body.count(), "bytes": bytes}),
+        },
+        sync::now_ms(),
+    )?;
     Ok(PublishStats {
         commit: Some(tip),
         objects: body.count() as usize,
-        bytes: body.byte_len(repo.store())?,
+        bytes,
+        op_id,
+        request_id: reply.request_id,
     })
 }
 
@@ -175,6 +199,11 @@ pub fn publish_body(repo: &Repo, tip: Hash) -> Result<wire::Body, RemoteError> {
             body.objects.push(id);
         }
     }
+    for id in sync::commit_evidence(repo, &tip)? {
+        if seen.insert(id) {
+            body.objects.push(id);
+        }
+    }
     let mut cursor = repo.commit_at(&tip)?.parents.first().copied();
     let mut steps = 0usize;
     while let Some(id) = cursor {
@@ -187,6 +216,11 @@ pub fn publish_body(repo: &Repo, tip: Hash) -> Result<wire::Body, RemoteError> {
             body.objects.push(id);
         }
         let parsed: Commit = repo.commit_at(&id)?;
+        for evidence in sync::commit_evidence(repo, &id)? {
+            if seen.insert(evidence) {
+                body.objects.push(evidence);
+            }
+        }
         cursor = parsed.parents.first().copied();
         steps += 1;
         if steps > ANCESTOR_CAP {
@@ -206,6 +240,18 @@ pub fn accept_publish(
     name: &str,
     tip: &Hash,
 ) -> Result<Option<Hash>, RemoteError> {
+    accept_publish_correlated(central, name, tip, &sync::new_op_id(), None, None, "local")
+}
+
+pub(crate) fn accept_publish_correlated(
+    central: &mut Repo,
+    name: &str,
+    tip: &Hash,
+    op_id: &str,
+    request_id: Option<&str>,
+    actor: Option<&str>,
+    transport: &str,
+) -> Result<Option<Hash>, RemoteError> {
     Repo::validate_ref(name)?;
     let commit = central.commit_at(tip).map_err(|err| match err {
         RepoError::Store(StoreError::Missing(_)) | RepoError::UnknownCommit(_) => {
@@ -215,6 +261,7 @@ pub fn accept_publish(
     })?;
     ensure_tree_present(central.store(), &commit.tree)?;
     let _guard = central.lock_state()?;
+    let state_before = central.state_digest()?;
     let previous = central.ref_commit(name)?;
     if let Some(current) = previous
         && current != *tip
@@ -235,6 +282,23 @@ pub fn accept_publish(
         }
     }
     central.set_ref_audited_locked(name, tip)?;
+    sync::append_locked(
+        central,
+        &sync::SyncSuccess {
+            action: "publish",
+            op_id,
+            transport,
+            side: "central",
+            request_id,
+            actor,
+            name,
+            commit: *tip,
+            stage: "applied",
+            detail: serde_json::json!({"previous": previous.map(|id| id.to_hex()), "forced": false}),
+        },
+        state_before,
+        sync::now_ms(),
+    )?;
     Ok(previous)
 }
 
@@ -272,6 +336,11 @@ pub fn pull_plan(
             body.objects.push(id);
         }
     }
+    for id in sync::commit_evidence(central, &tip)? {
+        if !body.objects.contains(&id) {
+            body.objects.push(id);
+        }
+    }
     Ok(PullPlan {
         tip,
         manifest: manifest.id,
@@ -305,15 +374,22 @@ pub fn pull_from(
             return Err(err);
         }
     }
+    let op_id = sync::new_op_id();
     let client = Client::new(remote, token)?;
-    let reply = client.pull(name, prefix, repo.store(), Limits::default())?;
-    let result = apply_pull(repo, &reply, prefix, force, name);
+    let reply = client.pull(name, prefix, repo.store(), Limits::default(), &op_id)?;
+    let result = apply_pull(repo, &reply, prefix, force, name, &op_id);
     if let Err(err) = &result {
         repo.record_deny(
             "pull",
             err.kind(),
             &err.to_string(),
-            serde_json::json!({"ref": name, "prefix": prefix, "tip": reply.tip.to_hex()}),
+            serde_json::json!({
+                "ref": name,
+                "prefix": prefix,
+                "tip": reply.tip.to_hex(),
+                "request_id": reply.request_id,
+                "op_id": op_id,
+            }),
         );
     }
     result
@@ -325,11 +401,20 @@ fn apply_pull(
     prefix: Option<&str>,
     force: bool,
     name: &str,
+    op_id: &str,
 ) -> Result<PullStats, RemoteError> {
     if !repo.store().has_chunk(&reply.tip) {
         return Err(RemoteError::TipMissing(reply.tip.to_hex()));
     }
     let commit = repo.commit_at(&reply.tip)?;
+    for evidence in sync::commit_evidence(repo, &reply.tip)? {
+        if !repo.store().has_chunk(&evidence) {
+            return Err(RemoteError::HistoryGap(format!(
+                "提交 {} 的证据对象 {evidence} 没随 pull 传来",
+                reply.tip.short()
+            )));
+        }
+    }
     let entries = repo.store().tree_entries(&reply.manifest)?;
     if entries.len() != reply.files {
         return Err(RemoteError::HistoryGap(format!(
@@ -347,6 +432,7 @@ fn apply_pull(
     }
     ensure_tree_present(repo.store(), &reply.manifest)?;
     let _guard = repo.lock_state()?;
+    let state_before = repo.state_digest()?;
     if prefix.is_none() {
         check_fast_forward(repo, reply.tip, name, force)?;
         if !force && let Some(paths) = repo.staged_paths()? {
@@ -362,11 +448,35 @@ fn apply_pull(
             .map_err(WorktreeError::Sparse)?;
         index.save(repo.root()).map_err(WorktreeError::Sparse)?;
     }
+    sync::append_locked(
+        repo,
+        &sync::SyncSuccess {
+            action: "pull",
+            op_id,
+            transport: "http",
+            side: "client",
+            request_id: Some(&reply.request_id),
+            actor: None,
+            name,
+            commit: reply.tip,
+            stage: "applied",
+            detail: serde_json::json!({
+                "prefix": prefix,
+                "forced": force,
+                "written": stats.written,
+                "skipped": stats.skipped,
+            }),
+        },
+        state_before,
+        sync::now_ms(),
+    )?;
     Ok(PullStats {
         commit: Some(reply.tip),
         written: stats.written,
         skipped: stats.skipped,
         objects: reply.objects,
+        op_id: op_id.to_string(),
+        request_id: reply.request_id.clone(),
     })
 }
 
@@ -419,381 +529,4 @@ pub fn ensure_tree_present(store: &Store, tree: &Hash) -> Result<(), RemoteError
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    use std::time::Duration;
-
-    use super::*;
-    use crate::gate::ClaimSpec;
-    use crate::net::{Config, Server};
-    use crate::repo::CommitRequest;
-
-    const TOKEN: &str = "0123456789abcdef";
-
-    fn temp(name: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("trit-vcs-remote-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
-    }
-
-    fn commit_all(repo: &mut Repo, files: &BTreeMap<String, Vec<u8>>, now: u64) -> Hash {
-        repo.stage(files, now).unwrap();
-        repo.commit(CommitRequest {
-            message: format!("c{now}"),
-            session: "qoder:remote".to_string(),
-            claims: vec![ClaimSpec {
-                id: format!("c{now}"),
-                owner: "qoder:remote".to_string(),
-                paths: files.keys().cloned().collect(),
-                acquired_at: 1,
-                expires_at: u64::MAX / 2,
-            }],
-            now_secs: now,
-            ..Default::default()
-        })
-        .unwrap()
-        .id
-    }
-
-    fn start(root: &std::path::Path) -> Server {
-        let mut config = Config::new(root.join("central"), "127.0.0.1:0", TOKEN);
-        config.read_timeout = Duration::from_secs(20);
-        config.max_body = 64 * 1024 * 1024;
-        Server::start(config).unwrap()
-    }
-
-    fn raw_publish(addr: std::net::SocketAddr, target: &str, tip: Option<&str>) -> String {
-        let mut stream = TcpStream::connect(addr).unwrap();
-        let mut head = format!(
-            "POST {target} HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer {TOKEN}\r\n\
-             content-length: 0\r\nconnection: close\r\n"
-        );
-        if let Some(tip) = tip {
-            head.push_str(&format!("x-trit-tip: {tip}\r\n"));
-        }
-        head.push_str("\r\n");
-        stream.write_all(head.as_bytes()).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
-    }
-
-    fn raw_pull(addr: std::net::SocketAddr, target: &str) -> String {
-        let mut stream = TcpStream::connect(addr).unwrap();
-        let head = format!(
-            "GET {target} HTTP/1.1\r\nhost: {addr}\r\nauthorization: Bearer {TOKEN}\r\n\
-             connection: close\r\n\r\n"
-        );
-        stream.write_all(head.as_bytes()).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
-    }
-
-    #[test]
-    fn publish_shape_rejections_are_denied_and_audited() {
-        let root = temp("publish-shape");
-        let mut src = Repo::init(root.join("src")).unwrap();
-        let files = BTreeMap::from([("a.txt".to_string(), b"a\n".to_vec())]);
-        commit_all(&mut src, &files, 1_000);
-        let tip = src.head().unwrap().unwrap().to_hex();
-        let server = start(&root);
-        raw_publish(server.addr(), "/v1/publish", None);
-        raw_publish(server.addr(), "/v1/publish?ref=main", None);
-        raw_publish(server.addr(), "/v1/publish?ref=main", Some("not-a-hash"));
-        raw_publish(server.addr(), "/v1/publish?ref=main", Some(tip.as_str()));
-
-        let central = Repo::open(root.join("central")).unwrap();
-        let denies: Vec<_> = central
-            .journal()
-            .events()
-            .iter()
-            .filter(|event| event.kind == "deny")
-            .collect();
-        assert_eq!(denies.len(), 4, "四个形状错误都要有 deny");
-        for (deny, reason) in
-            denies
-                .iter()
-                .zip(["missing_ref", "missing_tip", "bad_tip", "bad_body_size"])
-        {
-            assert_eq!(deny.payload["action"], "publish");
-            assert_eq!(deny.payload["reason"], reason);
-            assert_eq!(
-                deny.payload["state_before"], deny.payload["state_after"],
-                "请求形状拒绝不改仓库状态"
-            );
-        }
-        server.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn pull_shape_and_unknown_ref_are_denied_and_audited() {
-        let root = temp("pull-shape");
-        let server = start(&root);
-        let missing = raw_pull(server.addr(), "/v1/pull");
-        assert!(missing.starts_with("HTTP/1.1 400"), "{missing}");
-        let unknown = raw_pull(server.addr(), "/v1/pull?ref=main");
-        assert!(unknown.starts_with("HTTP/1.1 404"), "{unknown}");
-
-        let central = Repo::open(root.join("central")).unwrap();
-        let denies: Vec<_> = central
-            .journal()
-            .events()
-            .iter()
-            .filter(|event| event.kind == "deny")
-            .collect();
-        assert_eq!(denies.len(), 2, "缺 ref/未知 ref 都要有 deny");
-        assert_eq!(denies[0].payload["action"], "pull");
-        assert_eq!(denies[0].payload["reason"], "missing_ref");
-        assert_eq!(denies[1].payload["action"], "pull");
-        assert_eq!(denies[1].payload["reason"], "unknown_ref");
-        for deny in denies {
-            assert_eq!(
-                deny.payload["state_before"], deny.payload["state_after"],
-                "pull 拒绝不写中央仓状态"
-            );
-        }
-        server.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn publish_then_full_pull_adopts_head() {
-        let root = temp("full");
-        let mut src = Repo::init(root.join("src")).unwrap();
-        let files = BTreeMap::from([
-            ("gen/a.txt".to_string(), b"aaa\n".to_vec()),
-            ("gen/b.txt".to_string(), b"bbb\n".to_vec()),
-        ]);
-        commit_all(&mut src, &files, 1_000);
-        let server = start(&root);
-        let remote = format!("http://{}", server.addr());
-        let stats = publish_to(&remote, TOKEN, &src, "main", None).unwrap();
-        assert!(stats.objects > 0);
-
-        let client_dir = root.join("client");
-        std::fs::create_dir_all(&client_dir).unwrap();
-        let mut client = Repo::init(&client_dir).unwrap();
-        let pulled = pull_from(&remote, TOKEN, &mut client, "main", None, false).unwrap();
-        assert_eq!(pulled.written, 2);
-        assert_eq!(client.head().unwrap(), Some(pulled.commit.unwrap()));
-        assert!(
-            worktree::status(&client).unwrap().is_empty(),
-            "pull 后 status 必须干净"
-        );
-        assert!(client.index().unwrap().is_some(), "索引要落到被拉的树");
-        assert_eq!(client.log().unwrap().len(), 1);
-        server.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn prefix_pull_materializes_only_that_dir_and_keeps_head() {
-        let root = temp("prefix");
-        let mut src = Repo::init(root.join("src")).unwrap();
-        let files = BTreeMap::from([
-            ("gen/d00/a.txt".to_string(), b"a\n".to_vec()),
-            ("gen/d01/b.txt".to_string(), b"b\n".to_vec()),
-        ]);
-        commit_all(&mut src, &files, 1_000);
-        let server = start(&root);
-        let remote = format!("http://{}", server.addr());
-        publish_to(&remote, TOKEN, &src, "main", None).unwrap();
-
-        let client_dir = root.join("client");
-        std::fs::create_dir_all(&client_dir).unwrap();
-        let mut client = Repo::init(&client_dir).unwrap();
-        let pulled =
-            pull_from(&remote, TOKEN, &mut client, "main", Some("gen/d00"), false).unwrap();
-        assert_eq!(pulled.written, 1);
-        assert!(client_dir.join("gen/d00/a.txt").is_file());
-        assert!(!client_dir.join("gen/d01").exists());
-        assert!(client.head().unwrap().is_none(), "前缀 pull 不擅动 HEAD");
-        server.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn dirty_worktree_pull_is_denied_and_audited() {
-        let root = temp("dirty-pull");
-        let mut src = Repo::init(root.join("src")).unwrap();
-        let files = BTreeMap::from([("a.txt".to_string(), b"a\n".to_vec())]);
-        commit_all(&mut src, &files, 1_000);
-        let server = start(&root);
-        let remote = format!("http://{}", server.addr());
-        publish_to(&remote, TOKEN, &src, "main", None).unwrap();
-
-        let client_dir = root.join("client");
-        std::fs::create_dir_all(&client_dir).unwrap();
-        let mut client = Repo::init(&client_dir).unwrap();
-        std::fs::write(client_dir.join("dirty.txt"), b"local\n").unwrap();
-        client
-            .stage(
-                &BTreeMap::from([("dirty.txt".to_string(), b"local\n".to_vec())]),
-                2_000,
-            )
-            .unwrap();
-        let err = pull_from(&remote, TOKEN, &mut client, "main", None, false).unwrap_err();
-        assert!(
-            matches!(err, RemoteError::Worktree(WorktreeError::Dirty(..))),
-            "{err}"
-        );
-        let deny = client
-            .journal()
-            .events()
-            .iter()
-            .find(|event| event.kind == "deny")
-            .expect("脏工作树 pull 必须留下 deny 事件");
-        assert_eq!(deny.payload["action"], "pull");
-        assert_eq!(deny.payload["decision"], "denied");
-        assert_eq!(deny.payload["reason"], "worktree_dirty");
-        assert_eq!(deny.payload["detail"]["ref"], "main");
-        assert_eq!(
-            deny.payload["state_before"], deny.payload["state_after"],
-            "被拒的 pull 不改 HEAD/index"
-        );
-        assert!(client.head().unwrap().is_none(), "被拒的 pull 不落 HEAD");
-        server.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn wrong_token_and_non_fast_forward_are_loud() {
-        let root = temp("gates");
-        let mut src = Repo::init(root.join("src")).unwrap();
-        let files = BTreeMap::from([("a.txt".to_string(), b"a\n".to_vec())]);
-        commit_all(&mut src, &files, 1_000);
-        let server = start(&root);
-        let remote = format!("http://{}", server.addr());
-        publish_to(&remote, TOKEN, &src, "main", None).unwrap();
-
-        let err = publish_to(&remote, "wrong-token-0000", &src, "main", None).unwrap_err();
-        assert!(
-            matches!(err, RemoteError::Net(NetError::Status(401, _))),
-            "{err}"
-        );
-        let central = Repo::open(root.join("central")).unwrap();
-        let auth = central
-            .journal()
-            .events()
-            .iter()
-            .find(|event| {
-                event.kind == "auth" && event.payload["decision"].as_str() == Some("denied")
-            })
-            .expect("错的 token 必须留下 auth 事件");
-        assert_eq!(auth.payload["decision"], "denied");
-        assert_eq!(auth.payload["reason"], "bad_token");
-        assert_eq!(auth.payload["method"], "POST");
-        assert_eq!(auth.payload["path"], "/v1/publish");
-        assert_eq!(
-            auth.payload["state_before"], auth.payload["state_after"],
-            "鉴权失败不改仓库状态"
-        );
-
-        // 另一个客户端从零起一条不相干的历史：不是 main 的后代 ⇒ 409。
-        let other_dir = root.join("other");
-        std::fs::create_dir_all(&other_dir).unwrap();
-        let mut other = Repo::init(&other_dir).unwrap();
-        let other_files = BTreeMap::from([("x.txt".to_string(), b"x\n".to_vec())]);
-        commit_all(&mut other, &other_files, 2_000);
-        let err = publish_to(&remote, TOKEN, &other, "main", None).unwrap_err();
-        assert!(
-            matches!(
-                err,
-                RemoteError::Repo(RepoError::NonFastForward { .. })
-                    | RemoteError::Net(NetError::Status(409, _))
-            ),
-            "{err}"
-        );
-        let central = Repo::open(root.join("central")).unwrap();
-        let deny = central
-            .journal()
-            .events()
-            .iter()
-            .find(|event| event.kind == "deny")
-            .expect("非快进 publish 必须留下 deny 事件");
-        assert_eq!(deny.payload["action"], "publish");
-        assert_eq!(deny.payload["decision"], "denied");
-        assert_eq!(deny.payload["reason"], "non_fast_forward");
-        assert_eq!(deny.payload["detail"]["ref"], "main");
-        assert_eq!(
-            deny.payload["state_before"], deny.payload["state_after"],
-            "被拒的 publish 不改 ref 状态"
-        );
-        assert_eq!(
-            pull_plan(&central, "main", None).unwrap().tip,
-            src.head().unwrap().unwrap(),
-            "被拒的 publish 不该把 ref 挪走"
-        );
-        server.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn state_lock_blocks_publish_and_pull() {
-        let root = temp("state-lock");
-        let mut src = Repo::init(root.join("src")).unwrap();
-        let files = BTreeMap::from([("gen/d00/a.txt".to_string(), b"a\n".to_vec())]);
-        let tip = commit_all(&mut src, &files, 1_000);
-        let server = start(&root);
-        let remote = format!("http://{}", server.addr());
-        publish_to(&remote, TOKEN, &src, "main", None).unwrap();
-
-        let mut central = Repo::open(root.join("central")).unwrap();
-        let guard = crate::claims::lock(central.root()).unwrap();
-        assert!(matches!(
-            accept_publish(&mut central, "main", &tip),
-            Err(RemoteError::Repo(RepoError::StateLocked(_)))
-        ));
-        drop(guard);
-
-        let client_dir = root.join("client");
-        std::fs::create_dir_all(&client_dir).unwrap();
-        let mut client = Repo::init(&client_dir).unwrap();
-        let network = Client::new(&remote, TOKEN).unwrap();
-        let reply = network
-            .pull("main", Some("gen/d00"), client.store(), Limits::default())
-            .unwrap();
-        let guard = crate::claims::lock(client.root()).unwrap();
-        assert!(matches!(
-            apply_pull(&mut client, &reply, Some("gen/d00"), false, "main"),
-            Err(RemoteError::Repo(RepoError::StateLocked(_)))
-        ));
-        drop(guard);
-        assert!(apply_pull(&mut client, &reply, Some("gen/d00"), false, "main").is_ok());
-        server.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn second_pull_is_idempotent_and_incremental() {
-        let root = temp("again");
-        let mut src = Repo::init(root.join("src")).unwrap();
-        let files = BTreeMap::from([("a.txt".to_string(), b"a\n".to_vec())]);
-        commit_all(&mut src, &files, 1_000);
-        let server = start(&root);
-        let remote = format!("http://{}", server.addr());
-        publish_to(&remote, TOKEN, &src, "main", None).unwrap();
-
-        let client_dir = root.join("client");
-        std::fs::create_dir_all(&client_dir).unwrap();
-        let mut client = Repo::init(&client_dir).unwrap();
-        let first = pull_from(&remote, TOKEN, &mut client, "main", None, false).unwrap();
-        let second = pull_from(&remote, TOKEN, &mut client, "main", None, false).unwrap();
-        assert_eq!(second.written, 0);
-        assert!(second.objects <= first.objects, "重复拉不该再多搬对象");
-        assert!(worktree::status(&client).unwrap().is_empty());
-        server.shutdown();
-        let _ = std::fs::remove_dir_all(&root);
-    }
-}
+mod tests;

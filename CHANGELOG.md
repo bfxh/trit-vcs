@@ -32,8 +32,17 @@
   `X-Trit-Request-Id` 回传同一值。放行 actor 只取服务端配置，未配置时记 `bearer:unidentified`，
   不采信客户端 actor 头；客户端 `X-Trit-Actor` 不能伪造审计主体。旧的无版本拒绝事件保持兼容；
   未知 schema 判红；新版缺合法 request id、放行缺 schema 或合法 actor 都判红。publish/pull 的请求形状或业务拒绝
-  详情也带 request id/actor。该 actor 是部署配置而非每用户密码学身份，成功 publish/pull 状态事件
-  尚未绑定 request id，来源地址也未记录。
+  详情也带 request id/actor。该 actor 是部署配置而非每用户密码学身份，来源地址仍未记录。
+  新增成功同步关联 `trit-sync-v1`：客户端生成恰好 64 个 ASCII 十六进制字符、不做首尾裁剪的 `op_id`，
+  publish 通过 `X-Trit-Op-Id`、pull 通过查询参数发送；服务端成功响应回传
+  `X-Trit-Request-Id`/`X-Trit-Op-Id`，由客户端核对，source/central/client 成功事件记录同一组关联号、
+  transport/side/stage 与前后状态。本地同步只使用 op id；旧客户端不带 op id
+  仍被接受并由服务端补生成，旧的无版本 publish/pull 事件保持兼容。反向不兼容：新版客户端要求旧服务端
+  成功响应也带合法且匹配的关联头，否则明确拒绝，不误报成功。审计新增 `sync_bad`、
+  `sync_auth_missing`、`sync_duplicate`，拒绝畸形关联字段、非法阶段组合、同侧复用 op id，以及
+  中央 HTTP 成功事件缺同 request_id 的前置放行鉴权。同步闭包补齐提交引用的 `claim_set`/`witness`
+  证据对象，pull 物化前缺证据即拒绝；冻结的提交、bundle 与 journal 格式未改。跨仓仍无原子事务，
+  中央 `response_sent` 只表示响应体已写出，不表示客户端已应用。
   服务端 publish 被业务规则拒绝（非快进、对象流坏、ref 非法等）落 `deny` 事件：
   action/decision/reason/message/detail 与同值 state_before/state_after，仍不记 token；
   进入仓库锁之前的请求形状错误（缺 ref、缺 X-Trit-Tip、坏 tip、空/超大 body）也先落

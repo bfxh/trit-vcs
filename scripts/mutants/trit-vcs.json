@@ -3073,8 +3073,8 @@
  {
   "name": "vcs: 响应不回传真实 request id",
   "file": "src/net/request.rs",
-  "old": "        [(\"X-Trit-Request-Id\", self.request_id.as_str())]",
-  "new": "        [(\"X-Trit-Request-Id\", \"redacted\")]",
+  "old": "        let mut headers = vec![(\"X-Trit-Request-Id\", self.request_id.as_str())];",
+  "new": "        let mut headers = vec![(\"X-Trit-Request-Id\", \"redacted\")];",
   "filter": "allowed_auth_binds_server_actor_and_response_request_id",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3106,6 +3106,296 @@
   "old": "                .is_some_and(valid_actor)",
   "new": "                .is_some()",
   "filter": "allowed_auth_with_invalid_actor_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 所有同步复用同一 op id",
+  "file": "src/sync.rs",
+  "old": "    Hash::of(format!(\"sync:{}:{now}:{counter}\", std::process::id()).as_bytes()).to_hex()",
+  "new": "    \"00\".repeat(32).to_string()",
+  "filter": "op_ids_are_hash_shaped_and_unique",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: publish 客户端不发 op id",
+  "file": "src/net/client.rs",
+  "old": "x-trit-op-id: {op_id}",
+  "new": "x-trit-client-op-id: {op_id}",
+  "filter": "publish_then_full_pull_adopts_head",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: pull 客户端不发 op id",
+  "file": "src/net/client.rs",
+  "old": "        path.push_str(&format!(\"&op_id={}\", percent_encode(op_id)));",
+  "new": "",
+  "filter": "publish_then_full_pull_adopts_head",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: publish 响应不回传 op id",
+  "file": "src/net/request.rs",
+  "old": "        if let Some(op_id) = self.valid_op_id() {\n            headers.push((\"X-Trit-Op-Id\", op_id));\n        }",
+  "new": "",
+  "filter": "publish_then_full_pull_adopts_head",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: pull 响应回传错误 op id",
+  "file": "src/net/pull.rs",
+  "old": "x-trit-op-id: {op_id}",
+  "new": "x-trit-op-id: broken",
+  "filter": "publish_then_full_pull_adopts_head",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: pull 响应不回传真实 request id",
+  "file": "src/net/pull.rs",
+  "old": "        request.request_id,\n        plan.tip.to_hex(),",
+  "new": "        \"broken\".to_string(),\n        plan.tip.to_hex(),",
+  "filter": "publish_then_full_pull_adopts_head",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: publish 客户端不核对回传 op id",
+  "file": "src/net/client.rs",
+  "old": "        if response.header(\"x-trit-op-id\") != Some(op_id) {\n            return Err(NetError::BadResponse);\n        }\n        Ok(PublishReply { request_id })",
+  "new": "        Ok(PublishReply { request_id })",
+  "filter": "clients_reject_missing_or_mismatched_correlation_headers",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: pull 客户端不核对回传 op id",
+  "file": "src/net/client.rs",
+  "old": "        if response.header(\"x-trit-op-id\") != Some(op_id) {\n            return Err(NetError::BadResponse);\n        }\n        let tip = response",
+  "new": "        let tip = response",
+  "filter": "clients_reject_missing_or_mismatched_correlation_headers",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 服务端接受畸形 publish op id",
+  "file": "src/net/request.rs",
+  "old": "            Some(_) => Err(NetError::BadOpId),",
+  "new": "            Some(_) => Ok(None),",
+  "filter": "malformed_op_id_is_rejected_and_audited_on_both_sync_routes",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 旧 publish 客户端缺 op id 时生成畸形值",
+  "file": "src/net/mod.rs",
+  "old": "    let op_id = match request.require_op_id() {\n        Ok(Some(op_id)) => op_id,\n        Ok(None) => crate::sync::new_op_id(),",
+  "new": "    let op_id = match request.require_op_id() {\n        Ok(Some(op_id)) => op_id,\n        Ok(None) => \"broken\".to_string(),",
+  "filter": "legacy_http_sync_without_op_id_is_accepted_and_audited",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 旧 pull 客户端缺 op id 时生成畸形值",
+  "file": "src/net/pull.rs",
+  "old": "    let op_id = match request.require_op_id() {\n        Ok(Some(op_id)) => op_id,\n        Ok(None) => crate::sync::new_op_id(),",
+  "new": "    let op_id = match request.require_op_id() {\n        Ok(Some(op_id)) => op_id,\n        Ok(None) => \"broken\".to_string(),",
+  "filter": "legacy_http_sync_without_op_id_is_accepted_and_audited",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: publish 源仓记错 request id",
+  "file": "src/remote.rs",
+  "old": "            action: \"publish\",\n            op_id: &op_id,\n            transport: \"http\",\n            side: \"source\",\n            request_id: Some(&reply.request_id),",
+  "new": "            action: \"publish\",\n            op_id: &op_id,\n            transport: \"http\",\n            side: \"source\",\n            request_id: Some(\"broken\"),",
+  "filter": "publish_then_full_pull_adopts_head",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 本地 publish 两端使用不同 op id",
+  "file": "src/central.rs",
+  "old": "            action: \"publish\",\n            op_id: &op_id,\n            transport: \"local\",\n            side: \"source\",",
+  "new": "            action: \"publish\",\n            op_id: &sync::new_op_id(),\n            transport: \"local\",\n            side: \"source\",",
+  "filter": "publish_then_pull_prefix_sends_only_that_closure",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 本地 pull 两端使用不同 op id",
+  "file": "src/central.rs",
+  "old": "            action: \"pull\",\n            op_id: &op_id,\n            transport: \"local\",\n            side: \"client\",",
+  "new": "            action: \"pull\",\n            op_id: &sync::new_op_id(),\n            transport: \"local\",\n            side: \"client\",",
+  "filter": "publish_then_pull_prefix_sends_only_that_closure",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 同步审计不校验 op id 形状",
+  "file": "src/audit/sync_event.rs",
+  "old": "    if !crate::sync::valid_op_id(op_id) {",
+  "new": "    if false {",
+  "filter": "invalid_correlation_shapes_are_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: HTTP 同步审计不要求 request id",
+  "file": "src/audit/sync_event.rs",
+  "old": "        Some(\"http\") if parse_hash(request_id).is_none() => {",
+  "new": "        Some(\"http\") if false => {",
+  "filter": "invalid_correlation_shapes_are_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 中央同步审计不核对前置放行鉴权",
+  "file": "src/audit/sync_event.rs",
+  "old": "        && !events[..index].iter().any(|prior| {",
+  "new": "        && false\n        && events[..index].iter().any(|prior| {",
+  "filter": "central_http_event_must_follow_matching_allowed_auth",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 同步审计接受重复 op id/side",
+  "file": "src/audit/sync_event.rs",
+  "old": "        other_index != index",
+  "new": "        false && other_index != index",
+  "filter": "duplicate_op_id_on_the_same_side_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 同步审计不核对执行阶段",
+  "file": "src/audit/sync_event.rs",
+  "old": "    if !stage_ok {",
+  "new": "    if false {",
+  "filter": "unknown_schema_and_wrong_stage_are_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: pull 不发送提交引用的证据对象",
+  "file": "src/remote.rs",
+  "old": "    for id in sync::commit_evidence(central, &tip)? {",
+  "new": "    for id in Vec::<Hash>::new() {",
+  "filter": "publish_then_full_pull_adopts_head",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: pull 物化前不核对证据对象齐全",
+  "file": "src/remote.rs",
+  "old": "    for evidence in sync::commit_evidence(repo, &reply.tip)? {",
+  "new": "    for evidence in Vec::<Hash>::new() {",
+  "filter": "pull_refuses_missing_commit_evidence_before_materializing",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: op id 校验重新接受首尾空白",
+  "file": "src/sync.rs",
+  "old": "    raw.len() == 64 && raw.bytes().all(|byte| byte.is_ascii_hexdigit())",
+  "new": "    Hash::from_hex(raw).is_some()",
+  "filter": "op_id_validation_is_exact_hex_without_trimming",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 同步审计用可裁剪的哈希解析校验 op id",
+  "file": "src/audit/sync_event.rs",
+  "old": "    if !crate::sync::valid_op_id(op_id) {",
+  "new": "    if crate::hash::Hash::from_hex(op_id).is_none() {",
+  "filter": "invalid_correlation_shapes_are_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 同步审计按原始字符串比较重复 op id",
+  "file": "src/audit/sync_event.rs",
+  "old": "        && op_hash.is_some_and(|op| {\n                other\n                    .payload\n                    .get(\"op_id\")\n                    .and_then(Value::as_str)\n                    .and_then(Hash::from_hex)\n                    == Some(op)\n            })",
+  "new": "        && other.payload.get(\"op_id\").and_then(Value::as_str) == Some(op_id)",
+  "filter": "duplicate_op_id_on_the_same_side_is_red",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 中央同步审计按原始字符串关联 request id",
+  "file": "src/audit/sync_event.rs",
+  "old": "        && parse_hash(prior.payload.get(\"request_id\")) == Some(request_id)",
+  "new": "        && prior.payload.get(\"request_id\").and_then(Value::as_str)\n            == Some(request_id.to_hex().as_str())",
+  "filter": "central_http_event_must_follow_matching_allowed_auth",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 同仓识别把相同仓库判成不同仓库",
+  "file": "src/central.rs",
+  "old": "    identity(left) == identity(right)",
+  "new": "    identity(left) != identity(right)",
+  "filter": "same_repository_pull_uses_one_state_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 同仓 pull 仍走重复状态锁分支",
+  "file": "src/central.rs",
+  "old": "    if same_repository(central, client) {",
+  "new": "    if false {",
+  "filter": "same_repository_pull_uses_one_state_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 同仓 pull 的准备事件记错前置状态",
+  "file": "src/central.rs",
+  "old": "        sync::append_locked(central, &central_success, state_before, now_ms())?;",
+  "new": "        sync::append_locked(central, &central_success, Hash::of(b\"wrong\"), now_ms())?;",
+  "filter": "same_repository_pull_uses_one_state_lock",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: HTTP 客户端跳过 op id 校验直接发请求",
+  "file": "src/net/client.rs",
+  "old": "    if !crate::sync::valid_op_id(op_id) {\n        return Err(NetError::BadOpId);\n    }\n    Ok(())",
+  "new": "    Ok(())",
+  "filter": "client_rejects_malformed_op_id_before_connecting",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
