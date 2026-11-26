@@ -16,11 +16,7 @@ use crate::hash::Hash;
 
 /// 追加时的单写者锁：锁文件是 `journal.lock`，与事件日志同目录。
 /// 抢不到就重试一小会儿，仍抢不到报 `Locked`；不静默并发写坏链。
-#[cfg(not(test))]
 const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
-// 测试并行跑大量 fsync，慢盘上 5 秒会把并发用例打成假红；生产仍是 5 秒。
-#[cfg(test)]
-const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_RETRY: Duration = Duration::from_millis(5);
 const OPEN_RETRIES: u32 = 400;
 const OPEN_RETRY_DELAY: Duration = Duration::from_millis(10);
