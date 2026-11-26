@@ -239,6 +239,13 @@
   非法 `remote`、同 remote/ref 高度倒退或同高换根。该 pin 只覆盖单客户端见过的历史，跨客户端分裂
   视图仍需签名检查点/gossip/共享锚（未做）。
 
+- 服务端签名视图 v1：`serve --view-key FILE` 用 Ed25519 对 `trit-view-v1` 签名，域分离覆盖
+  ref/高度/头/Merkle 根/tip（`trit-view-sig-v1`）；响应新增 `signature`（key_id/public_key/签名）。
+  客户端每次复算签名并写进 pin；已签名 pin 遇到无签名服务端报 `remote_view_unsigned`，换钥报
+  `remote_signer_changed`，预检失败在发 publish / 收对象前中止并落 `deny`。审计复验签名与签名者
+  连续性；`view --expect-view-key` 可从仓外固定指纹。签名只证明持钥者确认该视图，首次仍是 TOFU，
+  不是可信时间戳/透明日志。
+
 ### Changed
 - `CI` 的改动分级只在 PR 上执行；`push → main` 不再拿没有 PR 标签的事件重新判 L3，避免已人工批准的契约改动在合并后被重复判红。
 - `trit-core` / `trit-orch` 的 git pin 从拆库提交 `2400fb9d` 显式抬到 `79542df8`（改 pin 单独一笔，不跟 main 漂）。

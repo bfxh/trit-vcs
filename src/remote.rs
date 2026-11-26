@@ -16,7 +16,7 @@ use crate::remediation::{Context, Remediable};
 use crate::repo::{Repo, RepoError};
 use crate::store::{Store, StoreError};
 use crate::sync;
-use crate::view::{self, Pin, PinStatus, Snapshot, ViewError};
+use crate::view::{self, Pin, PinStatus, Snapshot, ViewError, ViewSignature};
 use crate::wire::{self, WireError};
 use crate::worktree::{self, WorktreeError};
 
@@ -96,6 +96,7 @@ pub struct PublishStats {
     pub op_id: String,
     pub request_id: String,
     pub view: Option<Snapshot>,
+    pub view_signer: Option<String>,
     pub pin_status: Option<PinStatus>,
 }
 
@@ -109,6 +110,7 @@ pub struct PullStats {
     pub op_id: String,
     pub request_id: String,
     pub view: Option<Snapshot>,
+    pub view_signer: Option<String>,
     pub pin_status: Option<PinStatus>,
 }
 
@@ -214,9 +216,9 @@ pub fn publish_to_with(
         None
     };
     let reply = client.publish(name, &tip, &body, repo.store(), &op_id)?;
-    let (snapshot, pin_status) = if pin_enabled {
+    let (snapshot, signature, pin_status) = if pin_enabled {
         match finish_view(&client, name, &pinned, tip) {
-            Ok((view, status)) => (Some(view), Some(status)),
+            Ok((view, status, signature)) => (Some(view), signature, Some(status)),
             Err(err) => {
                 repo.record_deny(
                     "publish",
@@ -234,7 +236,7 @@ pub fn publish_to_with(
             }
         }
     } else {
-        (None, None)
+        (None, None, None)
     };
     sync::append(
         repo,
@@ -253,7 +255,12 @@ pub fn publish_to_with(
                 "bytes": bytes,
                 "remote": remote_base,
                 "view": snapshot.as_ref().map(|view| {
-                    crate::view::evidence_json(view, pinned.as_ref(), pin_status.unwrap_or(PinStatus::First))
+                    crate::view::evidence_json(
+                        view,
+                        pinned.as_ref(),
+                        pin_status.unwrap_or(PinStatus::First),
+                        signature.as_ref(),
+                    )
                 }),
             }),
         },
@@ -266,6 +273,7 @@ pub fn publish_to_with(
         op_id,
         request_id: reply.request_id,
         view: snapshot,
+        view_signer: signature.map(|signature| signature.key_id),
         pin_status,
     })
 }
@@ -276,6 +284,7 @@ fn precheck_pin(client: &Client, repo: &Repo, name: &str) -> Result<Option<Pin>,
         return Ok(None);
     };
     let reply = client.view(name, Some((pin.height, pin.root)))?;
+    view::verify_view_signature(Some(&pin), name, &reply.snapshot, reply.signature.as_ref())?;
     view::verify_pin(Some(&pin), &reply.snapshot, reply.consistency.as_ref())?;
     Ok(Some(pin))
 }
@@ -286,8 +295,14 @@ fn finish_view(
     name: &str,
     pin: &Option<Pin>,
     expected_tip: Hash,
-) -> Result<(Snapshot, PinStatus), RemoteError> {
+) -> Result<(Snapshot, PinStatus, Option<ViewSignature>), RemoteError> {
     let reply = client.view(name, pin.as_ref().map(|pin| (pin.height, pin.root)))?;
+    view::verify_view_signature(
+        pin.as_ref(),
+        name,
+        &reply.snapshot,
+        reply.signature.as_ref(),
+    )?;
     let status = view::verify_pin(pin.as_ref(), &reply.snapshot, reply.consistency.as_ref())?;
     if reply.snapshot.tip != Some(expected_tip) {
         return Err(RemoteError::ViewMismatch(format!(
@@ -300,7 +315,7 @@ fn finish_view(
             expected_tip.short()
         )));
     }
-    Ok((reply.snapshot, status))
+    Ok((reply.snapshot, status, reply.signature))
 }
 
 /// 发布要发的对象：提交闭包（tip 的树/文件映射/块）+ 第一父链的提交对象（去重）。
@@ -529,9 +544,9 @@ pub fn pull_from_with(
         None
     };
     let reply = client.pull(name, prefix, repo.store(), Limits::default(), &op_id)?;
-    let (snapshot, pin_status) = if pin_enabled {
+    let (snapshot, signature, pin_status) = if pin_enabled {
         match finish_view(&client, name, &pinned, reply.tip) {
-            Ok((view, status)) => (Some(view), Some(status)),
+            Ok((view, status, signature)) => (Some(view), signature, Some(status)),
             Err(err) => {
                 repo.record_deny(
                     "pull",
@@ -550,13 +565,15 @@ pub fn pull_from_with(
             }
         }
     } else {
-        (None, None)
+        (None, None, None)
     };
+    let view_signer = signature.as_ref().map(|signature| signature.key_id.clone());
     let view_evidence = snapshot.as_ref().map(|view| {
         view::evidence_json(
             view,
             pinned.as_ref(),
             pin_status.unwrap_or(PinStatus::First),
+            signature.as_ref(),
         )
     });
     let result = apply_pull(
@@ -585,6 +602,7 @@ pub fn pull_from_with(
     }
     let mut stats = result?;
     stats.view = snapshot;
+    stats.view_signer = view_signer;
     stats.pin_status = pin_status;
     Ok(stats)
 }

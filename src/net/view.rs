@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use super::{NetError, Request, State, deny, respond_json_value};
 use crate::hash::Hash;
-use crate::view::{self, MAX_PIN_PROOF_HEIGHT, Snapshot};
+use crate::view::{self, MAX_PIN_PROOF_HEIGHT, Snapshot, ViewSignature};
 
 pub(super) fn handle(
     stream: &mut TcpStream,
@@ -96,13 +96,32 @@ pub(super) fn handle(
             }
         }
     };
+    // 快照/证明已拥有自己的数据，签名不必继续占着中央仓锁。
+    drop(repo);
+    let signature = match state.view_key.as_ref() {
+        None => None,
+        Some(key) => match ViewSignature::sign(key, name, &snapshot) {
+            Ok(signature) => Some(signature),
+            Err(err) => {
+                return respond_json_value(
+                    stream,
+                    500,
+                    &json!({"ok": false, "kind": "view_sign_failed", "message": err.to_string()}),
+                    &request.correlation_headers(),
+                );
+            }
+        },
+    };
     let mut body = snapshot.to_json();
     body["ok"] = json!(true);
     body["ref"] = json!(name);
+    body["signature"] = signature
+        .as_ref()
+        .map(ViewSignature::to_json)
+        .unwrap_or(Value::Null);
     body["consistency"] = consistency
         .map(|proof| serde_json::to_value(proof).unwrap_or(Value::Null))
         .unwrap_or(Value::Null);
-    drop(repo);
 
     let bytes = serde_json::to_vec(&body).map_err(|err| NetError::Repo(err.to_string()))?;
     stream.write_all(

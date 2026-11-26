@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::signing::KeyFile;
 use crate::wire;
 pub use crate::wire::Limits;
 
@@ -184,6 +185,8 @@ pub struct Config {
     pub bind: String,
     pub token: String,
     pub actor: Option<String>,
+    /// 可选的视图签名私钥；不配置则 `/v1/view` 仍返回无签名快照（兼容旧客户端）。
+    pub view_key_path: Option<PathBuf>,
     pub limits: Limits,
     pub max_body: u64,
     pub read_timeout: Duration,
@@ -201,6 +204,7 @@ impl Config {
             bind: bind.into(),
             token: token.into(),
             actor: None,
+            view_key_path: None,
             limits: Limits::default(),
             max_body: 256 * 1024 * 1024,
             read_timeout: Duration::from_secs(30),
@@ -235,6 +239,7 @@ struct State {
     repo: Mutex<crate::repo::Repo>,
     token: String,
     actor: Option<String>,
+    view_key: Option<KeyFile>,
     limits: Limits,
     max_body: u64,
     connections: AtomicUsize,
@@ -260,10 +265,15 @@ impl Server {
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
+        let view_key = match &config.view_key_path {
+            Some(path) => Some(KeyFile::load(path).map_err(|err| NetError::Repo(err.to_string()))?),
+            None => None,
+        };
         let state = Arc::new(State {
             repo: Mutex::new(repo),
             token: config.token.clone(),
             actor: config.actor.clone(),
+            view_key,
             limits: config.limits,
             max_body: config.max_body,
             connections: AtomicUsize::new(0),
