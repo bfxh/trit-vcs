@@ -35,6 +35,22 @@ pub(super) fn commit_all(repo: &mut Repo, files: &BTreeMap<String, Vec<u8>>, now
     .id
 }
 
+fn commit_node(repo: &mut Repo, name: &str, parents: Vec<Hash>, now: u64) -> Hash {
+    let files = BTreeMap::from([(format!("{name}.txt"), name.as_bytes().to_vec())]);
+    repo.stage(&files, now).unwrap();
+    repo.commit(CommitRequest {
+        message: name.to_string(),
+        session: "qoder:remote".to_string(),
+        claims: Vec::new(),
+        allow_unclaimed: true,
+        parents_override: Some(parents),
+        now_secs: now,
+        ..Default::default()
+    })
+    .unwrap()
+    .id
+}
+
 fn start(root: &std::path::Path) -> Server {
     start_on(root, "127.0.0.1:0")
 }
@@ -259,6 +275,25 @@ fn legacy_http_sync_without_op_id_is_accepted_and_audited() {
     );
     assert_audit_clean(&central);
     server.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn publish_body_carries_all_parent_commits() {
+    let root = temp("publish-dag");
+    let mut src = Repo::init(root.join("src")).unwrap();
+    let base = commit_node(&mut src, "base", vec![], 1_000);
+    let left = commit_node(&mut src, "left", vec![base], 1_001);
+    let right = commit_node(&mut src, "right", vec![base], 1_002);
+    let merge = commit_node(&mut src, "merge", vec![left, right], 1_003);
+    let tip = commit_node(&mut src, "tip", vec![merge], 1_004);
+    let body = publish_body(&src, tip).unwrap();
+    for id in [base, left, right, merge] {
+        assert!(
+            body.objects.contains(&id),
+            "publish 父图缺 {id}（侧分支提交不能漏发）"
+        );
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 

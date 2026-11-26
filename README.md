@@ -21,10 +21,10 @@
 | 写前准入 | Git 无对应面 | 未认领的提交默认拒；认领有 TTL、同名 id 判红；判决是三态（True/Unknown/False），"不知道"不等于"过" |
 | 被拒之后 | 更强 | 每条判决附**能直接跑的下一步命令**：`unclaimed` 负载 329→455 元（3 条命令）、`claim_conflict` 18→88 元、`witness_required` 26→73 元 |
 | 预检成本 | 有读数 | 60 文件 / 121 对象 / 9,400 字节的预检 **4.8 ms**，**写盘 0 个对象**（对象数、哈希链长度、HEAD 三样分别断言） |
-| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权成功/失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节，`claims add/release --sign-key` 落 `claim_signature` 并复验操作/完整 ClaimSpec/前后状态/操作时点授权，审计按 `op_begin` 到 `op_result` 的日志顺序拒绝操作前吊销和操作中吊销/轮换，并核对 `op_result.state_after`；`trit-policy-v1` 缺签名字段时 fail-closed，旧策略事件保持兼容，审计重放强制签名策略并检查 sidecar 缺失，`key rotate` 由旧/新两把钥双签声明并由 `audit` 复验，`audit checkpoint` 落签名 Merkle 检查点并复验前缀根/链，`audit consistency` 证明旧前缀是新根的前缀（1 万叶、旧前缀 4,321 叶的证明少于 64 个节点），`audit anchor` 导出可离线复验的仓内文件锚，`audit external-anchor/verify-external-anchor` 用调用方从仓外钉住的独立公钥签/验检查点与前缀摘要；`attest` 给已提交 witness 追加 Ed25519 sidecar，`admit --signed` 与 MCP `admit({signed:true})` 强制验签，策略 `require_signed_witness` 可要求新见证必须带 attestation；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；`git-import` / `git-export` 落 `git_bridge` 事件（action、成功/失败、提交数、文件数、merge 数、元数据数、map digest），Git 桥默认拒绝 merge 图，只有显式 `--first-parent` 才线性化；成功 publish/pull 的 `trit-sync-v1` 事件按 op_id/request_id 跨仓关联并核阶段、前置鉴权与同侧唯一性；提交可带 `evidence`/`tags` |
+| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权成功/失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节，`claims add/release --sign-key` 落 `claim_signature` 并复验操作/完整 ClaimSpec/前后状态/操作时点授权，审计按 `op_begin` 到 `op_result` 的日志顺序拒绝操作前吊销和操作中吊销/轮换，并核对 `op_result.state_after`；`trit-policy-v1` 缺签名字段时 fail-closed，旧策略事件保持兼容，审计重放强制签名策略并检查 sidecar 缺失，`key rotate` 由旧/新两把钥双签声明并由 `audit` 复验，`audit checkpoint` 落签名 Merkle 检查点并复验前缀根/链，`audit consistency` 证明旧前缀是新根的前缀（1 万叶、旧前缀 4,321 叶的证明少于 64 个节点），`audit anchor` 导出可离线复验的仓内文件锚，`audit external-anchor/verify-external-anchor` 用调用方从仓外钉住的独立公钥签/验检查点与前缀摘要；`attest` 给已提交 witness 追加 Ed25519 sidecar，`admit --signed` 与 MCP `admit({signed:true})` 强制验签，策略 `require_signed_witness` 可要求新见证必须带 attestation；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；`git-import` / `git-export` 默认保留完整多父图，`--first-parent` 才线性化；两个方向都落 `git_bridge` v2 事件（action、成功/失败、first_parent、提交数、文件数、merge 数、元数据数、map digest）。`log --all` 可看全图。成功 publish/pull 的 `trit-sync-v1` 事件按 op_id/request_id 跨仓关联并核阶段、前置鉴权与同侧唯一性；提交可带 `evidence`/`tags` |
 | 时间 | 有面 | HLC（混合逻辑时钟）而非裸墙钟 |
 | 上下文预算 | 有面 | `--budget <元>` 对所有读数生效：只丢整行、从尾部丢，`truncation` 元数据自己算进预算；ASCII 4 字 = 1 元、非 ASCII 4 元 |
-| Git 生态 | 薄 | `git-export` / `git-import` 默认拒绝 merge 图，只有显式 `--first-parent` 才按第一父链线性化；保留作者/提交者/时间/父链元数据，并落 `git_bridge` 审计事件（map digest、merge 数、成功/失败）；仍无完整多父图、submodule、tag，也不把 Git 签名信任映射进来 |
+| Git 生态 | 薄 | `git-export` / `git-import` 默认保留完整多父图，`--first-parent` 才线性化；保留作者/提交者/时间/父链元数据，并落 `git_bridge` v2 审计事件（map digest、merge 数、成功/失败）；仍无 submodule、tag，也不把 Git 签名信任映射进来 |
 
 ## 明确没做的（别当成已具备）
 
@@ -43,9 +43,9 @@
   不记账，避免扫描器刷爆日志。
 - **视图 pin 只覆盖单个客户端见过的历史**：能发现服务端回滚、同高换根、换掉已落账前缀；两个客户端
   各自没见过对方的 pin，所以互相之间的分裂视图仍要靠签名检查点/gossip/共享锚（未做）。
-- **Git 桥只保真到“元数据 + 失败闭合”**：默认遇到 merge 直接拒绝，只有显式 `--first-parent` 才按第一
-  父链线性化；作者/提交者/时间/原始 parents/签名状态写进提交证据，导出时恢复作者与时间。完整多父图
-  没有搬进 trit 提交图，Git 签名本身没有映射成 trit 信任，submodule 和 tag 仍未搬。
+- **Git 桥已保真到多父图 + 元数据**：默认导入/导出完整 DAG，作者/提交者/时间/原始 parents/签名
+  状态写进提交证据，导出时恢复作者与时间；`--first-parent` 仍可显式降级。Git 签名本身没有映射成
+  trit 信任，submodule 和 tag 仍未搬。
 - `pull` 全量时会把 HEAD 与索引落到被拉的提交；**带 `--prefix` 时不动 HEAD**（否则范围外会被算成删除），
   两种形态都不删本地多余文件。
 - 认领账本放在**中央仓目录**里，多个工作树共享；但账本**没有走网络**：远程克隆仍要能读到同一个
@@ -136,18 +136,26 @@ trit-vcs pull main --remote http://127.0.0.1:7878 --token-file token.txt --no-pi
 
 ## Git 桥
 
-`git-export` / `git-import` 默认**拒绝 merge 图**，不会悄悄只搬第一父链；确认可以丢多父关系时必须
-显式加 `--first-parent`：
+`git-import` / `git-export` 默认保留**完整多父图**，不会再悄悄只搬第一父链；`--first-parent`
+只在明确接受线性化时使用：
 
 ```sh
-trit-vcs git-import ./some-git-repo --first-parent
-trit-vcs git-export ./some-git-repo --first-parent
+trit-vcs git-import ./some-git-repo
+trit-vcs git-export ./some-git-repo
+trit-vcs git-import ./some-git-repo --first-parent   # 显式降级为第一父链
 ```
 
-导入时把 Git 作者/提交者/时间/原始 parents/签名状态写进提交证据（`git-author:`、`git-committer:`、
-`git-author-at:`、`git-parents:` 等），导出时从这些证据恢复作者与提交时间。两个方向都落
-`git_bridge` 事件，记录成功/失败、提交数、文件数、merge 数、元数据数和映射表摘要；失败的 import
-也会留下失败事件。完整多父图、Git 签名信任、submodule 和 tag 仍未搬。
+导入按 `git rev-list --reverse --topo-order` 重建全部父，导出用 `git commit-tree -p` 复原 merge；
+`log --all` 可按全图查看（默认 `log` 仍只走第一父链）。导入时把 Git 作者/提交者/时间/原始
+parents/签名状态写进提交证据（`git-author:`、`git-committer:`、`git-author-at:`、`git-parents:`
+等），导出时从这些证据恢复作者与提交时间。两个方向都落 `git_bridge` v2 事件，记录成功/失败、
+`first_parent`、提交数、文件数、merge 数、元数据数和映射表摘要；失败的 import 也会留下失败事件。
+Git 签名信任、submodule 和 tag 仍未搬。
+
+- 导出到**已有历史**的 Git 仓时，trit 根提交会挂到旧 HEAD 上以保留旧历史，根因此不再是真根；
+  detached HEAD 会报错。
+- 物化以 trit 提交树为准：树外文件会被删除，最后用 `reset --hard` 同步分支与工作树/索引。
+  不要把含未提交或未跟踪文件的目录当导出目标；需要保留的内容先备份。
 
 ## 跨仓认领账本
 

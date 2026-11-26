@@ -82,8 +82,8 @@
  {
   "name": "vcs: 第二条提交不记父提交（历史断成散点）",
   "file": "src/repo.rs",
-  "old": "        if let Some(parent) = parent {",
-  "new": "        if let Some(parent) = None::<Hash> {",
+  "old": "            for parent in &parents {\n                commit = commit.with_parent(*parent);\n            }",
+  "new": "            for _parent in &parents {\n                // mutation: 不记父\n            }",
   "filter": "second_commit_links_to_first",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -512,18 +512,8 @@
  {
   "name": "vcs: Git 导出不同步删除（上一版文件留在镜像里）",
   "file": "src/git_bridge.rs",
-  "old": "            if !wanted.contains(rel.as_str()) {",
-  "new": "            if false {",
-  "filter": "export_then_import_roundtrip_keeps_content_and_order",
-  "pkg": "trit-vcs",
-  "runner": "cargo",
-  "target": "lib"
- },
- {
-  "name": "vcs: Git 导出按新→旧写（父链反了）",
-  "file": "src/git_bridge.rs",
-  "old": "    for (id, commit) in log.iter().rev() {",
-  "new": "    for (id, commit) in log.iter() {",
+  "old": "        if !wanted.contains(rel.as_str()) {",
+  "new": "        if false {",
   "filter": "export_then_import_roundtrip_keeps_content_and_order",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -534,16 +524,6 @@
   "file": "src/git_bridge.rs",
   "old": "        .is_some_and(|line| line.trim_start().starts_with(\"Trit-\"))",
   "new": "        .is_some_and(|_line| false)",
-  "filter": "export_then_import_roundtrip_keeps_content_and_order",
-  "pkg": "trit-vcs",
-  "runner": "cargo",
-  "target": "lib"
- },
- {
-  "name": "vcs: Git 导入不倒序（提交逆序）",
-  "file": "src/git_bridge.rs",
-  "old": "let mut args = vec![\"log\", \"--reverse\", \"--format=%H\"];",
-  "new": "let mut args = vec![\"log\", \"--format=%H\"];",
   "filter": "export_then_import_roundtrip_keeps_content_and_order",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3581,16 +3561,6 @@
   "target": "lib"
  },
  {
-  "name": "vcs: Git 桥默认不拒绝 merge 图",
-  "file": "src/git_bridge.rs",
-  "old": "    let merges = merge_count(git_dir, false)?;\n    if merges > 0 && !options.first_parent {\n        stats.merge_commits = merges;\n        bridge.merge_commits = merges;\n        return Err(GitError::MergeGraphUnsupported { merges });\n    }",
-  "new": "    let merges = merge_count(git_dir, false)?;\n    if false && merges > 0 && !options.first_parent {\n        stats.merge_commits = merges;\n        bridge.merge_commits = merges;\n        return Err(GitError::MergeGraphUnsupported { merges });\n    }",
-  "filter": "merge_graph_is_refused_unless_first_parent_is_explicit",
-  "pkg": "trit-vcs",
-  "runner": "cargo",
-  "target": "lib"
- },
- {
   "name": "vcs: import 不写 Git 作者/提交者元数据",
   "file": "src/git_bridge.rs",
   "old": "        evidence.extend(meta.evidence());",
@@ -3631,11 +3601,151 @@
   "target": "lib"
  },
  {
-  "name": "vcs: Git 导出不拒绝 merge 图",
+  "name": "vcs: Git 导入只保留第一父（多父图丢边）",
   "file": "src/git_bridge.rs",
-  "old": "    if merges > 0 && !options.first_parent {\n        return Err(GitError::MergeGraphUnsupported { merges });\n    }\n    ensure_repo(git_dir)?;",
-  "new": "    if false && merges > 0 && !options.first_parent {\n        return Err(GitError::MergeGraphUnsupported { merges });\n    }\n    ensure_repo(git_dir)?;",
-  "filter": "export_refuses_trit_merge_graph",
+  "old": "            if options.first_parent && !parents.is_empty() {\n                break;\n            }",
+  "new": "            if !parents.is_empty() {\n                break;\n            }",
+  "filter": "git_merge_graph_imports_by_default_and_first_parent_can_degrade",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 导入不映射父提交（全变根）",
+  "file": "src/git_bridge.rs",
+  "old": "            parents.push(*id);",
+  "new": "            let _ = id;",
+  "filter": "git_merge_graph_imports_by_default_and_first_parent_can_degrade",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 导出只连第一父（丢 merge 第二父）",
+  "file": "src/git_bridge.rs",
+  "old": "        let selected: Vec<Hash> = if options.first_parent {\n            commit.parents.iter().take(1).copied().collect()\n        } else {\n            commit.parents.clone()\n        };",
+  "new": "        let selected: Vec<Hash> = commit.parents.iter().take(1).copied().collect();",
+  "filter": "export_preserves_trit_merge_graph",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 导出不写父映射（子提交找不到父）",
+  "file": "src/git_bridge.rs",
+  "old": "        shas.insert(*id, sha.clone());",
+  "new": "        let _ = (id, sha.clone());",
+  "filter": "export_preserves_trit_merge_graph",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 导出不更新分支顶端",
+  "file": "src/git_bridge.rs",
+  "old": "    if let Some(sha) = last {\n        set_head(git_dir, &sha)?;\n    }",
+  "new": "    if let Some(_sha) = last {\n        // mutation: 不更新 ref\n    }",
+  "filter": "export_preserves_trit_merge_graph",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 导入不倒序（提交逆序）",
+  "file": "src/git_bridge.rs",
+  "old": "let mut args = vec![\"rev-list\", \"--reverse\", \"--topo-order\"];",
+  "new": "let mut args = vec![\"rev-list\", \"--topo-order\"];",
+  "filter": "export_then_import_roundtrip_keeps_content_and_order",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 导出按新→旧写（父链反了）",
+  "file": "src/git_bridge.rs",
+  "old": "    for (id, commit) in &commits {",
+  "new": "    for (id, commit) in commits.iter().rev() {",
+  "filter": "export_then_import_roundtrip_keeps_content_and_order",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: log_all 只走第一父链",
+  "file": "src/repo/graph.rs",
+  "old": "                frames.last_mut().expect(\"栈非空\").1 += 1;",
+  "new": "                frames.last_mut().expect(\"栈非空\").1 = parents.len();",
+  "filter": "repo::graph::tests::all_parents_are_visited_and_returned_newest_first",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 提交对象只写第一父",
+  "file": "src/repo.rs",
+  "old": "            for parent in &parents {\n                commit = commit.with_parent(*parent);\n            }",
+  "new": "            if let Some(parent) = parents.first() {\n                commit = commit.with_parent(*parent);\n            }",
+  "filter": "git_bridge::tests::export_preserves_trit_merge_graph",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git bridge 事件不记 first_parent",
+  "file": "src/git_bridge.rs",
+  "old": "        \"first_parent\": stats.first_parent,",
+  "new": "        \"first_parent\": false,",
+  "filter": "git_merge_graph_imports_by_default_and_first_parent_can_degrade",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git bridge 事件把 merge 数写成 0",
+  "file": "src/git_bridge.rs",
+  "old": "        \"merge_commits\": stats.merge_commits,",
+  "new": "        \"merge_commits\": 0,",
+  "filter": "git_merge_graph_imports_by_default_and_first_parent_can_degrade",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: missing_ancestors 只走第一父（侧分支父提交漏发）",
+  "file": "src/bundle.rs",
+  "old": "        stack.extend(commit_object(src, &id)?.parents);",
+  "new": "        stack.extend(commit_object(src, &id)?.parents.first().copied());",
+  "filter": "missing_ancestors_walks_all_parents",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: merge_base 拿 a 的祖先当 b 的祖先（公共祖先算错）",
+  "file": "src/repo.rs",
+  "old": "            self.log_from(*b)?.into_iter().map(|(id, _)| id).collect();",
+  "new": "            self.log_from(*a)?.into_iter().map(|(id, _)| id).collect();",
+  "filter": "all_parents_are_visited_and_returned_newest_first",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: publish 父图只走第一父（侧分支提交漏发）",
+  "file": "src/remote.rs",
+  "old": "        pending.extend(parsed.parents);",
+  "new": "        pending.extend(parsed.parents.first().copied());",
+  "filter": "publish_body_carries_all_parent_commits",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: verify 只体检第一父链（侧分支绕过体检）",
+  "file": "src/repo.rs",
+  "old": "        let commits = self.log_all()?;",
+  "new": "        let commits = self.log()?;",
+  "filter": "all_parents_are_visited_and_returned_newest_first",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"

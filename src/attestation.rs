@@ -457,7 +457,7 @@ mod tests {
             allow_unclaimed: true,
             witness,
             intent: None,
-            parent_override: None,
+            parents_override: None,
             now_secs: 1_000,
         }
     }

@@ -399,7 +399,7 @@ fn merge_bench() {
                 acquired_at: 1,
                 expires_at: u64::MAX / 2,
             }],
-            parent_override: parent,
+            parents_override: parent.map(|id| vec![id]),
             now_secs: now,
             ..Default::default()
         })

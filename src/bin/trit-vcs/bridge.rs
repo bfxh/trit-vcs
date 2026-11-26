@@ -54,10 +54,14 @@ pub(crate) fn export_cmd(args: &[String]) -> ExitCode {
                 stats.commits, target, stats.files_written
             );
             if stats.merge_commits > 0 {
-                eprintln!(
-                    "注意：按 --first-parent 线性化，忽略了 {} 个 merge 的次要父链；审计事件已记录",
-                    stats.merge_commits
-                );
+                if options.first_parent {
+                    eprintln!(
+                        "注意：按 --first-parent 线性化，忽略了 {} 个 merge 的次要父链；审计事件已记录",
+                        stats.merge_commits
+                    );
+                } else {
+                    println!("保留 {} 个 merge 提交（完整多父图）", stats.merge_commits);
+                }
             }
             let rows = stats
                 .map
@@ -100,10 +104,14 @@ pub(crate) fn import_cmd(args: &[String]) -> ExitCode {
                 );
             }
             if stats.merge_commits > 0 {
-                eprintln!(
-                    "注意：按 --first-parent 线性化，丢弃 {} 个 merge 的次要父链；审计事件已记录",
-                    stats.merge_commits
-                );
+                if options.first_parent {
+                    eprintln!(
+                        "注意：按 --first-parent 线性化，丢弃 {} 个 merge 的次要父链；审计事件已记录",
+                        stats.merge_commits
+                    );
+                } else {
+                    println!("保留 {} 个 merge 提交（完整多父图）", stats.merge_commits);
+                }
             }
             let rows = stats
                 .map

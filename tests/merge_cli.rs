@@ -48,7 +48,7 @@ fn commit(repo: &mut Repo, body: &str, parent: Option<Hash>, now: u64) -> Hash {
             acquired_at: 1,
             expires_at: u64::MAX / 2,
         }],
-        parent_override: parent,
+        parents_override: parent.map(|id| vec![id]),
         now_secs: now,
         ..Default::default()
     })

@@ -415,7 +415,7 @@ pub fn merge_audited(
     }
 }
 
-/// 三方合并两个提交（`base` 为 `None` 时自动找第一父链的公共祖先）。
+/// 三方合并两个提交（`base` 为 `None` 时按全部父图找公共祖先）。
 pub fn merge(
     repo: &Repo,
     ours: &Hash,

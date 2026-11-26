@@ -48,7 +48,7 @@ fn stage_commit_and_log() {
             allow_unclaimed: false,
             witness: None,
             intent: None,
-            parent_override: None,
+            parents_override: None,
             now_secs: 1_000,
         })
         .unwrap();

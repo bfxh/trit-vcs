@@ -287,7 +287,7 @@ mod tests {
                 allow_unclaimed: true,
                 witness: None,
                 intent: None,
-                parent_override: None,
+                parents_override: None,
                 now_secs: 1_000,
             })
             .unwrap();

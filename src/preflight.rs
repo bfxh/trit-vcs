@@ -29,6 +29,8 @@ pub struct Decision {
     pub claim_ids: Vec<String>,
     /// `(摘要, 解析后的见证)`；摘要 = 见证字节的 BLAKE3，与写盘后 `put_chunk` 的 id 同一个值。
     pub witness: Option<(Hash, Witness)>,
+    /// 所有父提交；第一条是主父，intent 的 base 与见证的基准都对齐它。
+    pub parents: Vec<Hash>,
     pub parent: Option<Hash>,
     pub base_tree: Option<Hash>,
     pub intent: Option<Intent>,
@@ -41,6 +43,7 @@ pub struct Facts {
     pub verdict: &'static str,
     pub tree: String,
     pub parent: Option<String>,
+    pub parents: Vec<String>,
     pub base_tree: Option<String>,
     pub touched: Vec<String>,
     pub staged_paths: usize,
@@ -90,7 +93,17 @@ pub(crate) fn decide(repo: &Repo, req: &CommitRequest) -> Result<Decision, RepoE
         _ => {}
     }
     let policy = repo.policy()?;
-    let parent = req.parent_override.or(repo.head()?);
+    // `None` 跟 HEAD；`Some(vec![])` 是显式根提交（导入 Git 根时不能挂到当前 HEAD 上）。
+    let mut parents = match &req.parents_override {
+        Some(parents) => parents.clone(),
+        None => repo.head()?.into_iter().collect(),
+    };
+    let mut seen = HashSet::new();
+    parents.retain(|parent| seen.insert(*parent));
+    for parent in &parents {
+        repo.commit_at(parent)?;
+    }
+    let parent = parents.first().copied();
     let base_tree = match parent {
         Some(id) => Some(repo.commit_at(&id)?.tree),
         None => None,
@@ -144,6 +157,7 @@ pub(crate) fn decide(repo: &Repo, req: &CommitRequest) -> Result<Decision, RepoE
         staged: index.paths.len(),
         claim_ids: req.claims.iter().map(|claim| claim.id.clone()).collect(),
         witness,
+        parents,
         parent,
         base_tree,
         intent,
@@ -185,6 +199,7 @@ fn project(d: &Decision, size: SizeFacts) -> Facts {
         verdict: d.verdict.label(),
         tree: d.tree.to_hex(),
         parent: d.parent.map(|id| id.to_hex()),
+        parents: d.parents.iter().map(|id| id.to_hex()).collect(),
         base_tree: d.base_tree.map(|id| id.to_hex()),
         touched: d.touched.clone(),
         staged_paths: d.staged,

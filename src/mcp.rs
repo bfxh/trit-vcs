@@ -515,7 +515,7 @@ impl Mcp {
                         .unwrap_or(false),
                     witness,
                     intent,
-                    parent_override: None,
+                    parents_override: None,
                     now_secs: now_secs(),
                 };
                 // 判决段与 commit() 同源（preflight::decide），所以 dry_run 说放行就真放行

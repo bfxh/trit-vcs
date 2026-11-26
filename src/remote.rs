@@ -2,7 +2,7 @@
 //! `pull`（取一个 ref 的闭包并物化）。
 //!
 //! 这一层只做**判定**，不做 HTTP（在 `net`）也不做线格式（在 `wire`）：
-//! - publish 的对象集是"提交闭包 + 第一父链的提交对象"，封顶 `ANCESTOR_CAP` 条；
+//! - publish 的对象集是"提交闭包 + 全部父图的提交对象"，封顶 `ANCESTOR_CAP` 条；
 //! - 服务端收完对象后必须能证明：tip 是提交、树闭包齐全、且新 tip 是现有 ref 的后代；
 //! - **网络不开放 force**：快进只进不退，改写历史只能在中央仓本地做（这是边界不是缺口）；
 //! - pull 的 `prefix` 只过滤树清单与对象闭包；全量 pull 才会把 HEAD 与索引落到被拉的提交，
@@ -164,7 +164,7 @@ impl Remediable for RemoteError {
     }
 }
 
-/// 客户端 publish：把 `commit`（缺省 HEAD）的闭包与第一父链发到 `ref`。
+/// 客户端 publish：把 `commit`（缺省 HEAD）的闭包与全部父图发到 `ref`。
 pub fn publish_to(
     remote: &str,
     token: &str,
@@ -318,7 +318,7 @@ fn finish_view(
     Ok((reply.snapshot, status, reply.signature))
 }
 
-/// 发布要发的对象：提交闭包（tip 的树/文件映射/块）+ 第一父链的提交对象（去重）。
+/// 发布要发的对象：提交闭包（tip 的树/文件映射/块）+ 全部父图的提交对象（去重）。
 pub fn publish_body(repo: &Repo, tip: Hash) -> Result<wire::Body, RemoteError> {
     let store = repo.store();
     let mut body = wire::Body {
@@ -336,28 +336,29 @@ pub fn publish_body(repo: &Repo, tip: Hash) -> Result<wire::Body, RemoteError> {
             body.objects.push(id);
         }
     }
-    let mut cursor = repo.commit_at(&tip)?.parents.first().copied();
+    let mut pending = repo.commit_at(&tip)?.parents;
     let mut steps = 0usize;
-    while let Some(id) = cursor {
+    while let Some(id) = pending.pop() {
         if !store.has_chunk(&id) {
             return Err(RemoteError::HistoryGap(format!(
                 "本地缺父提交 {id}：先把历史补齐（trit-vcs pull / import）"
             )));
         }
-        if seen.insert(id) {
-            body.objects.push(id);
+        if !seen.insert(id) {
+            continue;
         }
+        body.objects.push(id);
         let parsed: Commit = repo.commit_at(&id)?;
         for evidence in sync::commit_evidence(repo, &id)? {
             if seen.insert(evidence) {
                 body.objects.push(evidence);
             }
         }
-        cursor = parsed.parents.first().copied();
+        pending.extend(parsed.parents);
         steps += 1;
         if steps > ANCESTOR_CAP {
             return Err(RemoteError::HistoryGap(format!(
-                "父链超过 {ANCESTOR_CAP} 条：先把中央仓的 ref 往前推一段再发"
+                "父图超过 {ANCESTOR_CAP} 条：先把中央仓的 ref 往前推一段再发"
             )));
         }
     }

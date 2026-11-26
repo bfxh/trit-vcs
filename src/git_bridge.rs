@@ -1,15 +1,15 @@
-//! Git 双向桥 v1：trit-vcs ⇄ 真 Git 仓（用系统 `git` 做适配，不引 libgit2）。
+//! Git 双向桥 v2：trit-vcs ⇄ 真 Git 仓（用系统 `git` 做适配，不引 libgit2）。
 //!
 //! 导出的每个 Git 提交带 `Trit-Id/Session/Tags/Evidence` 尾注，便于反查；
-//! 导入逐提交重建，文件内容逐字节搬运。v1 保留 Git 作者/提交者/时间/parents 元数据，
-//! 发现 merge 图默认拒绝，只有显式 `--first-parent` 才按第一父链线性化。
-//! 仍不搬 submodule，也不把多父图升级成 trit 的 merge 图。
+//! 导入逐提交重建，文件内容逐字节搬运。v2 保留多父图、Git 作者/提交者/时间；
+//! `--first-parent` 仍是显式降级，只走第一父链。仍不搬 submodule/tag，也不导入 Git 签名信任。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::hash::Hash;
+use crate::model::Commit;
 use crate::repo::{CommitRequest, Repo, RepoError};
 use crate::store::StoreError;
 
@@ -27,10 +27,8 @@ pub enum GitError {
     BadPath(String),
     #[error("源仓还没有提交")]
     NoCommits,
-    #[error(
-        "发现 {merges} 个 merge 提交；Git 桥 v1 不保留多父图。确认要按第一父链线性化，请显式加 --first-parent"
-    )]
-    MergeGraphUnsupported { merges: usize },
+    #[error("Git 图不成立：{0}")]
+    Graph(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -199,11 +197,19 @@ fn read_meta(git_dir: &Path, sha: &str) -> Result<GitMeta, GitError> {
     })
 }
 
-fn git_commit(dir: &Path, message: &str, meta: &GitMeta) -> Result<String, GitError> {
+fn git_commit_tree(
+    dir: &Path,
+    tree: &str,
+    parents: &[String],
+    message: &str,
+    meta: &GitMeta,
+) -> Result<String, GitError> {
     let mut command = Command::new("git");
-    command
-        .args(["commit", "-q", "--allow-empty", "-m", message])
-        .current_dir(dir);
+    command.args(["commit-tree", tree]);
+    for parent in parents {
+        command.args(["-p", parent]);
+    }
+    command.args(["-m", message]).current_dir(dir);
     if !meta.author_name.is_empty() && !meta.author_email.is_empty() {
         command
             .env("GIT_AUTHOR_NAME", one_line(&meta.author_name))
@@ -221,16 +227,51 @@ fn git_commit(dir: &Path, message: &str, meta: &GitMeta) -> Result<String, GitEr
         command.env("GIT_COMMITTER_DATE", format!("@{at} +0000"));
     }
     let output = command.output().map_err(|err| GitError::Git {
-        args: format!("commit {message}"),
+        args: format!("commit-tree {tree}"),
         stderr: err.to_string(),
     })?;
     if !output.status.success() {
         return Err(GitError::Git {
-            args: "commit".to_string(),
+            args: "commit-tree".to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });
     }
-    Ok(git_text(dir, &["rev-parse", "HEAD"])?.trim().to_string())
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sha.len() != 40 {
+        return Err(GitError::Git {
+            args: "commit-tree".to_string(),
+            stderr: format!("期望 40 位提交 sha，实际 {sha:?}"),
+        });
+    }
+    Ok(sha)
+}
+
+fn existing_head(dir: &Path) -> Result<Option<String>, GitError> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .current_dir(dir)
+        .output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((sha.len() == 40).then_some(sha))
+}
+
+/// 把目标仓当前分支移到导出的图顶端，并同步工作树/索引。
+fn set_head(dir: &Path, sha: &str) -> Result<(), GitError> {
+    let branch = git_text(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"])?
+        .trim()
+        .to_string();
+    if branch.is_empty() {
+        return Err(GitError::Graph(
+            "目标 Git 仓的 HEAD 是 detached；先切到一个分支再导出".to_string(),
+        ));
+    }
+    let refname = format!("refs/heads/{branch}");
+    git_raw(dir, &["update-ref", &refname, sha])?;
+    git_raw(dir, &["reset", "--hard", sha])?;
+    Ok(())
 }
 
 fn record_bridge(
@@ -241,9 +282,10 @@ fn record_bridge(
     error: Option<&str>,
 ) {
     let payload = serde_json::json!({
-        "schema": "trit-git-bridge-v1",
+        "schema": "trit-git-bridge-v2",
         "action": action,
         "status": status,
+        "first_parent": stats.first_parent,
         "commits": stats.commits,
         "files": stats.files,
         "merge_commits": stats.merge_commits,
@@ -265,6 +307,7 @@ fn wall_ms() -> u64 {
 
 #[derive(Clone, Debug, Default)]
 struct BridgeStats {
+    first_parent: bool,
     commits: usize,
     files: usize,
     merge_commits: usize,
@@ -344,12 +387,12 @@ fn trailer_line(id: Hash, commit: &crate::model::Commit) -> String {
     out
 }
 
-/// 把 trit 仓的第一父链按旧→新写进 `git_dir`（没有 `.git` 就初始化）。
+/// 把 trit 仓的完整多父图按旧→新写进 `git_dir`（没有 `.git` 就初始化）。
 pub fn export(repo: &mut Repo, git_dir: &Path) -> Result<ExportStats, GitError> {
     export_with_options(repo, git_dir, &BridgeOptions::default())
 }
 
-/// 导出；默认拒绝 merge 图，`first_parent` 是显式降级。
+/// 导出；默认保留完整多父图，`first_parent` 是显式降级。
 pub fn export_with_options(
     repo: &mut Repo,
     git_dir: &Path,
@@ -377,59 +420,103 @@ fn export_inner(
     stats: &mut ExportStats,
     bridge: &mut BridgeStats,
 ) -> Result<(), GitError> {
-    let log = repo.log()?;
-    if log.is_empty() {
+    let commits = if options.first_parent {
+        repo.log()?.into_iter().rev().collect::<Vec<_>>()
+    } else {
+        repo.log_all()?.into_iter().rev().collect::<Vec<_>>()
+    };
+    if commits.is_empty() {
         return Err(GitError::NoCommits);
     }
-    let merges = log
+    let merges = commits
         .iter()
         .filter(|(_, commit)| commit.parents.len() > 1)
         .count();
+    bridge.first_parent = options.first_parent;
     bridge.merge_commits = merges;
-    if merges > 0 && !options.first_parent {
-        return Err(GitError::MergeGraphUnsupported { merges });
-    }
+    stats.merge_commits = merges;
     ensure_repo(git_dir)?;
-    for (id, commit) in log.iter().rev() {
-        let entries = repo.store().tree_entries(&commit.tree)?;
-        let wanted: BTreeSet<&str> = entries.keys().map(String::as_str).collect();
-        // 先同步新增/修改，再删掉上一版有、这一版没有的文件。
-        for (path, file_id) in &entries {
-            let bytes = repo.store().get_file(file_id)?;
-            let target = safe_join(git_dir, path)?;
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
+    let existing = existing_head(git_dir)?;
+    let mut shas: HashMap<Hash, String> = HashMap::new();
+    let mut last = None;
+    for (id, commit) in &commits {
+        materialize(repo, git_dir, commit, stats)?;
+        let tree = git_text(git_dir, &["write-tree"])?.trim().to_string();
+        let selected: Vec<Hash> = if options.first_parent {
+            commit.parents.iter().take(1).copied().collect()
+        } else {
+            commit.parents.clone()
+        };
+        let mut parents = Vec::new();
+        if selected.is_empty() {
+            if let Some(head) = &existing {
+                // 目标仓已有历史时沿用旧行为：新导入的根提交挂在原 HEAD 上，不丢旧历史。
+                parents.push(head.clone());
             }
-            let same = std::fs::read(&target)
-                .map(|old| old == bytes)
-                .unwrap_or(false);
-            if !same {
-                std::fs::write(&target, &bytes)?;
-                stats.files_written += 1;
-                bridge.files = stats.files_written;
+        } else {
+            for parent in &selected {
+                let Some(sha) = shas.get(parent) else {
+                    return Err(GitError::Graph(format!(
+                        "提交 {} 的父 {} 尚未导出（遍历顺序不成立）",
+                        id.to_hex(),
+                        parent.to_hex()
+                    )));
+                };
+                parents.push(sha.clone());
             }
         }
-        for (rel, path) in walk_files(git_dir)? {
-            if !wanted.contains(rel.as_str()) {
-                std::fs::remove_file(path)?;
-            }
-        }
-        git_raw(git_dir, &["add", "-A"])?;
         let meta = meta_from_evidence(commit);
         if meta.has_identity() {
             stats.metadata_commits += 1;
             bridge.metadata_commits += 1;
         }
         let message = format!("{}{}", commit.message, trailer_line(*id, commit));
-        let sha = git_commit(git_dir, &message, &meta)?;
+        let sha = git_commit_tree(git_dir, &tree, &parents, &message, &meta)?;
+        shas.insert(*id, sha.clone());
         stats.map.push((*id, sha.clone()));
         bridge
             .map_text
             .push_str(&format!("{} {sha}\n", id.to_hex()));
         stats.commits += 1;
         bridge.commits += 1;
+        last = Some(sha);
+    }
+    if let Some(sha) = last {
+        set_head(git_dir, &sha)?;
     }
     bridge.files = stats.files_written;
+    Ok(())
+}
+
+fn materialize(
+    repo: &Repo,
+    git_dir: &Path,
+    commit: &Commit,
+    stats: &mut ExportStats,
+) -> Result<(), GitError> {
+    let entries = repo.store().tree_entries(&commit.tree)?;
+    let wanted: BTreeSet<&str> = entries.keys().map(String::as_str).collect();
+    // 先同步新增/修改，再删掉上一版有、这一版没有的文件。
+    for (path, file_id) in &entries {
+        let bytes = repo.store().get_file(file_id)?;
+        let target = safe_join(git_dir, path)?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let same = std::fs::read(&target)
+            .map(|old| old == bytes)
+            .unwrap_or(false);
+        if !same {
+            std::fs::write(&target, &bytes)?;
+            stats.files_written += 1;
+        }
+    }
+    for (rel, path) in walk_files(git_dir)? {
+        if !wanted.contains(rel.as_str()) {
+            std::fs::remove_file(path)?;
+        }
+    }
+    git_raw(git_dir, &["add", "-A"])?;
     Ok(())
 }
 
@@ -490,7 +577,7 @@ pub fn import(repo: &mut Repo, git_dir: &Path) -> Result<ImportStats, GitError> 
     import_with_options(repo, git_dir, &BridgeOptions::default())
 }
 
-/// 导入；默认拒绝 merge 图，`first_parent` 是显式降级。
+/// 导入；默认保留完整多父图，`first_parent` 是显式降级。
 pub fn import_with_options(
     repo: &mut Repo,
     git_dir: &Path,
@@ -518,24 +605,17 @@ fn import_inner(
     stats: &mut ImportStats,
     bridge: &mut BridgeStats,
 ) -> Result<(), GitError> {
-    let merges = merge_count(git_dir, false)?;
-    if merges > 0 && !options.first_parent {
-        stats.merge_commits = merges;
-        bridge.merge_commits = merges;
-        return Err(GitError::MergeGraphUnsupported { merges });
-    }
-    let imported_merges = if options.first_parent {
-        merge_count(git_dir, true)?
-    } else {
-        merges
-    };
+    let imported_merges = merge_count(git_dir, options.first_parent)?;
     stats.merge_commits = imported_merges;
+    bridge.first_parent = options.first_parent;
     bridge.merge_commits = imported_merges;
-    let mut args = vec!["log", "--reverse", "--format=%H"];
+    let mut args = vec!["rev-list", "--reverse", "--topo-order"];
     if options.first_parent {
         args.push("--first-parent");
     }
+    args.push("HEAD");
     let log = git_text(git_dir, &args)?;
+    let mut imported: HashMap<String, Hash> = HashMap::new();
     for sha in log.lines().map(str::trim).filter(|line| !line.is_empty()) {
         let mut files = BTreeMap::new();
         for blob in list_blobs(git_dir, sha)? {
@@ -548,6 +628,18 @@ fn import_inner(
             .map(|text| strip_trailers(&text))
             .unwrap_or_default();
         let meta = read_meta(git_dir, sha)?;
+        let mut parents = Vec::new();
+        for parent in &meta.parents {
+            if options.first_parent && !parents.is_empty() {
+                break;
+            }
+            let Some(id) = imported.get(parent) else {
+                return Err(GitError::Graph(format!(
+                    "Git 提交 {sha} 的父 {parent} 尚未导入（拓扑序不成立）"
+                )));
+            };
+            parents.push(*id);
+        }
         let now = meta.committer_at.or(meta.author_at).unwrap_or(0).max(1);
         repo.stage(&files, now)?;
         stats.files += files.len();
@@ -578,7 +670,7 @@ fn import_inner(
             allow_unclaimed: true,
             witness: None,
             intent: None,
-            parent_override: None,
+            parents_override: Some(parents),
             now_secs: now,
         })?;
         stats.map.push((sha.to_string(), outcome.id));
@@ -587,6 +679,7 @@ fn import_inner(
         bridge
             .map_text
             .push_str(&format!("{sha} {}\n", outcome.id.to_hex()));
+        imported.insert(sha.to_string(), outcome.id);
     }
     Ok(())
 }

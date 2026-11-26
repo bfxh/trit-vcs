@@ -103,8 +103,8 @@ pub struct CommitRequest {
     pub witness: Option<Vec<u8>>,
     /// 改动意图；`base` 为空时由提交自动填成父提交的树
     pub intent: Option<Intent>,
-    /// 测试/合并用：显式指定父提交（缺省跟 HEAD）。HEAD 仍会推进到新提交。
-    pub parent_override: Option<Hash>,
+    /// 测试/合并/桥接用：显式指定全部父提交（`None` 跟 HEAD，`Some(vec![])` 是显式根提交）。
+    pub parents_override: Option<Vec<Hash>>,
     pub now_secs: u64,
 }
 
@@ -523,7 +523,7 @@ impl Repo {
         });
         self.with_operation("commit", args, at_ms, |repo| {
             let verdict = decision.verdict;
-            let parent = decision.parent;
+            let parents = decision.parents;
             let intent = decision.intent;
             // 判决里已经逐字校验过见证并算出摘要；这里只负责把见证字节落进对象库。
             if let Some(bytes) = req.witness.as_deref() {
@@ -554,8 +554,8 @@ impl Repo {
             if let Some(intent) = &intent {
                 commit = commit.with_intent(intent.clone());
             }
-            if let Some(parent) = parent {
-                commit = commit.with_parent(parent);
+            for parent in &parents {
+                commit = commit.with_parent(*parent);
             }
             for claim in &req.claims {
                 commit = commit.with_claim(claim.id.clone());
@@ -579,6 +579,7 @@ impl Repo {
                 json!({
                     "id": id.to_hex(),
                     "tree": tree.to_hex(),
+                    "parents": parents.iter().map(|id| id.to_hex()).collect::<Vec<_>>(),
                     "session": commit.session,
                     "claims": commit.claims,
                     "evidence": commit.evidence,
@@ -656,20 +657,14 @@ impl Repo {
             .collect())
     }
 
-    /// 两个提交的最近公共祖先（只看第一父链；线性历史够用）。
+    /// 两个提交的最近公共祖先（走全部父，不只看第一父链）。
     pub fn merge_base(&self, a: &Hash, b: &Hash) -> Result<Option<Hash>, RepoError> {
-        let mut ancestors = std::collections::HashSet::new();
-        let mut cursor = Some(*b);
-        while let Some(id) = cursor {
-            ancestors.insert(id);
-            cursor = self.commit_at(&id)?.parents.first().copied();
-        }
-        let mut cursor = Some(*a);
-        while let Some(id) = cursor {
+        let ancestors: std::collections::HashSet<Hash> =
+            self.log_from(*b)?.into_iter().map(|(id, _)| id).collect();
+        for (id, _) in self.log_from(*a)? {
             if ancestors.contains(&id) {
                 return Ok(Some(id));
             }
-            cursor = self.commit_at(&id)?.parents.first().copied();
         }
         Ok(None)
     }
@@ -684,7 +679,7 @@ impl Repo {
                 bad.join("；")
             ))
         })?;
-        let commits = self.log()?;
+        let commits = self.log_all()?;
         let mut witnessed = 0usize;
         let mut claim_sets = 0usize;
         let mut receipts = 0usize;
@@ -777,6 +772,7 @@ pub struct VerifyReport {
     pub head: Option<String>,
 }
 
+mod graph;
 mod state;
 
 #[cfg(test)]

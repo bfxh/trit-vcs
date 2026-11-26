@@ -144,7 +144,7 @@ fn git_ok(dir: &Path, args: &[&str]) {
 }
 
 #[test]
-fn git_import_refuses_merge_graph_unless_first_parent_is_explicit() {
+fn git_import_keeps_merge_graph_by_default_and_first_parent_degrades() {
     if Command::new("git").arg("--version").output().is_err() {
         eprintln!("跳过：本机没有 git");
         return;
@@ -174,36 +174,62 @@ fn git_import_refuses_merge_graph_unless_first_parent_is_explicit() {
     assert!(run(&dst, &["init"]).status.success());
     let git_text = git_dir.to_string_lossy().to_string();
     let dst_text = dst.to_string_lossy().to_string();
-    let refused = run(&dst, &["git-import", &git_text, "--repo", &dst_text]);
-    assert!(!refused.status.success(), "默认必须拒绝 merge 图");
+    let imported = run(&dst, &["git-import", &git_text, "--repo", &dst_text]);
+    assert!(imported.status.success(), "{}", stderr(&imported));
     assert!(
-        stderr(&refused).contains("merge 提交"),
+        stdout(&imported).contains("保留 1 个 merge 提交"),
         "{}",
-        stderr(&refused)
+        stdout(&imported)
     );
 
     let audit = run(&dst, &["audit", "log", "git_bridge", "--json"]);
     let events: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
-    let failed = events
+    let event = events
         .as_array()
         .unwrap()
         .iter()
-        .find(|event| event["payload"]["status"] == "failed")
-        .expect("拒绝也要落失败事件");
-    assert_eq!(failed["payload"]["merge_commits"], 1);
+        .find(|event| event["payload"]["action"] == "import")
+        .expect("导入应落事件");
+    assert_eq!(event["payload"]["status"], "ok");
+    assert_eq!(event["payload"]["merge_commits"], 1);
+    assert_eq!(event["payload"]["first_parent"], false);
 
-    let imported = run(
-        &dst,
+    let all = run(&dst, &["log", "--all", "--json"]);
+    assert!(all.status.success(), "{}", stderr(&all));
+    let rows: serde_json::Value = serde_json::from_str(&stdout(&all)).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 3, "{rows}");
+    assert_eq!(rows[0]["message"], "merge", "{rows}");
+    assert_eq!(rows[0]["parents"].as_array().unwrap().len(), 2, "{rows}");
+
+    // 从导入后的 trit 再导出一次，Git 侧必须还是 merge（两个父）。
+    let back = root.join("back");
+    let back_text = back.to_string_lossy().to_string();
+    let exported = run(&dst, &["git-export", &back_text]);
+    assert!(exported.status.success(), "{}", stderr(&exported));
+    let parents = Command::new("git")
+        .args(["log", "-1", "--format=%P", "HEAD"])
+        .current_dir(&back)
+        .output()
+        .unwrap();
+    let parents = String::from_utf8_lossy(&parents.stdout);
+    assert_eq!(parents.split_whitespace().count(), 2, "{parents}");
+
+    let flat = root.join("flat");
+    fs::create_dir_all(&flat).unwrap();
+    assert!(run(&flat, &["init"]).status.success());
+    let flat_text = flat.to_string_lossy().to_string();
+    let degraded = run(
+        &flat,
         &[
             "git-import",
             &git_text,
             "--repo",
-            &dst_text,
+            &flat_text,
             "--first-parent",
         ],
     );
-    assert!(imported.status.success(), "{}", stderr(&imported));
-    let logged = run(&dst, &["log", "--json"]);
+    assert!(degraded.status.success(), "{}", stderr(&degraded));
+    let logged = run(&flat, &["log", "--json"]);
     let rows: serde_json::Value = serde_json::from_str(&stdout(&logged)).unwrap();
     assert_eq!(rows.as_array().unwrap().len(), 2, "{rows}");
     assert!(
