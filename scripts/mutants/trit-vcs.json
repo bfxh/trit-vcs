@@ -542,8 +542,8 @@
  {
   "name": "vcs: Git 导入不倒序（提交逆序）",
   "file": "src/git_bridge.rs",
-  "old": "        &[\"log\", \"--reverse\", \"--first-parent\", \"--format=%H\"],",
-  "new": "        &[\"log\", \"--first-parent\", \"--format=%H\"],",
+  "old": "let mut args = vec![\"log\", \"--reverse\", \"--format=%H\"];",
+  "new": "let mut args = vec![\"log\", \"--format=%H\"];",
   "filter": "export_then_import_roundtrip_keeps_content_and_order",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3576,6 +3576,66 @@
   "old": "                    .or_else(|| state.actor.clone())",
   "new": "                    .or_else(|| None)",
   "filter": "per_token_bindings_pick_their_own_actor",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 桥默认不拒绝 merge 图",
+  "file": "src/git_bridge.rs",
+  "old": "    let merges = merge_count(git_dir, false)?;\n    if merges > 0 && !options.first_parent {\n        stats.merge_commits = merges;\n        bridge.merge_commits = merges;\n        return Err(GitError::MergeGraphUnsupported { merges });\n    }",
+  "new": "    let merges = merge_count(git_dir, false)?;\n    if false && merges > 0 && !options.first_parent {\n        stats.merge_commits = merges;\n        bridge.merge_commits = merges;\n        return Err(GitError::MergeGraphUnsupported { merges });\n    }",
+  "filter": "merge_graph_is_refused_unless_first_parent_is_explicit",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: import 不写 Git 作者/提交者元数据",
+  "file": "src/git_bridge.rs",
+  "old": "        evidence.extend(meta.evidence());",
+  "new": "        // mutation: 丢弃 Git 元数据",
+  "filter": "imported_git_metadata_is_audited_and_exported_back",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: export 不读 Git 作者元数据",
+  "file": "src/git_bridge.rs",
+  "old": "        let meta = meta_from_evidence(commit);",
+  "new": "        let meta = GitMeta::default();",
+  "filter": "imported_git_metadata_is_audited_and_exported_back",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: export 不恢复 Git 作者时间",
+  "file": "src/git_bridge.rs",
+  "old": "        command.env(\"GIT_AUTHOR_DATE\", format!(\"@{at} +0000\"));",
+  "new": "        let _ = format!(\"@{at} +0000\");",
+  "filter": "imported_git_metadata_is_audited_and_exported_back",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 桥成功事件记成 failed",
+  "file": "src/git_bridge.rs",
+  "old": "            record_bridge(repo, \"import\", \"ok\", &bridge, None);",
+  "new": "            record_bridge(repo, \"import\", \"failed\", &bridge, None);",
+  "filter": "imported_git_metadata_is_audited_and_exported_back",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: Git 导出不拒绝 merge 图",
+  "file": "src/git_bridge.rs",
+  "old": "    if merges > 0 && !options.first_parent {\n        return Err(GitError::MergeGraphUnsupported { merges });\n    }\n    ensure_repo(git_dir)?;",
+  "new": "    if false && merges > 0 && !options.first_parent {\n        return Err(GitError::MergeGraphUnsupported { merges });\n    }\n    ensure_repo(git_dir)?;",
+  "filter": "export_refuses_trit_merge_graph",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"

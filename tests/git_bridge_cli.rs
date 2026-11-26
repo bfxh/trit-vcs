@@ -64,6 +64,17 @@ fn export_and_import_through_the_cli() {
     let map_text = map.to_string_lossy().to_string();
     let exported = run(&src, &["git-export", &git_text, "--map", &map_text]);
     assert!(exported.status.success(), "{}", stderr(&exported));
+    let export_audit = run(&src, &["audit", "log", "git_bridge", "--json"]);
+    assert!(export_audit.status.success(), "{}", stderr(&export_audit));
+    let export_events: serde_json::Value = serde_json::from_str(&stdout(&export_audit)).unwrap();
+    let export_event = export_events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["payload"]["action"] == "export")
+        .expect("导出应落 git_bridge 事件");
+    assert_eq!(export_event["payload"]["status"], "ok");
+    assert_eq!(export_event["payload"]["commits"], 1);
 
     let log = Command::new("git")
         .args(["log", "--format=%s%n%b"])
@@ -100,5 +111,108 @@ fn export_and_import_through_the_cli() {
     assert_eq!(rows[0]["message"], "镜像一版");
     assert_eq!(rows[0]["tags"][0], "git-import");
     assert!(map.is_file(), "映射表应落盘");
+
+    let audit = run(&dst, &["audit", "log", "git_bridge", "--json"]);
+    assert!(audit.status.success(), "{}", stderr(&audit));
+    let events: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
+    let imported = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["payload"]["action"] == "import")
+        .expect("导入应落 git_bridge 事件");
+    assert_eq!(imported["payload"]["status"], "ok");
+    assert_eq!(imported["payload"]["commits"], 1);
+    assert_eq!(
+        imported["payload"]["map_digest"].as_str().unwrap().len(),
+        64
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn git_ok(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn git_import_refuses_merge_graph_unless_first_parent_is_explicit() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("跳过：本机没有 git");
+        return;
+    }
+    let root = temp("merge");
+    let git_dir = root.join("git");
+    fs::create_dir_all(&git_dir).unwrap();
+    git_ok(&git_dir, &["init", "-q", "-b", "main"]);
+    git_ok(&git_dir, &["config", "user.name", "Alice"]);
+    git_ok(&git_dir, &["config", "user.email", "alice@example.com"]);
+    fs::write(git_dir.join("base.txt"), b"base").unwrap();
+    git_ok(&git_dir, &["add", "base.txt"]);
+    git_ok(&git_dir, &["commit", "-q", "-m", "base"]);
+    git_ok(&git_dir, &["branch", "feature"]);
+    git_ok(&git_dir, &["switch", "-q", "feature"]);
+    fs::write(git_dir.join("feature.txt"), b"feature").unwrap();
+    git_ok(&git_dir, &["add", "feature.txt"]);
+    git_ok(&git_dir, &["commit", "-q", "-m", "feature"]);
+    git_ok(&git_dir, &["switch", "-q", "main"]);
+    git_ok(
+        &git_dir,
+        &["merge", "--no-ff", "-q", "-m", "merge", "feature"],
+    );
+
+    let dst = root.join("dst");
+    fs::create_dir_all(&dst).unwrap();
+    assert!(run(&dst, &["init"]).status.success());
+    let git_text = git_dir.to_string_lossy().to_string();
+    let dst_text = dst.to_string_lossy().to_string();
+    let refused = run(&dst, &["git-import", &git_text, "--repo", &dst_text]);
+    assert!(!refused.status.success(), "默认必须拒绝 merge 图");
+    assert!(
+        stderr(&refused).contains("merge 提交"),
+        "{}",
+        stderr(&refused)
+    );
+
+    let audit = run(&dst, &["audit", "log", "git_bridge", "--json"]);
+    let events: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
+    let failed = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["payload"]["status"] == "failed")
+        .expect("拒绝也要落失败事件");
+    assert_eq!(failed["payload"]["merge_commits"], 1);
+
+    let imported = run(
+        &dst,
+        &[
+            "git-import",
+            &git_text,
+            "--repo",
+            &dst_text,
+            "--first-parent",
+        ],
+    );
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    let logged = run(&dst, &["log", "--json"]);
+    let rows: serde_json::Value = serde_json::from_str(&stdout(&logged)).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 2, "{rows}");
+    assert!(
+        rows[0]["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tag| tag == "git-merge"),
+        "{rows}"
+    );
     let _ = fs::remove_dir_all(&root);
 }

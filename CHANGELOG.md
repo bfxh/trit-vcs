@@ -6,6 +6,10 @@
 ## [Unreleased]
 
 ### Added
+- Git 桥保真 v1：`git-import` / `git-export` 默认拒绝 merge 图，只有显式 `--first-parent` 才按
+  第一父链线性化；导入把 Git 作者/提交者/时间/原始 parents/签名状态写进提交证据，导出恢复作者与
+  提交时间。两个方向都落 `git_bridge` 审计事件（成功/失败、提交数、文件数、merge 数、元数据数、
+  map digest）；完整多父图、Git 签名信任映射、submodule/tag 仍未搬。
 - 每 actor 独立 token：`serve --token-file` 改为逐行解析 `<token> [actor]`（空行与 `#` 注释忽略，
   最多 256 条，token 16–256 字节且不得重复），同一服务端可按 Bearer token 把 `auth` 事件的
   actor 区分到不同主体；逐行 actor 优先，缺省退回 `--actor`，再退回 `bearer:unidentified`。
