@@ -3739,5 +3739,15 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: missing_ancestors 只走第一父（中央仓侧分支父提交漏收）",
+  "file": "src/bundle.rs",
+  "old": "        stack.extend(commit_object(src, &id)?.parents);",
+  "new": "        stack.extend(commit_object(src, &id)?.parents.first().copied());",
+  "filter": "publish_carries_side_branch_commit_objects",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]

@@ -116,10 +116,10 @@ pub fn entries_closure(
     Ok(order)
 }
 
-/// 沿第一父链补齐 `dst` 还没有的**提交对象**（只有提交，不带树与数据块）。
+/// 沿全部父补齐 `dst` 还没有的**提交对象**（只有提交，不带树与数据块）。
 ///
-/// 中央仓要能判"新提交是不是从现有 ref 往下走"，就必须能沿父链走通；
-/// `commit_closure` 明确不含父提交，所以这里单独补一段。
+/// 中央仓要能判"新提交是不是从现有 ref 往下走"，就必须能沿父图走通；
+/// `commit_closure` 明确不含父提交，所以这里单独补一段。多父提交的每一条边都走。
 pub fn missing_ancestors(
     src: &Store,
     dst: &Store,
@@ -127,15 +127,19 @@ pub fn missing_ancestors(
     cap: usize,
 ) -> Result<Vec<Hash>, BundleError> {
     let mut order = Vec::new();
-    let mut cursor = commit_object(src, &commit)?.parents.first().copied();
+    let mut seen = HashSet::new();
+    let mut stack = commit_object(src, &commit)?.parents;
     let mut steps = 0usize;
-    while let Some(id) = cursor {
-        if dst.has_chunk(&id) || steps >= cap {
+    while let Some(id) = stack.pop() {
+        if dst.has_chunk(&id) || !seen.insert(id) {
+            continue;
+        }
+        if steps >= cap {
             break;
         }
         order.push(id);
         steps += 1;
-        cursor = commit_object(src, &id)?.parents.first().copied();
+        stack.extend(commit_object(src, &id)?.parents);
     }
     Ok(order)
 }
@@ -371,6 +375,42 @@ mod tests {
     fn head_tree(repo: &Repo) -> Hash {
         let head = repo.head().unwrap().unwrap();
         repo.commit_at(&head).unwrap().tree
+    }
+
+    fn node(repo: &mut Repo, name: &str, parents: Vec<Hash>, now: u64) -> Hash {
+        let mut files = BTreeMap::new();
+        files.insert("part.txt".to_string(), name.as_bytes().to_vec());
+        repo.stage(&files, now).unwrap();
+        repo.commit(CommitRequest {
+            message: name.to_string(),
+            session: "qoder:bundle".to_string(),
+            claims: Vec::new(),
+            allow_unclaimed: true,
+            parents_override: Some(parents),
+            now_secs: now,
+            ..Default::default()
+        })
+        .unwrap()
+        .id
+    }
+
+    #[test]
+    fn missing_ancestors_walks_all_parents() {
+        let root = temp("ancestors");
+        let mut src = Repo::init(root.join("src")).unwrap();
+        let base = node(&mut src, "base", vec![], 1_000);
+        let left = node(&mut src, "left", vec![base], 1_001);
+        let right = node(&mut src, "right", vec![base], 1_002);
+        let merge = node(&mut src, "merge", vec![left, right], 1_003);
+        let tip = node(&mut src, "tip", vec![merge], 1_004);
+        let dst = Repo::init(root.join("dst")).unwrap();
+
+        let missing = missing_ancestors(src.store(), dst.store(), tip, 10).unwrap();
+        assert_eq!(missing.len(), 4, "{missing:?}");
+        for id in [base, left, right, merge] {
+            assert!(missing.contains(&id), "缺父 {id}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

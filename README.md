@@ -365,7 +365,7 @@ python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/cha
 | `attestation` | witness 的 Ed25519 sidecar：绑定提交/树/父树/原始见证/签者/会话，不改提交 id；支持严格策略、操作收口与重复/信任/吊销审计 |
 | `checkpoint` | 事件前缀的 Merkle 根与签名检查点、旧→新 consistency proof、仓内文件锚和独立外锚；外部锚只认调用方钉住的仓外公钥 |
 | `audit_bundle` | `TVAB` v1 单文件离线审计包：完整 journal/状态/独立推导的证据闭包 + 独立外锚；无仓、无网重建复验，拒绝覆盖，包内信任表不作信任根 |
-| `central` | 命名 ref（`.tritvcs/refs/<name>`）、`publish`（闭包 + 父链 + 只准往前推）、`pull`（稀疏物化，脏则拒；全量落 HEAD+索引） |
+| `central` | 命名 ref（`.tritvcs/refs/<name>`）、`publish`（闭包 + 全部父图 + 只准往前推）、`pull`（稀疏物化，脏则拒；全量落 HEAD+索引） |
 | `net` / `wire` / `remote` | 自写 HTTP/1.1 子集 + Bearer token（常量时间比较）、`TVOB` 对象流（收端重算 BLAKE3）、跨机 publish/pull 的快进与完整性闸门；鉴权失败落 `auth` 事件 |
 | `view` / `net::view` | `GET /v1/view` 的视图快照与 `from_height/from_root` consistency proof；客户端把上次成功视图记进 `trit-sync-v1`，下次同步前验旧前缀仍是新根的前缀，报 `remote_rollback`/`remote_equivocation`；`serve --view-key` 可签 Ed25519，客户端钉住签名者；`--no-pin` 显式降级 |
 | `repo` / `journal` | 提交与查询、哈希链事件日志 |
