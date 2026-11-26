@@ -3,12 +3,12 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use trit_vcs::git_bridge;
+use trit_vcs::git_bridge::{self, BridgeOptions};
 use trit_vcs::repo::Repo;
 
 use super::cli_fail::CliFail;
 use super::verdict::{fail_err, fail_repo};
-use super::{flag, positionals, repo_path};
+use super::{flag, has, positionals, repo_path};
 
 fn write_map(path: Option<&str>, rows: Vec<serde_json::Value>) -> Result<(), CliFail> {
     let Some(path) = path else {
@@ -35,21 +35,30 @@ fn write_map(path: Option<&str>, rows: Vec<serde_json::Value>) -> Result<(), Cli
 
 pub(crate) fn export_cmd(args: &[String]) -> ExitCode {
     let root = repo_path(args);
-    let repo = match Repo::open(&root) {
+    let mut repo = match Repo::open(&root) {
         Ok(repo) => repo,
         Err(err) => return fail_repo(&err, &root, "", args),
     };
-    let ids = positionals(args, &["--repo", "--map"]);
+    let ids = positionals(args, &["--repo", "--map", "--first-parent"]);
     let Some(target) = ids.first() else {
         eprintln!("git-export 需要目标 Git 目录");
         return ExitCode::from(2);
     };
-    match git_bridge::export(&repo, Path::new(target)) {
+    let options = BridgeOptions {
+        first_parent: has(args, "--first-parent"),
+    };
+    match git_bridge::export_with_options(&mut repo, Path::new(target), &options) {
         Ok(stats) => {
             println!(
                 "已导出 {} 个提交到 {}（写 {} 个文件）",
                 stats.commits, target, stats.files_written
             );
+            if stats.merge_commits > 0 {
+                eprintln!(
+                    "注意：按 --first-parent 线性化，忽略了 {} 个 merge 的次要父链；审计事件已记录",
+                    stats.merge_commits
+                );
+            }
             let rows = stats
                 .map
                 .iter()
@@ -70,17 +79,32 @@ pub(crate) fn import_cmd(args: &[String]) -> ExitCode {
         Ok(repo) => repo,
         Err(err) => return fail_repo(&err, &root, "", args),
     };
-    let ids = positionals(args, &["--repo", "--map"]);
+    let ids = positionals(args, &["--repo", "--map", "--first-parent"]);
     let Some(target) = ids.first() else {
         eprintln!("git-import 需要 Git 目录");
         return ExitCode::from(2);
     };
-    match git_bridge::import(&mut repo, Path::new(target)) {
+    let options = BridgeOptions {
+        first_parent: has(args, "--first-parent"),
+    };
+    match git_bridge::import_with_options(&mut repo, Path::new(target), &options) {
         Ok(stats) => {
             println!(
                 "已导入 {} 个提交（{} 个文件条目）自 {}",
                 stats.commits, stats.files, target
             );
+            if stats.metadata_commits > 0 {
+                println!(
+                    "保留 {} 个提交的作者/提交者/时间元数据",
+                    stats.metadata_commits
+                );
+            }
+            if stats.merge_commits > 0 {
+                eprintln!(
+                    "注意：按 --first-parent 线性化，丢弃 {} 个 merge 的次要父链；审计事件已记录",
+                    stats.merge_commits
+                );
+            }
             let rows = stats
                 .map
                 .iter()

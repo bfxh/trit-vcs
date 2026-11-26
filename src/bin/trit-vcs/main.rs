@@ -69,9 +69,9 @@ fn usage() -> ExitCode {
          trit-vcs pull <ref> --remote http://host:port --token-file FILE [--prefix DIR] [--repo DEST]\n  \
          trit-vcs view <ref> --remote http://host:port --token-file FILE [--json] [--expect-view-key KEY_ID]\n  \
          trit-vcs serve --dir PATH [--bind 127.0.0.1:7878] [--actor PRINCIPAL] --token-file FILE [--view-key FILE] [--max-body-mb N] [--max-object-mb N] [--max-conn N] [--read-timeout 秒]\n  \
-         trit-vcs git-export <git目录> [--map FILE] [--repo PATH]\n  \
+         trit-vcs git-export <git目录> [--map FILE] [--first-parent] [--repo PATH]\n  \
          trit-vcs mcp [--repo PATH]\n  \
-         trit-vcs git-import <git目录> [--map FILE] [--repo PATH]\n  \
+         trit-vcs git-import <git目录> [--map FILE] [--first-parent] [--repo PATH]\n  \
          trit-vcs merge <ours提交> <theirs提交> [--base <提交>] [--json] [--repo PATH]\n  \
          trit-vcs handoff <提交id> --out <包目录|FILE.tvhp> [--bundle] [--repo PATH]\n  \
          trit-vcs handoff-verify <包目录|FILE.tvhp> [--repo PATH]\n  \

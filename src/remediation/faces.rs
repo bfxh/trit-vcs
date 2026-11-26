@@ -266,6 +266,7 @@ pub fn kind_git(err: &GitError) -> &'static str {
         GitError::Git { .. } => "git_command_failed",
         GitError::BadPath(_) => "git_bad_path",
         GitError::NoCommits => "git_no_commits",
+        GitError::MergeGraphUnsupported { .. } => "git_merge_graph_unsupported",
     }
 }
 
@@ -290,6 +291,17 @@ pub fn commands_git(err: &GitError, ctx: Context<'_>) -> Vec<String> {
             format!("{VCS} status --repo {repo}"),
             format!(
                 "{VCS} add <文件或目录> --repo {repo}，然后 {VCS} commit --repo {repo} …   # 空仓没什么可导"
+            ),
+        ],
+        GitError::MergeGraphUnsupported { merges } => vec![
+            format!(
+                "git log --graph --oneline --all   # 先看这 {merges} 个 merge 的图；v1 不保留多父关系"
+            ),
+            format!(
+                "{VCS} git-import <git目录> --repo {repo} --first-parent   # 确认只保留第一父链后，显式接受线性化"
+            ),
+            format!(
+                "{VCS} git-export <git目录> --repo {repo} --first-parent   # 导出方向同理；不加这个旗标会直接拒绝"
             ),
         ],
     }

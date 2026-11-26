@@ -1,8 +1,9 @@
-//! Git 双向桥 v0：trit-vcs ⇄ 真 Git 仓（用系统 `git` 做适配，不引 libgit2）。
+//! Git 双向桥 v1：trit-vcs ⇄ 真 Git 仓（用系统 `git` 做适配，不引 libgit2）。
 //!
 //! 导出的每个 Git 提交带 `Trit-Id/Session/Tags/Evidence` 尾注，便于反查；
-//! 导入按 `git log --reverse --first-parent` 逐提交重建，文件内容逐字节搬运。
-//! v0 只保证**内容与提交顺序**，不搬运 Git 的 merge 图（只走第一父链）、不搬 submodule。
+//! 导入逐提交重建，文件内容逐字节搬运。v1 保留 Git 作者/提交者/时间/parents 元数据，
+//! 发现 merge 图默认拒绝，只有显式 `--first-parent` 才按第一父链线性化。
+//! 仍不搬 submodule，也不把多父图升级成 trit 的 merge 图。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -26,12 +27,24 @@ pub enum GitError {
     BadPath(String),
     #[error("源仓还没有提交")]
     NoCommits,
+    #[error(
+        "发现 {merges} 个 merge 提交；Git 桥 v1 不保留多父图。确认要按第一父链线性化，请显式加 --first-parent"
+    )]
+    MergeGraphUnsupported { merges: usize },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BridgeOptions {
+    /// 显式允许丢掉 merge 的次要父链，只导入/导出第一父链。
+    pub first_parent: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExportStats {
     pub commits: usize,
     pub files_written: usize,
+    pub merge_commits: usize,
+    pub metadata_commits: usize,
     /// (trit 提交 id, git 提交 sha)
     pub map: Vec<(Hash, String)>,
 }
@@ -40,6 +53,8 @@ pub struct ExportStats {
 pub struct ImportStats {
     pub commits: usize,
     pub files: usize,
+    pub merge_commits: usize,
+    pub metadata_commits: usize,
     /// (git 提交 sha, trit 提交 id)
     pub map: Vec<(String, Hash)>,
 }
@@ -64,6 +79,207 @@ fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
 
 fn git_text(dir: &Path, args: &[&str]) -> Result<String, GitError> {
     Ok(String::from_utf8_lossy(&git_raw(dir, args)?).to_string())
+}
+
+#[derive(Clone, Debug, Default)]
+struct GitMeta {
+    author_name: String,
+    author_email: String,
+    author_at: Option<u64>,
+    committer_name: String,
+    committer_email: String,
+    committer_at: Option<u64>,
+    parents: Vec<String>,
+    signature_status: String,
+}
+
+impl GitMeta {
+    fn has_identity(&self) -> bool {
+        !self.author_name.is_empty()
+            || !self.author_email.is_empty()
+            || !self.committer_name.is_empty()
+            || !self.committer_email.is_empty()
+    }
+
+    fn evidence(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.author_name.is_empty() || !self.author_email.is_empty() {
+            out.push(format!(
+                "git-author:{} <{}>",
+                one_line(&self.author_name),
+                one_line(&self.author_email)
+            ));
+        }
+        if let Some(at) = self.author_at {
+            out.push(format!("git-author-at:{at}"));
+        }
+        if !self.committer_name.is_empty() || !self.committer_email.is_empty() {
+            out.push(format!(
+                "git-committer:{} <{}>",
+                one_line(&self.committer_name),
+                one_line(&self.committer_email)
+            ));
+        }
+        if let Some(at) = self.committer_at {
+            out.push(format!("git-committer-at:{at}"));
+        }
+        if !self.parents.is_empty() {
+            out.push(format!("git-parents:{}", self.parents.join(" ")));
+        }
+        if !self.signature_status.is_empty() {
+            out.push(format!("git-signature-status:{}", self.signature_status));
+        }
+        out
+    }
+}
+
+fn one_line(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
+}
+
+fn parse_identity(value: &str) -> Option<(String, String)> {
+    let (name, rest) = value.rsplit_once(" <")?;
+    let email = rest.strip_suffix('>')?;
+    Some((name.to_string(), email.to_string()))
+}
+
+fn meta_from_evidence(commit: &crate::model::Commit) -> GitMeta {
+    let mut meta = GitMeta::default();
+    for evidence in &commit.evidence {
+        let Some(value) = evidence.strip_prefix("git-") else {
+            continue;
+        };
+        if let Some(identity) = value.strip_prefix("author:") {
+            if let Some((name, email)) = parse_identity(identity) {
+                meta.author_name = name;
+                meta.author_email = email;
+            }
+        } else if let Some(at) = value.strip_prefix("author-at:") {
+            meta.author_at = at.parse().ok();
+        } else if let Some(identity) = value.strip_prefix("committer:") {
+            if let Some((name, email)) = parse_identity(identity) {
+                meta.committer_name = name;
+                meta.committer_email = email;
+            }
+        } else if let Some(at) = value.strip_prefix("committer-at:") {
+            meta.committer_at = at.parse().ok();
+        } else if let Some(parents) = value.strip_prefix("parents:") {
+            meta.parents = parents.split_whitespace().map(str::to_string).collect();
+        } else if let Some(status) = value.strip_prefix("signature-status:") {
+            meta.signature_status = status.to_string();
+        }
+    }
+    meta
+}
+
+fn read_meta(git_dir: &Path, sha: &str) -> Result<GitMeta, GitError> {
+    let format = "%an%x00%ae%x00%at%x00%cn%x00%ce%x00%ct%x00%P%x00%G?";
+    let format_arg = format!("--format={format}");
+    let raw = git_raw(git_dir, &["show", "-s", &format_arg, sha])?;
+    let text = String::from_utf8_lossy(&raw);
+    let fields: Vec<&str> = text.trim_end_matches(['\r', '\n']).split('\x00').collect();
+    if fields.len() < 8 {
+        return Err(GitError::Git {
+            args: format!("show -s --format {format} {sha}"),
+            stderr: format!("期望 8 个字段，实际 {}", fields.len()),
+        });
+    }
+    Ok(GitMeta {
+        author_name: fields[0].to_string(),
+        author_email: fields[1].to_string(),
+        author_at: fields[2].parse().ok(),
+        committer_name: fields[3].to_string(),
+        committer_email: fields[4].to_string(),
+        committer_at: fields[5].parse().ok(),
+        parents: fields[6].split_whitespace().map(str::to_string).collect(),
+        signature_status: fields[7].to_string(),
+    })
+}
+
+fn git_commit(dir: &Path, message: &str, meta: &GitMeta) -> Result<String, GitError> {
+    let mut command = Command::new("git");
+    command
+        .args(["commit", "-q", "--allow-empty", "-m", message])
+        .current_dir(dir);
+    if !meta.author_name.is_empty() && !meta.author_email.is_empty() {
+        command
+            .env("GIT_AUTHOR_NAME", one_line(&meta.author_name))
+            .env("GIT_AUTHOR_EMAIL", one_line(&meta.author_email));
+    }
+    if let Some(at) = meta.author_at {
+        command.env("GIT_AUTHOR_DATE", format!("@{at} +0000"));
+    }
+    if !meta.committer_name.is_empty() && !meta.committer_email.is_empty() {
+        command
+            .env("GIT_COMMITTER_NAME", one_line(&meta.committer_name))
+            .env("GIT_COMMITTER_EMAIL", one_line(&meta.committer_email));
+    }
+    if let Some(at) = meta.committer_at {
+        command.env("GIT_COMMITTER_DATE", format!("@{at} +0000"));
+    }
+    let output = command.output().map_err(|err| GitError::Git {
+        args: format!("commit {message}"),
+        stderr: err.to_string(),
+    })?;
+    if !output.status.success() {
+        return Err(GitError::Git {
+            args: "commit".to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(git_text(dir, &["rev-parse", "HEAD"])?.trim().to_string())
+}
+
+fn record_bridge(
+    repo: &mut Repo,
+    action: &str,
+    status: &str,
+    stats: &BridgeStats,
+    error: Option<&str>,
+) {
+    let payload = serde_json::json!({
+        "schema": "trit-git-bridge-v1",
+        "action": action,
+        "status": status,
+        "commits": stats.commits,
+        "files": stats.files,
+        "merge_commits": stats.merge_commits,
+        "metadata_commits": stats.metadata_commits,
+        "map_digest": Hash::of(stats.map_text.as_bytes()).to_hex(),
+        "error": error,
+    });
+    if let Err(err) = repo.append_audit("git_bridge", payload, wall_ms()) {
+        eprintln!("trit-vcs: git_bridge 事件无法落账：{err}");
+    }
+}
+
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[derive(Clone, Debug, Default)]
+struct BridgeStats {
+    commits: usize,
+    files: usize,
+    merge_commits: usize,
+    metadata_commits: usize,
+    map_text: String,
+}
+
+fn merge_count(git_dir: &Path, first_parent: bool) -> Result<usize, GitError> {
+    let mut args = vec!["rev-list", "--count", "--merges"];
+    if first_parent {
+        args.push("--first-parent");
+    }
+    args.push("HEAD");
+    let text = git_text(git_dir, &args)?;
+    Ok(text.trim().parse::<usize>().unwrap_or(0))
 }
 
 fn ensure_repo(git_dir: &Path) -> Result<(), GitError> {
@@ -129,13 +345,51 @@ fn trailer_line(id: Hash, commit: &crate::model::Commit) -> String {
 }
 
 /// 把 trit 仓的第一父链按旧→新写进 `git_dir`（没有 `.git` 就初始化）。
-pub fn export(repo: &Repo, git_dir: &Path) -> Result<ExportStats, GitError> {
+pub fn export(repo: &mut Repo, git_dir: &Path) -> Result<ExportStats, GitError> {
+    export_with_options(repo, git_dir, &BridgeOptions::default())
+}
+
+/// 导出；默认拒绝 merge 图，`first_parent` 是显式降级。
+pub fn export_with_options(
+    repo: &mut Repo,
+    git_dir: &Path,
+    options: &BridgeOptions,
+) -> Result<ExportStats, GitError> {
+    let mut stats = ExportStats::default();
+    let mut bridge = BridgeStats::default();
+    let result = export_inner(repo, git_dir, options, &mut stats, &mut bridge);
+    match result {
+        Ok(()) => {
+            record_bridge(repo, "export", "ok", &bridge, None);
+            Ok(stats)
+        }
+        Err(err) => {
+            record_bridge(repo, "export", "failed", &bridge, Some(&err.to_string()));
+            Err(err)
+        }
+    }
+}
+
+fn export_inner(
+    repo: &mut Repo,
+    git_dir: &Path,
+    options: &BridgeOptions,
+    stats: &mut ExportStats,
+    bridge: &mut BridgeStats,
+) -> Result<(), GitError> {
     let log = repo.log()?;
     if log.is_empty() {
         return Err(GitError::NoCommits);
     }
+    let merges = log
+        .iter()
+        .filter(|(_, commit)| commit.parents.len() > 1)
+        .count();
+    bridge.merge_commits = merges;
+    if merges > 0 && !options.first_parent {
+        return Err(GitError::MergeGraphUnsupported { merges });
+    }
     ensure_repo(git_dir)?;
-    let mut stats = ExportStats::default();
     for (id, commit) in log.iter().rev() {
         let entries = repo.store().tree_entries(&commit.tree)?;
         let wanted: BTreeSet<&str> = entries.keys().map(String::as_str).collect();
@@ -152,6 +406,7 @@ pub fn export(repo: &Repo, git_dir: &Path) -> Result<ExportStats, GitError> {
             if !same {
                 std::fs::write(&target, &bytes)?;
                 stats.files_written += 1;
+                bridge.files = stats.files_written;
             }
         }
         for (rel, path) in walk_files(git_dir)? {
@@ -160,15 +415,22 @@ pub fn export(repo: &Repo, git_dir: &Path) -> Result<ExportStats, GitError> {
             }
         }
         git_raw(git_dir, &["add", "-A"])?;
+        let meta = meta_from_evidence(commit);
+        if meta.has_identity() {
+            stats.metadata_commits += 1;
+            bridge.metadata_commits += 1;
+        }
         let message = format!("{}{}", commit.message, trailer_line(*id, commit));
-        git_raw(git_dir, &["commit", "-q", "--allow-empty", "-m", &message])?;
-        let sha = git_text(git_dir, &["rev-parse", "HEAD"])?
-            .trim()
-            .to_string();
-        stats.map.push((*id, sha));
+        let sha = git_commit(git_dir, &message, &meta)?;
+        stats.map.push((*id, sha.clone()));
+        bridge
+            .map_text
+            .push_str(&format!("{} {sha}\n", id.to_hex()));
         stats.commits += 1;
+        bridge.commits += 1;
     }
-    Ok(stats)
+    bridge.files = stats.files_written;
+    Ok(())
 }
 
 struct GitBlob {
@@ -223,13 +485,57 @@ fn strip_trailers(message: &str) -> String {
     lines.join("\n")
 }
 
-/// 把 `git_dir` 的第一父链逐提交导入当前 trit 仓（提交说明保留，证据写 git sha）。
+/// 把 `git_dir` 逐提交导入当前 trit 仓（提交说明保留，证据写 git sha 与原作者元数据）。
 pub fn import(repo: &mut Repo, git_dir: &Path) -> Result<ImportStats, GitError> {
-    let log = git_text(
-        git_dir,
-        &["log", "--reverse", "--first-parent", "--format=%H"],
-    )?;
+    import_with_options(repo, git_dir, &BridgeOptions::default())
+}
+
+/// 导入；默认拒绝 merge 图，`first_parent` 是显式降级。
+pub fn import_with_options(
+    repo: &mut Repo,
+    git_dir: &Path,
+    options: &BridgeOptions,
+) -> Result<ImportStats, GitError> {
     let mut stats = ImportStats::default();
+    let mut bridge = BridgeStats::default();
+    let result = import_inner(repo, git_dir, options, &mut stats, &mut bridge);
+    match result {
+        Ok(()) => {
+            record_bridge(repo, "import", "ok", &bridge, None);
+            Ok(stats)
+        }
+        Err(err) => {
+            record_bridge(repo, "import", "failed", &bridge, Some(&err.to_string()));
+            Err(err)
+        }
+    }
+}
+
+fn import_inner(
+    repo: &mut Repo,
+    git_dir: &Path,
+    options: &BridgeOptions,
+    stats: &mut ImportStats,
+    bridge: &mut BridgeStats,
+) -> Result<(), GitError> {
+    let merges = merge_count(git_dir, false)?;
+    if merges > 0 && !options.first_parent {
+        stats.merge_commits = merges;
+        bridge.merge_commits = merges;
+        return Err(GitError::MergeGraphUnsupported { merges });
+    }
+    let imported_merges = if options.first_parent {
+        merge_count(git_dir, true)?
+    } else {
+        merges
+    };
+    stats.merge_commits = imported_merges;
+    bridge.merge_commits = imported_merges;
+    let mut args = vec!["log", "--reverse", "--format=%H"];
+    if options.first_parent {
+        args.push("--first-parent");
+    }
+    let log = git_text(git_dir, &args)?;
     for sha in log.lines().map(str::trim).filter(|line| !line.is_empty()) {
         let mut files = BTreeMap::new();
         for blob in list_blobs(git_dir, sha)? {
@@ -241,22 +547,34 @@ pub fn import(repo: &mut Repo, git_dir: &Path) -> Result<ImportStats, GitError> 
         let message = git_text(git_dir, &["show", "-s", "--format=%B", sha])
             .map(|text| strip_trailers(&text))
             .unwrap_or_default();
-        let author = git_text(git_dir, &["show", "-s", "--format=%an", sha])
-            .map(|text| text.trim().to_string())
-            .unwrap_or_default();
-        let at = git_text(git_dir, &["show", "-s", "--format=%ct", sha])
-            .ok()
-            .and_then(|text| text.trim().parse::<u64>().ok())
-            .unwrap_or(0);
-        let now = at.max(1);
+        let meta = read_meta(git_dir, sha)?;
+        let now = meta.committer_at.or(meta.author_at).unwrap_or(0).max(1);
         repo.stage(&files, now)?;
         stats.files += files.len();
+        bridge.files = stats.files;
+        let mut evidence = vec![format!("git:{sha}")];
+        evidence.extend(meta.evidence());
+        if meta.has_identity() {
+            stats.metadata_commits += 1;
+            bridge.metadata_commits += 1;
+        }
+        let mut tags = vec!["git-import".to_string()];
+        if meta.parents.len() > 1 {
+            tags.push("git-merge".to_string());
+        }
         let outcome = repo.commit(CommitRequest {
             message,
-            session: format!("git:{}", if author.is_empty() { "bridge" } else { &author }),
+            session: format!(
+                "git:{}",
+                if meta.author_name.is_empty() {
+                    "bridge"
+                } else {
+                    &meta.author_name
+                }
+            ),
             claims: Vec::new(),
-            evidence: vec![format!("git:{sha}")],
-            tags: vec!["git-import".to_string()],
+            evidence,
+            tags,
             allow_unclaimed: true,
             witness: None,
             intent: None,
@@ -265,149 +583,13 @@ pub fn import(repo: &mut Repo, git_dir: &Path) -> Result<ImportStats, GitError> 
         })?;
         stats.map.push((sha.to_string(), outcome.id));
         stats.commits += 1;
+        bridge.commits += 1;
+        bridge
+            .map_text
+            .push_str(&format!("{sha} {}\n", outcome.id.to_hex()));
     }
-    Ok(stats)
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use super::*;
-    use crate::gate::ClaimSpec;
-
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("trit-vcs-git-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
-    }
-
-    fn commit(repo: &mut Repo, files: &[(&str, &str)], now: u64) -> Hash {
-        let map: BTreeMap<String, Vec<u8>> = files
-            .iter()
-            .map(|(path, body)| (path.to_string(), body.as_bytes().to_vec()))
-            .collect();
-        repo.stage(&map, now).unwrap();
-        repo.commit(CommitRequest {
-            message: format!("trit c{now}"),
-            session: "qoder:git".to_string(),
-            claims: vec![ClaimSpec {
-                id: format!("c{now}"),
-                owner: "qoder:git".to_string(),
-                paths: map.keys().cloned().collect(),
-                acquired_at: 1,
-                expires_at: u64::MAX / 2,
-            }],
-            tags: vec!["vcs".to_string()],
-            now_secs: now,
-            ..Default::default()
-        })
-        .unwrap()
-        .id
-    }
-
-    fn head_files(repo: &Repo) -> BTreeMap<String, Vec<u8>> {
-        let head = repo.head().unwrap().unwrap();
-        let tree = repo.commit_at(&head).unwrap().tree;
-        let entries = repo.store().tree_entries(&tree).unwrap();
-        entries
-            .into_iter()
-            .map(|(path, id)| (path, repo.store().get_file(&id).unwrap()))
-            .collect()
-    }
-
-    #[test]
-    fn trailers_are_stripped_from_imported_messages() {
-        assert_eq!(
-            strip_trailers("msg\n\nTrit-Id: abc\nTrit-Session: s\nTrit-Tags: vcs\n"),
-            "msg"
-        );
-        assert_eq!(strip_trailers("plain"), "plain");
-    }
-
-    #[test]
-    fn export_then_import_roundtrip_keeps_content_and_order() {
-        let root = temp("roundtrip");
-        let mut src = Repo::init(root.join("src")).unwrap();
-        commit(&mut src, &[("a.txt", "one"), ("dir/b.txt", "two")], 1_000);
-        commit(
-            &mut src,
-            &[("a.txt", "one changed"), ("c.txt", "three")],
-            2_000,
-        );
-        let before = head_files(&src);
-
-        let git_dir = root.join("git");
-        let exported = export(&src, &git_dir).unwrap();
-        assert_eq!(exported.commits, 2);
-        assert_eq!(exported.files_written, 4);
-
-        let log = git_text(&git_dir, &["log", "--format=%s%n%b"]).unwrap();
-        assert!(
-            log.contains("Trit-Tags: vcs"),
-            "提交里应带 trit 尾注：{log}"
-        );
-        assert!(
-            !git_dir.join("dir/b.txt").exists(),
-            "删除必须同步到 Git 工作树"
-        );
-
-        let mut dst = Repo::init(root.join("dst")).unwrap();
-        let imported = import(&mut dst, &git_dir).unwrap();
-        assert_eq!(imported.commits, 2);
-        assert_eq!(head_files(&dst), before, "往返后内容逐字节一致");
-        let head = dst.head().unwrap().unwrap();
-        assert_eq!(
-            dst.commit_at(&head).unwrap().tags,
-            vec!["git-import".to_string()]
-        );
-        let log = dst.log().unwrap();
-        assert_eq!(log[0].1.message, "trit c2000", "尾注不应混进提交说明");
-        assert_eq!(log[1].1.message, "trit c1000");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn import_reads_a_plain_git_repo() {
-        let root = temp("import");
-        let git_dir = root.join("git");
-        std::fs::create_dir_all(&git_dir).unwrap();
-        git_raw(&git_dir, &["init", "-q"]).unwrap();
-        git_raw(&git_dir, &["config", "user.name", "bench"]).unwrap();
-        git_raw(&git_dir, &["config", "user.email", "bench@example.com"]).unwrap();
-        std::fs::write(git_dir.join("x.txt"), b"first").unwrap();
-        git_raw(&git_dir, &["add", "-A"]).unwrap();
-        git_raw(&git_dir, &["commit", "-qm", "first"]).unwrap();
-        std::fs::write(git_dir.join("x.txt"), b"second").unwrap();
-        git_raw(&git_dir, &["add", "-A"]).unwrap();
-        git_raw(&git_dir, &["commit", "-qm", "second"]).unwrap();
-
-        let mut repo = Repo::init(root.join("trit")).unwrap();
-        let stats = import(&mut repo, &git_dir).unwrap();
-        assert_eq!(stats.commits, 2);
-        let files = head_files(&repo);
-        assert_eq!(files.get("x.txt").unwrap().as_slice(), b"second");
-        let log = repo.log().unwrap();
-        assert_eq!(log[0].1.message, "second");
-        assert_eq!(log[1].1.message, "first");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn export_paths_cannot_escape_the_git_worktree() {
-        assert!(safe_join(Path::new("/repo"), "../escape").is_err());
-        assert!(safe_join(Path::new("/repo"), "/abs").is_err());
-        assert!(safe_join(Path::new("/repo"), "ok/inside").is_ok());
-    }
-
-    #[test]
-    fn empty_source_is_loud() {
-        let root = temp("empty");
-        let repo = Repo::init(root.join("src")).unwrap();
-        assert!(matches!(
-            export(&repo, &root.join("git")),
-            Err(GitError::NoCommits)
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-}
+mod tests;
