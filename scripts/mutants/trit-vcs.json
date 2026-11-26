@@ -3052,9 +3052,9 @@
  },
  {
   "name": "vcs: 信任客户端伪造的 actor 头",
-  "file": "src/net/mod.rs",
-  "old": "        state\n            .actor\n            .clone()\n            .unwrap_or_else(|| \"bearer:unidentified\".to_string()),",
-  "new": "        request\n            .headers\n            .get(\"x-trit-actor\")\n            .cloned()\n            .unwrap_or_else(|| \"bearer:unidentified\".to_string()),",
+  "file": "src/net/auth.rs",
+  "old": "    let token = super::bearer_token(headers)?;\n    let mut matched = None;",
+  "new": "    if let Some(actor) = headers.get(\"x-trit-actor\") {\n        return Some(actor.clone());\n    }\n    let token = super::bearer_token(headers)?;\n    let mut matched = None;",
   "filter": "allowed_auth_binds_server_actor_and_response_request_id",
   "pkg": "trit-vcs",
   "runner": "cargo",
