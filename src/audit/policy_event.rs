@@ -1,4 +1,10 @@
 //! `policy` 事件的语义检查：策略变更不能只写文件，必须能说明谁改了什么。
+//!
+//! v1 保留旧单签形状；v2 增加 `policy_threshold` 与 `signatures[]`，允许多把
+//! `auditor` key 共同签名。重放时按“旧阈值与新阈值的较大者”要求本次签名，
+//! 所以调低阈值也必须先满足旧阈值。
+
+use std::collections::HashSet;
 
 use serde_json::Value;
 
@@ -6,12 +12,18 @@ use super::{AuditIssue, parse_hash};
 use crate::hash::Hash;
 use crate::journal::Event;
 use crate::keys::public_key_id;
-use crate::policy::{POLICY_SCHEMA, Policy, policy_statement_bytes};
+use crate::policy::{
+    MAX_POLICY_THRESHOLD, POLICY_SCHEMA, POLICY_SCHEMA_V2, Policy, policy_quorum,
+    policy_statement_bytes, policy_statement_v2_bytes,
+};
 use crate::repo::Repo;
 use crate::signing;
 
 pub(super) fn require_signed_witness(event: &Event) -> bool {
-    let versioned = event.payload.get("schema").and_then(Value::as_str) == Some(POLICY_SCHEMA);
+    let versioned = matches!(
+        event.payload.get("schema").and_then(Value::as_str),
+        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2
+    );
     match event.payload.get("require_signed_witness") {
         Some(Value::Bool(value)) => *value,
         None => versioned,
@@ -19,9 +31,22 @@ pub(super) fn require_signed_witness(event: &Event) -> bool {
     }
 }
 
+pub(super) fn require_signed_claims(event: &Event) -> bool {
+    let versioned = matches!(
+        event.payload.get("schema").and_then(Value::as_str),
+        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2
+    );
+    event
+        .payload
+        .get("require_signed_claims")
+        .and_then(Value::as_bool)
+        .unwrap_or(versioned)
+}
+
 #[derive(Default)]
 pub(super) struct PolicyReplay {
     require_signature: bool,
+    threshold: u8,
     last_hash: Option<Hash>,
 }
 
@@ -38,25 +63,49 @@ impl PolicyReplay {
             .get("require_signed_policy")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        check_policy(
-            repo,
-            event,
-            self.require_signature || next_require,
-            self.last_hash,
-            issues,
-            warnings,
+        let next_threshold = event_threshold(event);
+        let required = policy_quorum(
+            self.require_signature,
+            self.threshold,
+            next_require,
+            next_threshold,
         );
+        check_policy(repo, event, required, self.last_hash, issues, warnings);
         self.require_signature = next_require;
+        self.threshold = next_threshold;
         if let Some(hash) = parse_hash(event.payload.get("policy_hash")) {
             self.last_hash = Some(hash);
         }
     }
 }
 
+fn event_threshold(event: &Event) -> u8 {
+    event
+        .payload
+        .get("policy_threshold")
+        .and_then(Value::as_u64)
+        .filter(|value| (1..=u64::from(MAX_POLICY_THRESHOLD)).contains(value))
+        .map(|value| value as u8)
+        .unwrap_or(1)
+}
+
+struct SignedFields<'a> {
+    session: &'a str,
+    witness: bool,
+    intent: bool,
+    signed_claims: bool,
+    signed_witness: bool,
+    signed_policy: bool,
+    previous_present: bool,
+    previous_text: Option<&'a str>,
+    policy_hash_text: &'a str,
+    policy_threshold: u8,
+}
+
 pub(super) fn check_policy(
     repo: &Repo,
     event: &Event,
-    require_signature: bool,
+    required_signatures: usize,
     last_policy_hash: Option<Hash>,
     issues: &mut Vec<AuditIssue>,
     warnings: &mut Vec<AuditIssue>,
@@ -79,9 +128,11 @@ pub(super) fn check_policy(
             format!("第 {} 条 policy 事件缺策略布尔值", event.seq),
         ));
     }
-    let versioned = event.payload.get("schema").and_then(Value::as_str) == Some(POLICY_SCHEMA);
-    if let Some(schema) = event.payload.get("schema")
-        && schema.as_str() != Some(POLICY_SCHEMA)
+    let schema = event.payload.get("schema").and_then(Value::as_str);
+    let v2 = schema == Some(POLICY_SCHEMA_V2);
+    let versioned = schema == Some(POLICY_SCHEMA) || v2;
+    if event.payload.get("schema").is_some()
+        && schema.is_none_or(|schema| schema != POLICY_SCHEMA && schema != POLICY_SCHEMA_V2)
     {
         issues.push(AuditIssue::new(
             "policy_bad",
@@ -122,7 +173,7 @@ pub(super) fn check_policy(
         .payload
         .get("require_signed_policy")
         .and_then(Value::as_bool);
-    if signed_policy.is_none() && event.payload.get("require_signed_policy").is_some() {
+    if signed_policy.is_none() && (v2 || event.payload.get("require_signed_policy").is_some()) {
         issues.push(AuditIssue::new(
             "policy_bad",
             format!(
@@ -187,25 +238,57 @@ pub(super) fn check_policy(
         ));
     }
 
-    let signature_fields = ["algorithm", "key_id", "signature", "signed_at_ms"];
-    let any_signature_field = signature_fields
-        .iter()
-        .any(|field| event.payload.get(*field).is_some());
-    let signed = signature_fields
-        .iter()
-        .all(|field| event.payload.get(*field).is_some());
-    if any_signature_field && !signed {
-        issues.push(AuditIssue::new(
-            "policy_bad",
-            format!("第 {} 条 policy 事件的签名字段不完整", event.seq),
-        ));
-    }
-    if signed {
-        check_signed_policy(
-            repo,
-            event,
-            require_signature,
-            session.unwrap_or_default(),
+    let policy_threshold = if v2 {
+        match event
+            .payload
+            .get("policy_threshold")
+            .and_then(Value::as_u64)
+        {
+            Some(value) if (1..=u64::from(MAX_POLICY_THRESHOLD)).contains(&value) => value as u8,
+            Some(value) => {
+                issues.push(AuditIssue::new(
+                    "policy_bad",
+                    format!(
+                        "第 {} 条 policy 事件的 policy_threshold 超出 1..={MAX_POLICY_THRESHOLD}：{value}",
+                        event.seq
+                    ),
+                ));
+                1
+            }
+            None => {
+                issues.push(AuditIssue::new(
+                    "policy_bad",
+                    format!(
+                        "第 {} 条 policy 事件的 policy_threshold 不是合法整数",
+                        event.seq
+                    ),
+                ));
+                1
+            }
+        }
+    } else {
+        1
+    };
+
+    let fields = match (
+        session,
+        witness,
+        intent,
+        signed_claims,
+        signed_witness,
+        signed_policy,
+        policy_hash,
+    ) {
+        (
+            Some(session),
+            Some(witness),
+            Some(intent),
+            Some(signed_claims),
+            Some(signed_witness),
+            Some(signed_policy),
+            Some(_),
+        ) => Some(SignedFields {
+            session,
             witness,
             intent,
             signed_claims,
@@ -214,17 +297,40 @@ pub(super) fn check_policy(
             previous_present,
             previous_text,
             policy_hash_text,
-            policy_hash.is_some(),
-            issues,
-        );
-    } else if require_signature {
-        issues.push(AuditIssue::new(
-            "policy_unsigned",
-            format!(
-                "第 {} 条 policy 事件在 require_signed_policy 下没有签名",
-                event.seq
-            ),
-        ));
+            policy_threshold,
+        }),
+        _ => None,
+    };
+
+    if v2 {
+        check_v2_signatures(repo, event, required_signatures, fields.as_ref(), issues);
+    } else {
+        let signature_fields = ["algorithm", "key_id", "signature", "signed_at_ms"];
+        let any_signature_field = signature_fields
+            .iter()
+            .any(|field| event.payload.get(*field).is_some());
+        let signed = signature_fields
+            .iter()
+            .all(|field| event.payload.get(*field).is_some());
+        if any_signature_field && !signed {
+            issues.push(AuditIssue::new(
+                "policy_bad",
+                format!("第 {} 条 policy 事件的签名字段不完整", event.seq),
+            ));
+        }
+        if signed {
+            if let Some(fields) = fields.as_ref() {
+                check_v1_signature(repo, event, required_signatures, fields, issues);
+            }
+        } else if required_signatures > 0 {
+            issues.push(AuditIssue::new(
+                "policy_unsigned",
+                format!(
+                    "第 {} 条 policy 事件在 require_signed_policy 下没有签名",
+                    event.seq
+                ),
+            ));
+        }
     }
 
     if parse_hash(event.payload.get("state_after")).is_none() {
@@ -235,21 +341,11 @@ pub(super) fn check_policy(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn check_signed_policy(
+fn check_v1_signature(
     repo: &Repo,
     event: &Event,
-    require_signature: bool,
-    session: &str,
-    witness: Option<bool>,
-    intent: Option<bool>,
-    signed_claims: Option<bool>,
-    signed_witness: Option<bool>,
-    signed_policy: Option<bool>,
-    previous_present: bool,
-    previous_text: Option<&str>,
-    policy_hash_text: &str,
-    policy_hash_valid: bool,
+    required_signatures: usize,
+    fields: &SignedFields<'_>,
     issues: &mut Vec<AuditIssue>,
 ) {
     if event.payload.get("action").and_then(Value::as_str) != Some("set") {
@@ -258,39 +354,11 @@ fn check_signed_policy(
             format!("第 {} 条签名 policy 事件的 action 不是 set", event.seq),
         ));
     }
-    if !previous_present {
+    if !fields.previous_present {
         issues.push(AuditIssue::new(
             "policy_bad",
             format!("第 {} 条签名 policy 事件缺 previous_policy_hash", event.seq),
         ));
-    }
-    if signed_policy.is_none() {
-        issues.push(AuditIssue::new(
-            "policy_bad",
-            format!(
-                "第 {} 条签名 policy 事件缺 require_signed_policy 布尔值",
-                event.seq
-            ),
-        ));
-    }
-    let (
-        Some(witness),
-        Some(intent),
-        Some(signed_claims),
-        Some(signed_witness),
-        Some(signed_policy),
-    ) = (
-        witness,
-        intent,
-        signed_claims,
-        signed_witness,
-        signed_policy,
-    )
-    else {
-        return;
-    };
-    if !policy_hash_valid {
-        return;
     }
     if event.payload.get("algorithm").and_then(Value::as_str) != Some("ed25519") {
         issues.push(AuditIssue::new(
@@ -326,83 +394,19 @@ fn check_signed_policy(
         ));
         return;
     }
-
-    let keys = match repo.keys() {
-        Ok(keys) => keys,
-        Err(err) => {
-            issues.push(AuditIssue::new(
-                "policy_signer_untrusted",
-                format!("第 {} 条签名 policy 读不到信任表：{err}", event.seq),
-            ));
-            return;
-        }
-    };
-    let Some(entry) = keys.keys.get(key_id) else {
-        issues.push(AuditIssue::new(
-            "policy_signer_untrusted",
-            format!("第 {} 条签名 policy 的 key {key_id} 不在信任表", event.seq),
-        ));
-        return;
-    };
-    if require_signature && entry.role != "auditor" {
-        issues.push(AuditIssue::new(
-            "policy_signer_role",
-            format!(
-                "第 {} 条签名 policy 的 key {key_id} 角色是 {}，require_signed_policy 要求 auditor",
-                event.seq, entry.role
-            ),
-        ));
-        return;
-    }
-    let Some(public) = entry.public_key.as_deref() else {
-        issues.push(AuditIssue::new(
-            "policy_signer_untrusted",
-            format!("第 {} 条签名 policy 的 key {key_id} 没有公钥", event.seq),
-        ));
-        return;
-    };
-    let public_bytes = match signing::public_key_bytes(public) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            issues.push(AuditIssue::new(
-                "policy_signer_untrusted",
-                format!("第 {} 条签名 policy 的公钥不合法：{err}", event.seq),
-            ));
-            return;
-        }
-    };
-    if public_key_id(&public_bytes) != key_id {
-        issues.push(AuditIssue::new(
-            "policy_signer_untrusted",
-            format!("第 {} 条签名 policy 的 key_id 与公钥指纹不一致", event.seq),
-        ));
-        return;
-    }
-    if let Some(revoked_at) = entry.revoked_at_ms
-        && signed_at_ms > revoked_at
-    {
-        issues.push(AuditIssue::new(
-            "policy_signer_revoked",
-            format!(
-                "第 {} 条签名 policy 签名时 key {key_id} 已吊销（{} > {}）",
-                event.seq, signed_at_ms, revoked_at
-            ),
-        ));
-        return;
-    }
-
     let policy = Policy {
-        require_witness: witness,
-        require_intent: intent,
-        require_signed_claims: signed_claims,
-        require_signed_witness: signed_witness,
-        require_signed_policy: signed_policy,
+        require_witness: fields.witness,
+        require_intent: fields.intent,
+        require_signed_claims: fields.signed_claims,
+        require_signed_witness: fields.signed_witness,
+        require_signed_policy: fields.signed_policy,
+        policy_threshold: 1,
     };
     let statement = match policy_statement_bytes(
-        session,
+        fields.session,
         &policy,
-        previous_text,
-        policy_hash_text,
+        fields.previous_text,
+        fields.policy_hash_text,
         signed_at_ms,
         key_id,
     ) {
@@ -415,161 +419,265 @@ fn check_signed_policy(
             return;
         }
     };
-    if let Err(err) = signing::verify_signature(public, signature, &statement) {
+    let valid = verify_one_signer(
+        repo,
+        event,
+        key_id,
+        signature,
+        signed_at_ms,
+        required_signatures > 0,
+        &statement,
+        issues,
+    );
+    if valid && 1 < required_signatures {
+        issues.push(AuditIssue::new(
+            "policy_signature_insufficient",
+            format!(
+                "第 {} 条 policy 事件只有 1 个有效签名，要求 {required_signatures} 个",
+                event.seq
+            ),
+        ));
+    }
+}
+
+fn check_v2_signatures(
+    repo: &Repo,
+    event: &Event,
+    required_signatures: usize,
+    fields: Option<&SignedFields<'_>>,
+    issues: &mut Vec<AuditIssue>,
+) {
+    let Some(fields) = fields else {
+        return;
+    };
+    let entries = match event.payload.get("signatures") {
+        None => {
+            if required_signatures > 0 {
+                issues.push(AuditIssue::new(
+                    "policy_unsigned",
+                    format!(
+                        "第 {} 条 policy 事件在 require_signed_policy 下没有签名",
+                        event.seq
+                    ),
+                ));
+            }
+            return;
+        }
+        Some(Value::Array(entries)) if entries.is_empty() => {
+            if required_signatures > 0 {
+                issues.push(AuditIssue::new(
+                    "policy_unsigned",
+                    format!(
+                        "第 {} 条 policy 事件在 require_signed_policy 下没有签名",
+                        event.seq
+                    ),
+                ));
+            }
+            return;
+        }
+        Some(Value::Array(entries)) => entries,
+        Some(_) => {
+            issues.push(AuditIssue::new(
+                "policy_bad",
+                format!("第 {} 条 policy 事件的 signatures 不是数组", event.seq),
+            ));
+            return;
+        }
+    };
+    if event.payload.get("action").and_then(Value::as_str) != Some("set") {
+        issues.push(AuditIssue::new(
+            "policy_bad",
+            format!("第 {} 条签名 policy 事件的 action 不是 set", event.seq),
+        ));
+    }
+    if event.payload.get("algorithm").and_then(Value::as_str) != Some("ed25519") {
+        issues.push(AuditIssue::new(
+            "policy_bad",
+            format!(
+                "第 {} 条签名 policy 事件的 algorithm 不是 ed25519",
+                event.seq
+            ),
+        ));
+        return;
+    }
+    if !fields.previous_present {
+        issues.push(AuditIssue::new(
+            "policy_bad",
+            format!("第 {} 条签名 policy 事件缺 previous_policy_hash", event.seq),
+        ));
+    }
+
+    let policy = Policy {
+        require_witness: fields.witness,
+        require_intent: fields.intent,
+        require_signed_claims: fields.signed_claims,
+        require_signed_witness: fields.signed_witness,
+        require_signed_policy: fields.signed_policy,
+        policy_threshold: fields.policy_threshold,
+    };
+    let mut seen = HashSet::new();
+    let mut valid = 0usize;
+    for entry in entries {
+        let Some(value) = entry.as_object() else {
+            issues.push(AuditIssue::new(
+                "policy_bad",
+                format!("第 {} 条 policy 事件的签名项不是对象", event.seq),
+            ));
+            continue;
+        };
+        let key_id = value
+            .get("key_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let signature = value
+            .get("signature")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(signed_at_ms) = value.get("signed_at_ms").and_then(Value::as_u64) else {
+            issues.push(AuditIssue::new(
+                "policy_bad",
+                format!("第 {} 条 policy 事件的签名项缺 signed_at_ms", event.seq),
+            ));
+            continue;
+        };
+        if key_id.is_empty() || signature.is_empty() {
+            issues.push(AuditIssue::new(
+                "policy_bad",
+                format!("第 {} 条 policy 事件的签名项缺 key_id/signature", event.seq),
+            ));
+            continue;
+        }
+        if !seen.insert(key_id.to_string()) {
+            issues.push(AuditIssue::new(
+                "policy_signature_duplicate",
+                format!("第 {} 条 policy 事件重复使用签名 key {key_id}", event.seq),
+            ));
+            continue;
+        }
+        let statement = match policy_statement_v2_bytes(
+            fields.session,
+            &policy,
+            fields.previous_text,
+            fields.policy_hash_text,
+            signed_at_ms,
+            key_id,
+        ) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                issues.push(AuditIssue::new(
+                    "policy_bad",
+                    format!("第 {} 条签名 policy 的载荷编码失败：{err}", event.seq),
+                ));
+                continue;
+            }
+        };
+        if verify_one_signer(
+            repo,
+            event,
+            key_id,
+            signature,
+            signed_at_ms,
+            required_signatures > 0,
+            &statement,
+            issues,
+        ) {
+            valid += 1;
+        }
+    }
+    if valid < required_signatures {
+        issues.push(AuditIssue::new(
+            "policy_signature_insufficient",
+            format!(
+                "第 {} 条 policy 事件有 {valid} 个有效签名，要求 {required_signatures} 个",
+                event.seq
+            ),
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_one_signer(
+    repo: &Repo,
+    event: &Event,
+    key_id: &str,
+    signature: &str,
+    signed_at_ms: u64,
+    require_auditor: bool,
+    statement: &[u8],
+    issues: &mut Vec<AuditIssue>,
+) -> bool {
+    let keys = match repo.keys() {
+        Ok(keys) => keys,
+        Err(err) => {
+            issues.push(AuditIssue::new(
+                "policy_signer_untrusted",
+                format!("第 {} 条签名 policy 读不到信任表：{err}", event.seq),
+            ));
+            return false;
+        }
+    };
+    let Some(entry) = keys.keys.get(key_id) else {
+        issues.push(AuditIssue::new(
+            "policy_signer_untrusted",
+            format!("第 {} 条签名 policy 的 key {key_id} 不在信任表", event.seq),
+        ));
+        return false;
+    };
+    if require_auditor && entry.role != "auditor" {
+        issues.push(AuditIssue::new(
+            "policy_signer_role",
+            format!(
+                "第 {} 条签名 policy 的 key {key_id} 角色是 {}，require_signed_policy 要求 auditor",
+                event.seq, entry.role
+            ),
+        ));
+        return false;
+    }
+    let Some(public) = entry.public_key.as_deref() else {
+        issues.push(AuditIssue::new(
+            "policy_signer_untrusted",
+            format!("第 {} 条签名 policy 的 key {key_id} 没有公钥", event.seq),
+        ));
+        return false;
+    };
+    let public_bytes = match signing::public_key_bytes(public) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            issues.push(AuditIssue::new(
+                "policy_signer_untrusted",
+                format!("第 {} 条签名 policy 的公钥不合法：{err}", event.seq),
+            ));
+            return false;
+        }
+    };
+    if public_key_id(&public_bytes) != key_id {
+        issues.push(AuditIssue::new(
+            "policy_signer_untrusted",
+            format!("第 {} 条签名 policy 的 key_id 与公钥指纹不一致", event.seq),
+        ));
+        return false;
+    }
+    if let Some(revoked_at) = entry.revoked_at_ms
+        && signed_at_ms > revoked_at
+    {
+        issues.push(AuditIssue::new(
+            "policy_signer_revoked",
+            format!(
+                "第 {} 条签名 policy 签名时 key {key_id} 已吊销（{} > {}）",
+                event.seq, signed_at_ms, revoked_at
+            ),
+        ));
+        return false;
+    }
+    if let Err(err) = signing::verify_signature(public, signature, statement) {
         issues.push(AuditIssue::new(
             "policy_signature_invalid",
             format!("第 {} 条签名 policy 验签失败：{err}", event.seq),
         ));
+        return false;
     }
+    true
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::keys::TrustEntry;
-    use crate::signing::KeyFile;
-    use serde_json::json;
-
-    fn temp(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "trit-vcs-policy-audit-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn signed_event(name: &str) -> (std::path::PathBuf, Repo, Event) {
-        signed_event_with(name, "auditor", true)
-    }
-
-    fn signed_event_with(
-        name: &str,
-        role: &str,
-        require_signed_policy: bool,
-    ) -> (std::path::PathBuf, Repo, Event) {
-        let root = temp(name);
-        let mut repo = Repo::init(&root).unwrap();
-        let key = KeyFile::generate().unwrap();
-        let key_path = root.join("policy.key");
-        key.save_new(&key_path).unwrap();
-        repo.add_key(
-            TrustEntry {
-                key_id: key.key_id.clone(),
-                principal: "qoder:policy".to_string(),
-                role: role.to_string(),
-                added_at_ms: 1_000,
-                public_key: Some(key.public.clone()),
-                rotated_from: None,
-                revoked_at_ms: None,
-                revoke_reason: None,
-            },
-            "qoder:admin",
-            1_000,
-        )
-        .unwrap();
-        repo.set_policy_with_signer(
-            &Policy {
-                require_signed_policy,
-                ..Default::default()
-            },
-            "qoder:policy",
-            2_000,
-            Some(&key_path),
-        )
-        .unwrap();
-        let event = repo
-            .journal()
-            .events()
-            .iter()
-            .rev()
-            .find(|event| event.kind == "policy")
-            .unwrap()
-            .clone();
-        (root, repo, event)
-    }
-
-    fn issues(repo: &Repo, event: &Event, require_signature: bool) -> Vec<AuditIssue> {
-        let mut issues = Vec::new();
-        let mut warnings = Vec::new();
-        check_policy(
-            repo,
-            event,
-            require_signature,
-            None,
-            &mut issues,
-            &mut warnings,
-        );
-        issues
-    }
-
-    #[test]
-    fn signed_policy_event_rejects_tampered_signature_and_required_flag() {
-        let (root, repo, event) = signed_event("tamper");
-        assert!(issues(&repo, &event, true).is_empty());
-
-        let mut bad_signature = event.clone();
-        bad_signature.payload["signature"] = json!("00".repeat(64));
-        assert!(
-            issues(&repo, &bad_signature, true)
-                .iter()
-                .any(|issue| issue.kind == "policy_signature_invalid")
-        );
-
-        let mut bad_flag = event.clone();
-        bad_flag.payload["require_signed_policy"] = json!(false);
-        assert!(
-            issues(&repo, &bad_flag, true)
-                .iter()
-                .any(|issue| issue.kind == "policy_signature_invalid"),
-            "require_signed_policy 必须被签名覆盖"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn unsigned_policy_event_is_red_once_policy_requires_signature() {
-        let (root, repo, event) = signed_event("unsigned");
-        let mut unsigned = event;
-        unsigned.payload.as_object_mut().unwrap().remove("action");
-        unsigned
-            .payload
-            .as_object_mut()
-            .unwrap()
-            .remove("algorithm");
-        unsigned.payload.as_object_mut().unwrap().remove("key_id");
-        unsigned
-            .payload
-            .as_object_mut()
-            .unwrap()
-            .remove("signature");
-        unsigned
-            .payload
-            .as_object_mut()
-            .unwrap()
-            .remove("signed_at_ms");
-        assert!(
-            issues(&repo, &unsigned, true)
-                .iter()
-                .any(|issue| issue.kind == "policy_unsigned")
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn strict_policy_rejects_non_auditor_signer() {
-        let (root, repo, event) = signed_event_with("role", "author", false);
-        assert!(
-            issues(&repo, &event, false).is_empty(),
-            "未开 require_signed_policy 时非 auditor 签名仍可审计"
-        );
-        assert!(
-            issues(&repo, &event, true)
-                .iter()
-                .any(|issue| issue.kind == "policy_signer_role"),
-            "require_signed_policy 生效时必须要求 auditor 角色"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-}
+mod tests;

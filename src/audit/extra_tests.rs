@@ -501,6 +501,53 @@ fn versioned_policy_without_signed_claim_flag_fails_closed() {
 }
 
 #[test]
+fn v2_policy_requires_signed_claim_replay_to_cover_the_new_schema() {
+    let root = temp("policy-v2-claims");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.append_audit(
+        "policy",
+        json!({
+            "schema": "trit-policy-v2",
+            "session": "audit:test",
+            "require_witness": false,
+            "require_intent": false,
+            "require_signed_witness": false,
+            "require_signed_policy": false,
+            "policy_threshold": 1,
+            "policy_hash": Hash::of(b"policy-v2").to_hex(),
+            "state_before": digest,
+            "state_after": digest,
+        }),
+        2_000,
+    )
+    .unwrap();
+    repo.append_audit(
+        "claim_add",
+        json!({
+            "signed": false,
+            "state_before": digest,
+            "state_after": digest,
+        }),
+        2_001,
+    )
+    .unwrap();
+
+    let report = status(&repo).unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == "claim_signature_missing"),
+        "v2 策略必须参与 require_signed_claims 重放：{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn legacy_policy_without_signed_claim_flag_keeps_unsigned_claims_compatible() {
     let root = temp("policy-legacy");
     let _ = std::fs::remove_dir_all(&root);
