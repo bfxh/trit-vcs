@@ -3929,5 +3929,25 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: 严格策略接受非 auditor 角色签策略",
+  "file": "src/policy.rs",
+  "old": "    if require_auditor && entry.role != \"auditor\" {",
+  "new": "    if require_auditor && entry.role != \"auditor\" && false {",
+  "filter": "signed_policy_change_is_attributed_and_strict_mode_requires_it",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:policy_cli"
+ },
+ {
+  "name": "vcs: 审计不检查严格策略签名者角色",
+  "file": "src/audit/policy_event.rs",
+  "old": "    if require_signature && entry.role != \"auditor\" {",
+  "new": "    if require_signature && entry.role != \"auditor\" && false {",
+  "filter": "audit::policy_event::tests::strict_policy_rejects_non_auditor_signer",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]

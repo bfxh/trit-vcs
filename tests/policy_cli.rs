@@ -50,11 +50,35 @@ fn signed_policy_change_is_attributed_and_strict_mode_requires_it() {
             "policy.key",
             "--principal",
             "qoder:policy",
+            "--role",
+            "auditor",
             "--owner",
             "qoder:policy",
         ],
     );
     assert!(add.status.success(), "{}", stderr(&add));
+
+    let author_key = run(
+        &root,
+        &["key", "init", "--out", "policy-author.key", "--json"],
+    );
+    assert!(author_key.status.success(), "{}", stderr(&author_key));
+    let author_add = run(
+        &root,
+        &[
+            "key",
+            "add",
+            "--key-file",
+            "policy-author.key",
+            "--principal",
+            "qoder:author",
+            "--role",
+            "author",
+            "--owner",
+            "qoder:author",
+        ],
+    );
+    assert!(author_add.status.success(), "{}", stderr(&author_add));
 
     let signed = run(
         &root,
@@ -92,6 +116,28 @@ fn signed_policy_change_is_attributed_and_strict_mode_requires_it() {
     assert_eq!(policy["payload"]["require_signed_policy"], true);
     assert!(policy["payload"]["previous_policy_hash"].is_null());
     assert!(policy["payload"]["signature"].as_str().is_some());
+
+    let non_auditor = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--sign-key",
+            "policy-author.key",
+            "--json",
+        ],
+    );
+    assert!(
+        !non_auditor.status.success(),
+        "非 auditor 签严格策略必须失败"
+    );
+    assert!(
+        stderr(&non_auditor).contains("auditor"),
+        "{}",
+        stderr(&non_auditor)
+    );
 
     let unsigned = run(
         &root,
