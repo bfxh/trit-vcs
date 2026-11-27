@@ -2483,8 +2483,8 @@
  {
   "name": "vcs: policy 审计把显式非字符串 schema 当旧事件",
   "file": "src/audit/policy_event.rs",
-  "old": "    if event.payload.get(\"schema\").is_some()\n        && schema.is_none_or(|schema| schema != POLICY_SCHEMA && schema != POLICY_SCHEMA_V2)\n    {",
-  "new": "    if schema.is_some_and(|schema| schema != POLICY_SCHEMA && schema != POLICY_SCHEMA_V2) {",
+  "old": "    if event.payload.get(\"schema\").is_some()\n        && schema.is_none_or(|schema| {\n            schema != POLICY_SCHEMA && schema != POLICY_SCHEMA_V2 && schema != POLICY_SCHEMA_V3\n        })\n    {",
+  "new": "    if schema.is_some_and(|schema| {\n        schema != POLICY_SCHEMA && schema != POLICY_SCHEMA_V2 && schema != POLICY_SCHEMA_V3\n    }) {",
   "filter": "explicit_non_string_policy_schema_is_red",
   "pkg": "trit-vcs",
   "runner": "cargo",
