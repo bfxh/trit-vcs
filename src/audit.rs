@@ -236,8 +236,8 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
             );
         }
     }
-    let mut require_signed_witness = false;
-    let mut require_signed_claims = false;
+    let (mut require_signed_witness, mut require_signed_claims) = (false, false);
+    let mut policy_replay = policy_event::PolicyReplay::default();
     let mut signed_witness_commits = BTreeMap::new();
     for (index, event) in events.iter().enumerate() {
         match event.kind.as_str() {
@@ -397,7 +397,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                     .and_then(Value::as_bool)
                     .unwrap_or(versioned);
                 require_signed_witness = policy_event::require_signed_witness(event);
-                policy_event::check_policy(event, &mut issues, &mut warnings);
+                policy_replay.observe(repo, event, &mut issues, &mut warnings);
             }
             "key" => key_event::check_key(repo, event, &mut issues, &mut warnings),
             "signature" => {
