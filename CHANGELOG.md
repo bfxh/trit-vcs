@@ -6,6 +6,14 @@
 ## [Unreleased]
 
 ### Added
+- 策略角色集合与混合角色批准：`Policy` 新增 `policy_roles`（默认 `["auditor"]`，最多 4 个），
+  `policy set --policy-role auditor|release` 可重复；只开放 `auditor`/`release`，拒绝空、重复、未知角色，
+  `policy_threshold` 不得小于角色数。`require_signed_policy` 生效时，本次所需签名数取当前/新阈值与
+  当前/新严格策略角色并集长度的最大值，每个角色至少一把有效且不同的 key；调低阈值、删除角色或关闭
+  严格策略也必须由旧角色批准。默认 `auditor` 仍写 `trit-policy-v2`；自定义角色集合写 `trit-policy-v3`，
+  规范签名载荷按 `schema`/`action`/`session`/五个开关/`policy_threshold`/`policy_roles`/旧新摘要/
+  `signed_at_ms`/`key_id` 固定顺序编码，v2 事件不新增未签名字段。审计新增 `policy_role_missing`，
+  v1/v2/v3 事件都可重放；`policy --json`、`policy set` 输出与 README 同步 `policy_roles`。
 - 显式 `--force` 的审计事件 `trit-force-v1`：`publish --force` 非快进改写与 `pull --force`
   （本地/HTTP 客户端）成功应用后追加 `force` 事件，记录 action/transport/side/name/op_id/commit/
   previous/reason 与前后状态；审计要求同 op_id/side 的成功 `trit-sync-v1` 事件带 `forced=true`，

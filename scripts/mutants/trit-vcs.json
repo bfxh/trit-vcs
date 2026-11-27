@@ -2453,12 +2453,12 @@
  {
   "name": "vcs: 新策略事件不写版本标记",
   "file": "src/policy.rs",
-  "old": "                \"schema\": POLICY_SCHEMA_V2,",
+  "old": "                \"schema\": schema,",
   "new": "                \"schema\": null,",
-  "filter": "policy_set_is_audited_and_manual_edit_is_red",
+  "filter": "policy::tests::mixed_role_policy_requires_each_role_and_blocks_role_drop",
   "pkg": "trit-vcs",
   "runner": "cargo",
-  "target": "test:policy_cli"
+  "target": "lib"
  },
  {
   "name": "vcs: publish 不抢共享状态锁（快进检查与 ref 写入可交错）",
@@ -3892,7 +3892,7 @@
  },
  {
   "name": "vcs: 审计不要求严格策略下的策略签名",
-  "file": "src/audit/policy_event.rs",
+  "file": "src/audit/policy_event/signature.rs",
   "old": "        None => {\n            if required_signatures > 0 {",
   "new": "        None => {\n            if required_signatures > 0 && false {",
   "filter": "audit::policy_event::tests::unsigned_policy_event_is_red_once_policy_requires_signature",
@@ -3913,9 +3913,8 @@
  {
   "name": "vcs: 策略签名不覆盖 require_signed_policy 开关",
   "file": "src/policy.rs",
-  "old": "        require_signed_policy: policy.require_signed_policy,\n        policy_threshold: policy.policy_threshold,",
-  "new": "        require_signed_policy: false,\n        policy_threshold: policy.policy_threshold,",
-  "filter": "audit::policy_event::tests::signed_policy_event_rejects_tampered_signature_and_required_flag",
+  "old": "        require_signed_policy: policy.require_signed_policy,\n        policy_threshold: policy.policy_threshold,\n        previous_policy_hash,",
+  "new": "        require_signed_policy: false,\n        policy_threshold: policy.policy_threshold,\n        previous_policy_hash,",
   "filter": "audit::policy_event::tests::signed_policy_event_rejects_tampered_signature_and_required_flag",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3924,8 +3923,8 @@
  {
   "name": "vcs: 严格策略接受非 auditor 角色签策略",
   "file": "src/policy.rs",
-  "old": "    if require_auditor && entry.role != \"auditor\" {",
-  "new": "    if require_auditor && entry.role != \"auditor\" && false {",
+  "old": "    if !required_roles.is_empty() && !required_roles.iter().any(|role| role == &entry.role) {",
+  "new": "    if false && !required_roles.is_empty() && !required_roles.iter().any(|role| role == &entry.role) {",
   "filter": "signed_policy_change_is_attributed_and_strict_mode_requires_it",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3934,8 +3933,8 @@
  {
   "name": "vcs: 审计不检查严格策略签名者角色",
   "file": "src/audit/policy_event.rs",
-  "old": "    if require_auditor && entry.role != \"auditor\" {",
-  "new": "    if require_auditor && entry.role != \"auditor\" && false {",
+  "old": "    if !required_roles.is_empty() && !required_roles.iter().any(|role| role == &entry.role) {",
+  "new": "    if false && !required_roles.is_empty() && !required_roles.iter().any(|role| role == &entry.role) {",
   "filter": "audit::policy_event::tests::strict_policy_rejects_non_auditor_signer",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3944,8 +3943,8 @@
  {
   "name": "vcs: 认领签名审计只把 v1 策略当版本化",
   "file": "src/audit/policy_event.rs",
-  "old": "        .and_then(Value::as_bool)\n        .unwrap_or(versioned)",
-  "new": "        .and_then(Value::as_bool)\n        .unwrap_or(false)",
+  "old": "    event\n        .payload\n        .get(\"require_signed_claims\")\n        .and_then(Value::as_bool)\n        .unwrap_or(versioned)",
+  "new": "    event\n        .payload\n        .get(\"require_signed_claims\")\n        .and_then(Value::as_bool)\n        .unwrap_or(false)",
   "filter": "audit::extra_tests::v2_policy_requires_signed_claim_replay_to_cover_the_new_schema",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3964,8 +3963,8 @@
  {
   "name": "vcs: 策略阈值不进入签名载荷",
   "file": "src/policy.rs",
-  "old": "        policy_threshold: policy.policy_threshold,",
-  "new": "        policy_threshold: 1,",
+  "old": "        policy_threshold: policy.policy_threshold,\n        previous_policy_hash,",
+  "new": "        policy_threshold: 1,\n        previous_policy_hash,",
   "filter": "audit::policy_event::tests::policy_threshold_is_part_of_the_signed_statement",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3973,7 +3972,7 @@
  },
  {
   "name": "vcs: 审计不检查策略多签有效数量",
-  "file": "src/audit/policy_event.rs",
+  "file": "src/audit/policy_event/signature.rs",
   "old": "    if valid < required_signatures {",
   "new": "    if valid < required_signatures && false {",
   "filter": "audit::policy_event::tests::policy_quorum_counts_only_distinct_valid_signatures",
@@ -3983,10 +3982,100 @@
  },
  {
   "name": "vcs: 审计不拦重复策略签名 key",
-  "file": "src/audit/policy_event.rs",
+  "file": "src/audit/policy_event/signature.rs",
   "old": "        if !seen.insert(key_id.to_string()) {",
   "new": "        if false && !seen.insert(key_id.to_string()) {",
   "filter": "audit::policy_event::tests::policy_quorum_counts_only_distinct_valid_signatures",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 策略接受未知角色",
+  "file": "src/policy.rs",
+  "old": "        if !POLICY_SIGNER_ROLES.contains(&role.as_str()) {",
+  "new": "        if false && !POLICY_SIGNER_ROLES.contains(&role.as_str()) {",
+  "filter": "policy::tests::policy_rejects_unknown_or_unbalanced_roles",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 策略接受重复角色",
+  "file": "src/policy.rs",
+  "old": "        if !seen.insert(role.clone()) {",
+  "new": "        if false && !seen.insert(role.clone()) {",
+  "filter": "policy::tests::policy_rejects_unknown_or_unbalanced_roles",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 策略阈值可以小于角色数",
+  "file": "src/policy.rs",
+  "old": "    if usize::from(policy.policy_threshold) < roles.len() {",
+  "new": "    if false && usize::from(policy.policy_threshold) < roles.len() {",
+  "filter": "policy::tests::policy_rejects_unknown_or_unbalanced_roles",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 策略写入不检查角色覆盖",
+  "file": "src/policy.rs",
+  "old": "        if let Some(missing) = required_roles\n            .iter()\n            .find(|role| !covered.contains(role.as_str()))\n        {",
+  "new": "        if let Some(missing) = required_roles\n            .iter()\n            .find(|role| !covered.contains(role.as_str()))\n            .filter(|_| false)\n        {",
+  "filter": "policy::tests::mixed_role_policy_requires_each_role_and_blocks_role_drop",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 自定义角色策略仍写 v2 事件",
+  "file": "src/policy.rs",
+  "old": "        let schema = if custom_roles {",
+  "new": "        let schema = if custom_roles && false {",
+  "filter": "policy::tests::mixed_role_policy_requires_each_role_and_blocks_role_drop",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 策略事件不记录角色集合",
+  "file": "src/policy.rs",
+  "old": "                payload[\"policy_roles\"] = json!(policy_owned.policy_roles);",
+  "new": "                payload[\"policy_roles\"] = json!([]);",
+  "filter": "policy::tests::mixed_role_policy_requires_each_role_and_blocks_role_drop",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: v3 策略签名不覆盖角色集合",
+  "file": "src/policy.rs",
+  "old": "        policy_roles: &policy.policy_roles,",
+  "new": "        policy_roles: &[],",
+  "filter": "policy::tests::policy_role_list_changes_the_v3_statement_bytes",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不检查策略角色缺失",
+  "file": "src/audit/policy_event/signature.rs",
+  "old": "        if !covered.contains(role) {",
+  "new": "        if false && !covered.contains(role) {",
+  "filter": "audit::policy_event::tests::mixed_role_policy_requires_each_role_and_binds_role_list",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 认领签名审计只把 v1/v2 策略当版本化",
+  "file": "src/audit/policy_event.rs",
+  "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
+  "new": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
+  "filter": "audit::extra_tests::v3_policy_requires_signed_claim_replay_to_cover_the_new_schema",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
