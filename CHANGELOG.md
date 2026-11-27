@@ -17,8 +17,10 @@
 - `policy set --sign-key` 可选 Ed25519 签名：`policy` 事件记录 `previous_policy_hash`/`policy_hash`、
   `algorithm`/`key_id`/`signature`/`signed_at_ms`；签名覆盖旧/新摘要、五个开关、session、时间与 key_id。
   新增 `require_signed_policy` 开关：开启后，后续策略变更必须签名，开启这条的事件自身也必须签名；
-  审计验信任/指纹/签名时点吊销/签名和 previous 链，缺签名报 `policy_unsigned`，签名不符/不受信/已吊销
-  分别报 `policy_signature_invalid`/`policy_signer_untrusted`/`policy_signer_revoked`。
+  签名 key 还必须是信任表里 `auditor` 角色的 key（否则报 `policy_signer_role`）。
+  审计验信任/指纹/角色/签名时点吊销/签名和 previous 链，缺签名报 `policy_unsigned`，签名不符/不受信/
+  角色不符/已吊销分别报 `policy_signature_invalid`/`policy_signer_untrusted`/`policy_signer_role`/
+  `policy_signer_revoked`。
 - `checkout --force` 独立审计事件 `trit-checkout-v1`：强制检出实际放行未提交改动时追加
   `checkout` 事件，记录目标提交、前缀、被放行条数/前 8 条路径/完整集合摘要、写入/跳过数与前后状态；
   审计要求 `force=true`、`dirty>0`、脏样本不超限且 `state_before`/`state_after` 相等（检出只改工作树）。

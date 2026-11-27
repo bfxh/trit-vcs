@@ -86,7 +86,11 @@ fn policy_file_hash(path: &Path) -> Result<Option<Hash>, RepoError> {
     }
 }
 
-fn ensure_trusted_signer(repo: &Repo, key: &KeyFile) -> Result<(), RepoError> {
+fn ensure_trusted_signer(
+    repo: &Repo,
+    key: &KeyFile,
+    require_auditor: bool,
+) -> Result<(), RepoError> {
     let keys = repo.keys()?;
     let Some(entry) = keys.keys.get(&key.key_id) else {
         return Err(RepoError::BadHead(format!(
@@ -102,6 +106,12 @@ fn ensure_trusted_signer(repo: &Repo, key: &KeyFile) -> Result<(), RepoError> {
     }
     if entry.is_revoked() {
         return Err(RepoError::BadHead(format!("key {} 已吊销", key.key_id)));
+    }
+    if require_auditor && entry.role != "auditor" {
+        return Err(RepoError::BadHead(format!(
+            "策略签名要求 auditor 角色；key {} 的角色是 {}",
+            key.key_id, entry.role
+        )));
     }
     Ok(())
 }
@@ -120,8 +130,9 @@ impl Repo {
 
     /// 与 `set_policy` 相同，但可用 Ed25519 私钥给本次策略变更签名。
     ///
-    /// 当前策略或新策略打开 `require_signed_policy` 时，`signer` 不能为空；
-    /// 签名覆盖旧/新摘要与完整开关，事件本身仍不改 `policy.json` 的形状。
+    /// 当前策略或新策略打开 `require_signed_policy` 时，`signer` 不能为空，
+    /// 且签名 key 必须是信任表里 `auditor` 角色的 key；签名覆盖旧/新摘要与
+    /// 完整开关，事件本身仍不改 `policy.json` 的形状。
     pub fn set_policy_with_signer(
         &mut self,
         policy: &Policy,
@@ -134,14 +145,15 @@ impl Repo {
             Some(path) => Some(KeyFile::load(path)?),
             None => None,
         };
-        if let Some(key) = key.as_ref() {
-            ensure_trusted_signer(self, key)?;
-        }
         let current = self.policy()?;
-        if (current.require_signed_policy || policy.require_signed_policy) && key.is_none() {
+        let require_signature = current.require_signed_policy || policy.require_signed_policy;
+        if require_signature && key.is_none() {
             return Err(RepoError::BadHead(
                 "策略要求签名；policy set 需要 --sign-key <私钥文件>".to_string(),
             ));
+        }
+        if let Some(key) = key.as_ref() {
+            ensure_trusted_signer(self, key, require_signature)?;
         }
 
         let path = self.root().join(DIR).join("policy.json");

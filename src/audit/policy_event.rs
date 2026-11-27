@@ -204,6 +204,7 @@ pub(super) fn check_policy(
         check_signed_policy(
             repo,
             event,
+            require_signature,
             session.unwrap_or_default(),
             witness,
             intent,
@@ -238,6 +239,7 @@ pub(super) fn check_policy(
 fn check_signed_policy(
     repo: &Repo,
     event: &Event,
+    require_signature: bool,
     session: &str,
     witness: Option<bool>,
     intent: Option<bool>,
@@ -342,6 +344,16 @@ fn check_signed_policy(
         ));
         return;
     };
+    if require_signature && entry.role != "auditor" {
+        issues.push(AuditIssue::new(
+            "policy_signer_role",
+            format!(
+                "第 {} 条签名 policy 的 key {key_id} 角色是 {}，require_signed_policy 要求 auditor",
+                event.seq, entry.role
+            ),
+        ));
+        return;
+    }
     let Some(public) = entry.public_key.as_deref() else {
         issues.push(AuditIssue::new(
             "policy_signer_untrusted",
@@ -429,6 +441,14 @@ mod tests {
     }
 
     fn signed_event(name: &str) -> (std::path::PathBuf, Repo, Event) {
+        signed_event_with(name, "auditor", true)
+    }
+
+    fn signed_event_with(
+        name: &str,
+        role: &str,
+        require_signed_policy: bool,
+    ) -> (std::path::PathBuf, Repo, Event) {
         let root = temp(name);
         let mut repo = Repo::init(&root).unwrap();
         let key = KeyFile::generate().unwrap();
@@ -438,7 +458,7 @@ mod tests {
             TrustEntry {
                 key_id: key.key_id.clone(),
                 principal: "qoder:policy".to_string(),
-                role: "auditor".to_string(),
+                role: role.to_string(),
                 added_at_ms: 1_000,
                 public_key: Some(key.public.clone()),
                 rotated_from: None,
@@ -451,7 +471,7 @@ mod tests {
         .unwrap();
         repo.set_policy_with_signer(
             &Policy {
-                require_signed_policy: true,
+                require_signed_policy,
                 ..Default::default()
             },
             "qoder:policy",
@@ -533,6 +553,22 @@ mod tests {
             issues(&repo, &unsigned, true)
                 .iter()
                 .any(|issue| issue.kind == "policy_unsigned")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn strict_policy_rejects_non_auditor_signer() {
+        let (root, repo, event) = signed_event_with("role", "author", false);
+        assert!(
+            issues(&repo, &event, false).is_empty(),
+            "未开 require_signed_policy 时非 auditor 签名仍可审计"
+        );
+        assert!(
+            issues(&repo, &event, true)
+                .iter()
+                .any(|issue| issue.kind == "policy_signer_role"),
+            "require_signed_policy 生效时必须要求 auditor 角色"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
