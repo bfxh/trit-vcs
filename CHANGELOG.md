@@ -12,7 +12,8 @@
   publish 的 previous 还必须与该同步事件一致。
 - `auth`/`deny` 记录 TCP 对端地址：服务端从连接取 `peer_addr().ip()` 写入 `source`（不记临时端口，
   不采信 `X-Forwarded-For`；反代后为代理地址）。`trit-auth-v2` 与 HTTP 入口的 `deny` 都带该字段；
-  旧事件可缺，出现时审计要求是合法 IPv4/IPv6。
+  旧事件可缺，出现时审计要求是合法 IPv4/IPv6。带 `source` 的 HTTP `deny` 还必须对上前面同
+  `request_id` 的 `allowed` 鉴权，且 `source`/`actor` 一致；旧无 `source` 的拒绝事件不追溯。
 - `checkout --force` 独立审计事件 `trit-checkout-v1`：强制检出实际放行未提交改动时追加
   `checkout` 事件，记录目标提交、前缀、被放行条数/前 8 条路径/完整集合摘要、写入/跳过数与前后状态；
   审计要求 `force=true`、`dirty>0`、脏样本不超限且 `state_before`/`state_after` 相等（检出只改工作树）。

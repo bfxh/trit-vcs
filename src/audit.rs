@@ -422,7 +422,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                 attestation_event::check_attestation(repo, events, index, event, &mut issues)
             }
             "auth" => auth_event::check_auth(event, &mut issues, &mut warnings),
-            "deny" => deny_event::check_deny(event, &mut issues, &mut warnings),
+            "deny" => deny_event::check_deny(events, index, event, &mut issues, &mut warnings),
             "force" => force_event::check_force(events, event, &mut issues),
             "checkout" => checkout_event::check_checkout(repo, event, &mut issues),
             "accept" => {
