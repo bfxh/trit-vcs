@@ -389,13 +389,7 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
                 }
             }
             "policy" => {
-                let versioned =
-                    event.payload.get("schema").and_then(Value::as_str) == Some("trit-policy-v1");
-                require_signed_claims = event
-                    .payload
-                    .get("require_signed_claims")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(versioned);
+                require_signed_claims = policy_event::require_signed_claims(event);
                 require_signed_witness = policy_event::require_signed_witness(event);
                 policy_replay.observe(repo, event, &mut issues, &mut warnings);
             }

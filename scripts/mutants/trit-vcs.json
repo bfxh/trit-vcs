@@ -2291,16 +2291,6 @@
   "target": "test:claims_cli"
  },
  {
-  "name": "vcs: 认领签名审计缺策略字段时沿用旧值",
-  "file": "src/audit.rs",
-  "old": "                    .unwrap_or(versioned);",
-  "new": "                    .unwrap_or(require_signed_claims);",
-  "filter": "historical_unsigned_claims_remain_valid_after_policy_enablement",
-  "pkg": "trit-vcs",
-  "runner": "cargo",
-  "target": "test:claims_cli"
- },
- {
   "name": "vcs: 认领签名审计不抓缺失 sidecar",
   "file": "src/audit/claim_signature_event.rs",
   "old": "    if !has_signature {",
@@ -2442,9 +2432,9 @@
  },
  {
   "name": "vcs: 新版策略缺签名字段时回放为不要求",
-  "file": "src/audit.rs",
-  "old": "                    .unwrap_or(versioned);",
-  "new": "                    .unwrap_or(false);",
+  "file": "src/audit/policy_event.rs",
+  "old": "        .unwrap_or(versioned)",
+  "new": "        .unwrap_or(false)",
   "filter": "versioned_policy_without_signed_claim_flag_fails_closed",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -2463,7 +2453,7 @@
  {
   "name": "vcs: 新策略事件不写版本标记",
   "file": "src/policy.rs",
-  "old": "                \"schema\": POLICY_SCHEMA,",
+  "old": "                \"schema\": POLICY_SCHEMA_V2,",
   "new": "                \"schema\": null,",
   "filter": "policy_set_is_audited_and_manual_edit_is_red",
   "pkg": "trit-vcs",
@@ -2493,8 +2483,8 @@
  {
   "name": "vcs: policy 审计把显式非字符串 schema 当旧事件",
   "file": "src/audit/policy_event.rs",
-  "old": "    if let Some(schema) = event.payload.get(\"schema\")\n        && schema.as_str() != Some(POLICY_SCHEMA)\n    {",
-  "new": "    if let Some(schema) = event.payload.get(\"schema\").and_then(Value::as_str)\n        && schema != POLICY_SCHEMA\n    {",
+  "old": "    if event.payload.get(\"schema\").is_some()\n        && schema.is_none_or(|schema| schema != POLICY_SCHEMA && schema != POLICY_SCHEMA_V2)\n    {",
+  "new": "    if schema.is_some_and(|schema| schema != POLICY_SCHEMA && schema != POLICY_SCHEMA_V2) {",
   "filter": "explicit_non_string_policy_schema_is_red",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3893,8 +3883,8 @@
  {
   "name": "vcs: 策略事件丢失签名（签者不可归因）",
   "file": "src/policy.rs",
-  "old": "                payload[\"signature\"] = json!(signature);",
-  "new": "                payload[\"signature\"] = json!(\"00\".repeat(64));",
+  "old": "                payload[\"signatures\"] = json!(signatures);",
+  "new": "                payload[\"signatures\"] = json!([]);",
   "filter": "policy::tests::signed_policy_change_is_audited_and_attributes_the_key",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3903,8 +3893,8 @@
  {
   "name": "vcs: 审计不要求严格策略下的策略签名",
   "file": "src/audit/policy_event.rs",
-  "old": "    } else if require_signature {",
-  "new": "    } else if require_signature && false {",
+  "old": "        None => {\n            if required_signatures > 0 {",
+  "new": "        None => {\n            if required_signatures > 0 && false {",
   "filter": "audit::policy_event::tests::unsigned_policy_event_is_red_once_policy_requires_signature",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3913,7 +3903,7 @@
  {
   "name": "vcs: 审计不验策略签名内容",
   "file": "src/audit/policy_event.rs",
-  "old": "    if let Err(err) = signing::verify_signature(public, signature, &statement) {",
+  "old": "    if let Err(err) = signing::verify_signature(public, signature, statement) {",
   "new": "    if let Err(err) = signing::verify_signature(public, signature, b\"\") {",
   "filter": "audit::policy_event::tests::signed_policy_event_rejects_tampered_signature_and_required_flag",
   "pkg": "trit-vcs",
@@ -3923,8 +3913,9 @@
  {
   "name": "vcs: 策略签名不覆盖 require_signed_policy 开关",
   "file": "src/policy.rs",
-  "old": "        require_signed_policy: policy.require_signed_policy,",
-  "new": "        require_signed_policy: false,",
+  "old": "        require_signed_policy: policy.require_signed_policy,\n        policy_threshold: policy.policy_threshold,",
+  "new": "        require_signed_policy: false,\n        policy_threshold: policy.policy_threshold,",
+  "filter": "audit::policy_event::tests::signed_policy_event_rejects_tampered_signature_and_required_flag",
   "filter": "audit::policy_event::tests::signed_policy_event_rejects_tampered_signature_and_required_flag",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -3943,9 +3934,59 @@
  {
   "name": "vcs: 审计不检查严格策略签名者角色",
   "file": "src/audit/policy_event.rs",
-  "old": "    if require_signature && entry.role != \"auditor\" {",
-  "new": "    if require_signature && entry.role != \"auditor\" && false {",
+  "old": "    if require_auditor && entry.role != \"auditor\" {",
+  "new": "    if require_auditor && entry.role != \"auditor\" && false {",
   "filter": "audit::policy_event::tests::strict_policy_rejects_non_auditor_signer",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 认领签名审计只把 v1 策略当版本化",
+  "file": "src/audit/policy_event.rs",
+  "old": "        .and_then(Value::as_bool)\n        .unwrap_or(versioned)",
+  "new": "        .and_then(Value::as_bool)\n        .unwrap_or(false)",
+  "filter": "audit::extra_tests::v2_policy_requires_signed_claim_replay_to_cover_the_new_schema",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 策略多签不检查签名 key 数量",
+  "file": "src/policy.rs",
+  "old": "        if required > 0 && keys.len() < required {",
+  "new": "        if required > 0 && keys.len() < required && false {",
+  "filter": "policy::tests::policy_quorum_requires_multiple_auditor_signatures_and_blocks_threshold_downgrade",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 策略阈值不进入签名载荷",
+  "file": "src/policy.rs",
+  "old": "        policy_threshold: policy.policy_threshold,",
+  "new": "        policy_threshold: 1,",
+  "filter": "audit::policy_event::tests::policy_threshold_is_part_of_the_signed_statement",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不检查策略多签有效数量",
+  "file": "src/audit/policy_event.rs",
+  "old": "    if valid < required_signatures {",
+  "new": "    if valid < required_signatures && false {",
+  "filter": "audit::policy_event::tests::policy_quorum_counts_only_distinct_valid_signatures",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不拦重复策略签名 key",
+  "file": "src/audit/policy_event.rs",
+  "old": "        if !seen.insert(key_id.to_string()) {",
+  "new": "        if false && !seen.insert(key_id.to_string()) {",
+  "filter": "audit::policy_event::tests::policy_quorum_counts_only_distinct_valid_signatures",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"

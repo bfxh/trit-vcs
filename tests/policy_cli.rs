@@ -111,11 +111,16 @@ fn signed_policy_change_is_attributed_and_strict_mode_requires_it() {
         .iter()
         .find(|event| event["kind"] == "policy")
         .expect("策略变更必须留下 policy 事件");
-    assert_eq!(policy["payload"]["key_id"], key_id);
     assert_eq!(policy["payload"]["algorithm"], "ed25519");
     assert_eq!(policy["payload"]["require_signed_policy"], true);
     assert!(policy["payload"]["previous_policy_hash"].is_null());
-    assert!(policy["payload"]["signature"].as_str().is_some());
+    assert_eq!(policy["payload"]["policy_threshold"], 1);
+    assert_eq!(policy["payload"]["signatures"][0]["key_id"], key_id);
+    assert!(
+        policy["payload"]["signatures"][0]["signature"]
+            .as_str()
+            .is_some()
+    );
 
     let non_auditor = run(
         &root,
@@ -177,6 +182,106 @@ fn signed_policy_change_is_attributed_and_strict_mode_requires_it() {
 }
 
 #[test]
+fn policy_quorum_cli_requires_multiple_auditor_keys() {
+    let root = temp("quorum");
+    let init = run(&root, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    for (key_file, principal) in [("policy-a.key", "qoder:a"), ("policy-b.key", "qoder:b")] {
+        let key = run(&root, &["key", "init", "--out", key_file, "--json"]);
+        assert!(key.status.success(), "{}", stderr(&key));
+        let add = run(
+            &root,
+            &[
+                "key",
+                "add",
+                "--key-file",
+                key_file,
+                "--principal",
+                principal,
+                "--role",
+                "auditor",
+                "--owner",
+                "qoder:policy",
+            ],
+        );
+        assert!(add.status.success(), "{}", stderr(&add));
+    }
+
+    let one = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "2",
+            "--sign-key",
+            "policy-a.key",
+            "--json",
+        ],
+    );
+    assert!(!one.status.success(), "2-of-2 策略不能被单钥开启");
+    assert!(stderr(&one).contains("至少 2"), "{}", stderr(&one));
+
+    let two = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "2",
+            "--sign-key",
+            "policy-a.key",
+            "--sign-key",
+            "policy-b.key",
+            "--json",
+        ],
+    );
+    assert!(two.status.success(), "{}", stderr(&two));
+    let two_value: serde_json::Value = serde_json::from_str(&stdout(&two)).unwrap();
+    assert_eq!(two_value["policy_threshold"], 2);
+    assert_eq!(two_value["signer_count"], 2);
+
+    let audit = run(&root, &["audit", "status", "--json"]);
+    assert!(audit.status.success(), "{}", stderr(&audit));
+    let log = run(&root, &["audit", "log", "--json"]);
+    assert!(log.status.success(), "{}", stderr(&log));
+    let events: serde_json::Value = serde_json::from_str(&stdout(&log)).unwrap();
+    let policy = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["kind"] == "policy")
+        .unwrap();
+    assert_eq!(policy["payload"]["policy_threshold"], 2);
+    assert_eq!(policy["payload"]["signatures"].as_array().unwrap().len(), 2);
+
+    let lower = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "1",
+            "--sign-key",
+            "policy-a.key",
+            "--json",
+        ],
+    );
+    assert!(!lower.status.success(), "调低阈值也必须满足旧阈值");
+    assert!(stderr(&lower).contains("至少 2"), "{}", stderr(&lower));
+}
+
+#[test]
 fn policy_set_is_audited_and_manual_edit_is_red() {
     let root = temp("flow");
     let init = run(&root, &["init"]);
@@ -221,7 +326,7 @@ fn policy_set_is_audited_and_manual_edit_is_red() {
         .iter()
         .find(|event| event["kind"] == "policy")
         .expect("策略变更必须留下 policy 事件");
-    assert_eq!(policy_event["payload"]["schema"], "trit-policy-v1");
+    assert_eq!(policy_event["payload"]["schema"], "trit-policy-v2");
     assert_eq!(policy_event["payload"]["session"], "qoder:policy");
     assert_eq!(policy_event["payload"]["require_witness"], true);
 

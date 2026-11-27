@@ -103,6 +103,7 @@ fn main() {
             require_signed_claims: false,
             require_signed_witness: false,
             require_signed_policy: false,
+            policy_threshold: 1,
         })
         .unwrap(),
     )

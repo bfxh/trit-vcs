@@ -21,7 +21,7 @@ use crate::hash::Hash;
 use crate::journal::{Journal, JournalError};
 pub use crate::model::CommitFilter;
 use crate::model::{Commit, Hlc, Intent};
-pub use crate::policy::Policy;
+pub use crate::policy::{MAX_POLICY_THRESHOLD, Policy};
 use crate::store::{PutStats, Store, StoreError};
 use crate::witness::{self, Witness, WitnessError};
 

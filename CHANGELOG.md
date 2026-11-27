@@ -14,6 +14,12 @@
   不采信 `X-Forwarded-For`；反代后为代理地址）。`trit-auth-v2` 与 HTTP 入口的 `deny` 都带该字段；
   旧事件可缺，出现时审计要求是合法 IPv4/IPv6。带 `source` 的 HTTP `deny` 还必须对上前面同
   `request_id` 的 `allowed` 鉴权，且 `source`/`actor` 一致；旧无 `source` 的拒绝事件不追溯。
+- 策略阈值多签：`policy set` 新增 `--policy-threshold N`（默认 1，范围 1..16），`--sign-key` 可重复。
+  `policy` 事件升级为 `trit-policy-v2`，记 `policy_threshold` 与 `signatures[]`（每项 key/签名/时间），
+  每份 Ed25519 签名覆盖旧/新摘要、五个开关、阈值、session、时间与自己的 key_id。`require_signed_policy`
+  生效时，本次所需签名数取当前与新阈值较大者；每把 key 必须是信任表里不同的 `auditor` key。调低阈值
+  也必须先满足旧阈值；重复 key 报 `policy_signature_duplicate`，有效签名不足报
+  `policy_signature_insufficient`。旧 `trit-policy-v1` 单签事件保持兼容。
 - `policy set --sign-key` 可选 Ed25519 签名：`policy` 事件记录 `previous_policy_hash`/`policy_hash`、
   `algorithm`/`key_id`/`signature`/`signed_at_ms`；签名覆盖旧/新摘要、五个开关、session、时间与 key_id。
   新增 `require_signed_policy` 开关：开启后，后续策略变更必须签名，开启这条的事件自身也必须签名；

@@ -21,7 +21,7 @@
 | 写前准入 | Git 无对应面 | 未认领的提交默认拒；认领有 TTL、同名 id 判红；判决是三态（True/Unknown/False），"不知道"不等于"过" |
 | 被拒之后 | 更强 | 每条判决附**能直接跑的下一步命令**：`unclaimed` 负载 329→455 元（3 条命令）、`claim_conflict` 18→88 元、`witness_required` 26→73 元 |
 | 预检成本 | 有读数 | 60 文件 / 121 对象 / 9,400 字节的预检 **4.8 ms**，**写盘 0 个对象**（对象数、哈希链长度、HEAD 三样分别断言） |
-| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权成功/失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节，`claims add/release --sign-key` 落 `claim_signature` 并复验操作/完整 ClaimSpec/前后状态/操作时点授权，审计按 `op_begin` 到 `op_result` 的日志顺序拒绝操作前吊销和操作中吊销/轮换，并核对 `op_result.state_after`；`trit-policy-v1` 缺签名字段时 fail-closed，旧策略事件保持兼容，审计重放强制签名策略并检查 sidecar 缺失，`key rotate` 由旧/新两把钥双签声明并由 `audit` 复验，`audit checkpoint` 落签名 Merkle 检查点并复验前缀根/链，`audit consistency` 证明旧前缀是新根的前缀（1 万叶、旧前缀 4,321 叶的证明少于 64 个节点），`audit anchor` 导出可离线复验的仓内文件锚，`audit external-anchor/verify-external-anchor` 用调用方从仓外钉住的独立公钥签/验检查点与前缀摘要；`attest` 给已提交 witness 追加 Ed25519 sidecar，`admit --signed` 与 MCP `admit({signed:true})` 强制验签，策略 `require_signed_witness` 可要求新见证必须带 attestation；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；`git-import` / `git-export` 默认保留完整多父图，`--first-parent` 才线性化；两个方向都落 `git_bridge` v2 事件（action、成功/失败、first_parent、提交数、文件数、merge 数、元数据数、标签数、跳过的标签数、map digest）。`publish --force` 的非快进改写与 `pull --force` 成功应用后落独立 `force` 事件（`trit-force-v1`，绑定 op_id、previous、commit、reason，并核同 op_id/side 的同步事件与 `forced=true`）。`checkout --force` 放行并覆盖未提交改动时落独立 `checkout` 事件（`trit-checkout-v1`，绑定目标提交、前缀、脏改动数量/样本/完整摘要与前后状态，审计要求 `force=true`、`dirty>0` 且前后状态相等）。`log --all` / MCP `log({all:true})` 可看全图。成功 publish/pull 的 `trit-sync-v1` 事件按 op_id/request_id 跨仓关联并核阶段、前置鉴权与同侧唯一性；提交可带 `evidence`/`tags` |
+| 审计 | 有面，P0 首批已落地（L2 对账；缺口与路线见 [`docs/AUDIT-STRENGTH.md`](docs/AUDIT-STRENGTH.md)） | 关键状态变更前写 `op_begin`、后写 `op_result`（含 `state_before`/`state_after`），提交门拒绝落 `gate`，策略变更走 `policy set` 并落 `policy`，合并落 `merge`，服务端鉴权成功/失败落 `auth`，publish（含请求形状）、服务端 pull 与本地 pull 业务拒绝落 `deny`，信任表 add/revoke/rotate 落 `key`，`commit --sign-key` 落 `signature` 并由 `audit` 用信任表公钥验提交字节，`claims add/release --sign-key` 落 `claim_signature` 并复验操作/完整 ClaimSpec/前后状态/操作时点授权，审计按 `op_begin` 到 `op_result` 的日志顺序拒绝操作前吊销和操作中吊销/轮换，并核对 `op_result.state_after`；`trit-policy-v1/v2` 缺签名字段时 fail-closed，旧策略事件保持兼容，审计重放强制签名策略并检查 sidecar 缺失，`key rotate` 由旧/新两把钥双签声明并由 `audit` 复验，`audit checkpoint` 落签名 Merkle 检查点并复验前缀根/链，`audit consistency` 证明旧前缀是新根的前缀（1 万叶、旧前缀 4,321 叶的证明少于 64 个节点），`audit anchor` 导出可离线复验的仓内文件锚，`audit external-anchor/verify-external-anchor` 用调用方从仓外钉住的独立公钥签/验检查点与前缀摘要；`attest` 给已提交 witness 追加 Ed25519 sidecar，`admit --signed` 与 MCP `admit({signed:true})` 强制验签，策略 `require_signed_witness` 可要求新见证必须带 attestation；`trit-vcs audit status/verify` 把日志对账到 HEAD/refs/对象/认领快照/判据回执，漏账、状态漂移、开放操作会报；`git-import` / `git-export` 默认保留完整多父图，`--first-parent` 才线性化；两个方向都落 `git_bridge` v2 事件（action、成功/失败、first_parent、提交数、文件数、merge 数、元数据数、标签数、跳过的标签数、map digest）。`publish --force` 的非快进改写与 `pull --force` 成功应用后落独立 `force` 事件（`trit-force-v1`，绑定 op_id、previous、commit、reason，并核同 op_id/side 的同步事件与 `forced=true`）。`checkout --force` 放行并覆盖未提交改动时落独立 `checkout` 事件（`trit-checkout-v1`，绑定目标提交、前缀、脏改动数量/样本/完整摘要与前后状态，审计要求 `force=true`、`dirty>0` 且前后状态相等）。`log --all` / MCP `log({all:true})` 可看全图。成功 publish/pull 的 `trit-sync-v1` 事件按 op_id/request_id 跨仓关联并核阶段、前置鉴权与同侧唯一性；提交可带 `evidence`/`tags` |
 | 时间 | 有面 | HLC（混合逻辑时钟）而非裸墙钟 |
 | 上下文预算 | 有面 | `--budget <元>` 对所有读数生效：只丢整行、从尾部丢，`truncation` 元数据自己算进预算；ASCII 4 字 = 1 元、非 ASCII 4 元 |
 | Git 生态 | 薄 | `git-export` / `git-import` 默认保留完整多父图，`--first-parent` 才线性化；保留作者/提交者/时间/父链元数据，并落 `git_bridge` v2 审计事件（map digest、merge 数、标签数、成功/失败）；标签名可往返（附注标签导出降级为轻量标签并记账），submodule 仍不搬，也不把 Git 签名信任映射进来 |
@@ -196,20 +196,22 @@ trit-vcs policy set --owner qoder:admin --require-signed-claims
 
 ```sh
 trit-vcs policy --json
-trit-vcs policy set --owner qoder:s1 --require-witness --require-intent --require-signed-claims --require-signed-witness --require-signed-policy --sign-key ~/.trit/keys/auditor.key --json
+trit-vcs policy set --owner qoder:s1 --require-witness --require-intent --require-signed-claims --require-signed-witness --require-signed-policy --policy-threshold 2 --sign-key ~/.trit/keys/auditor-a.key --sign-key ~/.trit/keys/auditor-b.key --json
 ```
 
 `policy set` 的语义是**整份替换**：没带的开关归 false，不沿用旧 true。每次变更落 `op_begin` +
-`policy` + `op_result`，新事件带 `schema: trit-policy-v1`、`session`、五个开关、`previous_policy_hash`、
-`policy_hash`、`state_before`/`state_after`；版本化事件缺 `require_signed_claims` / `require_signed_witness`
-或显式非布尔值都会判红，并在重放时按强制签名处理；无该字段的旧事件仍按关闭处理。
-`--sign-key FILE` 用 Ed25519 签旧/新摘要、五个开关、session、时间与 key_id；事件记
-`algorithm`/`key_id`/`signature`/`signed_at_ms`，`policy.json` 形状不变。
-`require_signed_policy` 打开后，后续策略变更必须签名，开启这条的事件自身也必须签名；签名 key
-必须是信任表里 `auditor` 角色的 key（其他角色报 `policy_signer_role`），审计验信任表、公钥指纹、
-签名时点吊销、角色、签名和 `previous_policy_hash` 链。`require_signed_witness` 开启后，
-新提交必须先带 witness，普通 `admit` 也会要求有效 attestation。绕过 CLI 直接改文件会被 `audit` 的
-`state_drift`、`op_state_gap` 或 `policy_bad`/`policy_unsigned` 抓出来。
+`policy` + `op_result`，新事件带 `schema: trit-policy-v2`、`session`、五个开关、`policy_threshold`、
+`previous_policy_hash`、`policy_hash`、`state_before`/`state_after`；版本化事件缺 `require_signed_claims` /
+`require_signed_witness` 或显式非布尔值都会判红，并在重放时按强制签名处理；无该字段的旧事件仍按关闭处理。
+`--sign-key FILE` 可重复，每把 key 用 Ed25519 签旧/新摘要、五个开关、阈值、session、时间与自己的 key_id；
+事件记 `algorithm` 与 `signatures[]`（每项 `key_id`/`signature`/`signed_at_ms`）。`v1` 单签事件仍可审计。
+`require_signed_policy` 打开后，后续策略变更必须签名，开启这条的事件自身也必须签名；签名数必须达到
+当前与新策略阈值的较大者，且每把 key 都是信任表里不同的 `auditor` key。调低阈值也必须先满足旧阈值，
+不能用单钥把 3-of-N 降成 1-of-N；重复 key 报 `policy_signature_duplicate`，有效签名不足报
+`policy_signature_insufficient`。审计验信任表、公钥指纹、签名时点吊销、角色、每份规范载荷和
+`previous_policy_hash` 链。`require_signed_witness` 开启后，新提交必须先带 witness，普通 `admit` 也会要求
+有效 attestation。绕过 CLI 直接改文件会被 `audit` 的 `state_drift`、`op_state_gap` 或
+`policy_bad`/`policy_unsigned` 抓出来。
 
 信任表也走同一套写前协议（表里存公钥/主体/角色；实际验签由下面的 `signing` 层负责）：
 
@@ -262,13 +264,13 @@ key_id、会话与签名时间。旧 witness 可不声明 `predicate.base`，但
 `op_begin` 到成功 `op_result` 之间不能被吊销或轮换；签名的 `state_after` 必须同时等于认领事件和
 `op_result` 的状态。带公钥的 `key add` 新事件记录公钥，旧事件缺公钥时才回退到最终 `keys.json`，两者不一致仍拒绝。
 `audit` 按事件重放 `require_signed_claims` 策略，缺该字段的旧策略事件按关闭处理；新
-`trit-policy-v1` 事件缺字段则判红并按开启处理，同时要求标记为已签的认领事件在收口前确有 sidecar。
+`trit-policy-v1`/`trit-policy-v2` 事件缺字段则判红并按开启处理，同时要求标记为已签的认领事件在收口前确有 sidecar。
 坏签名、换操作、换认领字段、换状态、重复签名、缺 sidecar、绕过当时策略或授权时点不符分别报
 `claim_signature_invalid` / `claim_signature_operation` / `claim_signature_bad` /
 `claim_signature_missing` / `claim_signature_untrusted` / `claim_signature_revoked`。
 策略重放不是独立信任根：`require_signed_policy` 未开启时，`policy` 事件仍可不签名；开启后也必须由
-信任表里 `auditor` 角色的 key 签（尚未支持多角色/阈值签名）。能重写整条 journal 与状态、并绕过外部
-签名检查点/锚的攻击者仍可绕过这段历史，需要保留的签名检查点/文件锚才能把它钉住。
+信任表里达到阈值数量的不同 `auditor` key 签（已支持 1..16 的阈值，但还不支持混合角色/审批流）。能重写
+整条 journal 与状态、并绕过外部签名检查点/锚的攻击者仍可绕过这段历史，需要保留的签名检查点/文件锚才能把它钉住。
 
 签名检查点 v0（仓内 Merkle + 检查点链）与文件锚 v0：
 
@@ -355,9 +357,9 @@ trit-vcs sparse --clear     # 清掉索引，退回全量判定
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test                                                     # 21 个集成测试二进制 / 344 条 crate 测试（2026-11-27 实测，含 MSRV 1.88）
-python scripts/test_surface.py                                 # 11 个单位 / 429 条测试 / 拦 0（2026-11-27 实测）
-python scripts/mutation_check.py --pkg trit-vcs                    # 395 条登记（视图 pin 14 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / checkout 强制检出 3 / 请求来源 4 / deny 鉴权绑定 2 / 策略签名 4 / 策略签名角色 2 / TVAB 20）
+cargo test                                                     # 21 个集成测试二进制 / 348 条 crate 测试（2026-11-27 实测，含 MSRV 1.88）
+python scripts/test_surface.py                                 # 11 个单位 / 434 条测试 / 拦 0（2026-11-27 实测）
+python scripts/mutation_check.py --pkg trit-vcs                    # 399 条登记（视图 pin 14 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / checkout 强制检出 3 / 请求来源 4 / deny 鉴权绑定 2 / 策略签名 4 / 策略签名角色 2 / 策略阈值多签 5 / TVAB 20）
 python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/change_policy.py --pkg scripts/ci_integrity.py --pkg scripts/docs_hygiene.py --pkg scripts/module_budget.py --pkg scripts/mutation_check.py --pkg scripts/repo_triage.py --pkg scripts/test_surface.py  # 脚本面 111 条
 ```
 
@@ -374,7 +376,7 @@ python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/cha
 | `store` / `chunk` / `hash` | 内容寻址的对象库、CDC 分块、BLAKE3 id |
 | `bundle` | `TVBD` 包 + 过滤后的**树清单** + 范围内传输（export 与 pull 共用同一条路） |
 | `claims` | 中央仓跨仓认领账本（单写者锁、冲突点名、`add/release/list/export`）；变更进哈希链，可选 Ed25519 sidecar 签名，审计按操作时点信任/吊销重建授权，支持强制签名策略 |
-| `policy` | `policy set` 整份写入门禁开关，`trit-policy-v1` 事件记 session/五个开关/旧新摘要/前后状态；可选 Ed25519 签名，`require_signed_policy` 可强制后续变更由 `auditor` 角色签名；新版缺签名字段 fail-closed，旧事件保持兼容 |
+| `policy` | `policy set` 整份写入门禁开关，`trit-policy-v2` 事件记 session/五个开关/`policy_threshold`/旧新摘要/前后状态与 `signatures[]`；`--sign-key` 可重复，`require_signed_policy` 要求达到当前与新阈值较大者的不同 `auditor` 签名，重复 key 与不足分别报 `policy_signature_duplicate`/`policy_signature_insufficient`；`v1` 单签事件保持兼容 |
 | `keys` | 受审计信任表：`key add/revoke/rotate/list` 写 `.tritvcs/keys.json`，每次变更落 `key` 事件；带公钥的 add 由审计复验 Ed25519 形状、key_id 指纹和信任表一致，rotate 要求旧/新双签并记 `rotated_from` |
 | `signing` | Ed25519 私钥文件、公钥指纹、提交/认领/见证声明签名；`commit/claims --sign-key` 与 `attest --key-file` 落 sidecar 事件，`audit` 用信任表公钥复验 |
 | `attestation` | witness 的 Ed25519 sidecar：绑定提交/树/父树/原始见证/签者/会话，不改提交 id；支持严格策略、操作收口与重复/信任/吊销审计 |
