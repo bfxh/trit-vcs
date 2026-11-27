@@ -33,6 +33,104 @@ fn temp(name: &str) -> PathBuf {
 }
 
 #[test]
+fn signed_policy_change_is_attributed_and_strict_mode_requires_it() {
+    let root = temp("signed");
+    let init = run(&root, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    let key = run(&root, &["key", "init", "--out", "policy.key", "--json"]);
+    assert!(key.status.success(), "{}", stderr(&key));
+    let key_value: serde_json::Value = serde_json::from_str(&stdout(&key)).unwrap();
+    let key_id = key_value["key_id"].as_str().unwrap().to_string();
+    let add = run(
+        &root,
+        &[
+            "key",
+            "add",
+            "--key-file",
+            "policy.key",
+            "--principal",
+            "qoder:policy",
+            "--owner",
+            "qoder:policy",
+        ],
+    );
+    assert!(add.status.success(), "{}", stderr(&add));
+
+    let signed = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--sign-key",
+            "policy.key",
+            "--json",
+        ],
+    );
+    assert!(signed.status.success(), "{}", stderr(&signed));
+    let signed_value: serde_json::Value = serde_json::from_str(&stdout(&signed)).unwrap();
+    assert_eq!(signed_value["require_signed_policy"], true);
+    assert_eq!(signed_value["signed"], true);
+
+    let audit = run(&root, &["audit", "status", "--json"]);
+    assert!(audit.status.success(), "{}", stderr(&audit));
+    let audit_value: serde_json::Value = serde_json::from_str(&stdout(&audit)).unwrap();
+    assert_eq!(audit_value["ok"], true);
+    let log = run(&root, &["audit", "log", "--json"]);
+    assert!(log.status.success(), "{}", stderr(&log));
+    let events: serde_json::Value = serde_json::from_str(&stdout(&log)).unwrap();
+    let policy = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "policy")
+        .expect("策略变更必须留下 policy 事件");
+    assert_eq!(policy["payload"]["key_id"], key_id);
+    assert_eq!(policy["payload"]["algorithm"], "ed25519");
+    assert_eq!(policy["payload"]["require_signed_policy"], true);
+    assert!(policy["payload"]["previous_policy_hash"].is_null());
+    assert!(policy["payload"]["signature"].as_str().is_some());
+
+    let unsigned = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-witness",
+            "--json",
+        ],
+    );
+    assert!(!unsigned.status.success(), "严格策略下无签名变更必须失败");
+    assert!(
+        stderr(&unsigned).contains("--sign-key"),
+        "{}",
+        stderr(&unsigned)
+    );
+
+    let re_signed = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-witness",
+            "--require-signed-policy",
+            "--sign-key",
+            "policy.key",
+            "--json",
+        ],
+    );
+    assert!(re_signed.status.success(), "{}", stderr(&re_signed));
+    let re_audit = run(&root, &["audit", "status", "--json"]);
+    assert!(re_audit.status.success(), "{}", stderr(&re_audit));
+}
+
+#[test]
 fn policy_set_is_audited_and_manual_edit_is_red() {
     let root = temp("flow");
     let init = run(&root, &["init"]);

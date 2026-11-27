@@ -3,6 +3,7 @@
 //! `policy set` 的语义是“本次参数就是完整策略”：没带的开关一律归 false，
 //! 不沿用旧 true。这样一次命令就能复现“谁在什么时候把哪项打开/关掉”。
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::json;
@@ -13,7 +14,7 @@ use super::{flag, has, now_secs, positionals, repo_path};
 
 const USAGE: &str = "policy 用法：\n  \
      trit-vcs policy [--json] [--repo PATH]\n  \
-     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--json] [--repo PATH]";
+     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--require-signed-policy] [--sign-key FILE] [--json] [--repo PATH]";
 
 fn show(repo: &Repo, args: &[String]) -> ExitCode {
     let policy = match repo.policy() {
@@ -28,6 +29,7 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
                 "require_intent": policy.require_intent,
                 "require_signed_claims": policy.require_signed_claims,
                 "require_signed_witness": policy.require_signed_witness,
+                "require_signed_policy": policy.require_signed_policy,
             }))
             .unwrap_or_else(|_| "{}".to_string())
         );
@@ -36,6 +38,7 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
         println!("require_intent={}", policy.require_intent);
         println!("require_signed_claims={}", policy.require_signed_claims);
         println!("require_signed_witness={}", policy.require_signed_witness);
+        println!("require_signed_policy={}", policy.require_signed_policy);
     }
     ExitCode::SUCCESS
 }
@@ -52,12 +55,16 @@ fn set(args: &[String]) -> ExitCode {
         require_intent: has(args, "--require-intent"),
         require_signed_claims: has(args, "--require-signed-claims"),
         require_signed_witness: has(args, "--require-signed-witness"),
+        require_signed_policy: has(args, "--require-signed-policy"),
     };
+    let sign_key = flag(args, "--sign-key")
+        .filter(|value| !value.is_empty())
+        .map(Path::new);
     let mut repo = match Repo::open(&root) {
         Ok(repo) => repo,
         Err(err) => return fail_err(&err, &root, owner, args),
     };
-    match repo.set_policy(&policy, owner, now_secs() * 1000) {
+    match repo.set_policy_with_signer(&policy, owner, now_secs() * 1000, sign_key) {
         Ok(hash) => {
             if has(args, "--json") {
                 println!(
@@ -67,18 +74,26 @@ fn set(args: &[String]) -> ExitCode {
                         "require_intent": policy.require_intent,
                         "require_signed_claims": policy.require_signed_claims,
                         "require_signed_witness": policy.require_signed_witness,
+                        "require_signed_policy": policy.require_signed_policy,
+                        "signed": sign_key.is_some(),
                         "policy": hash.to_hex(),
                     }))
                     .unwrap_or_else(|_| "{}".to_string())
                 );
             } else {
                 println!(
-                    "策略已更新：require_witness={} require_intent={} require_signed_claims={} require_signed_witness={}（policy {}）",
+                    "策略已更新：require_witness={} require_intent={} require_signed_claims={} require_signed_witness={} require_signed_policy={}（policy {}{}）",
                     policy.require_witness,
                     policy.require_intent,
                     policy.require_signed_claims,
                     policy.require_signed_witness,
-                    hash.short()
+                    policy.require_signed_policy,
+                    hash.short(),
+                    if sign_key.is_some() {
+                        "，已签名"
+                    } else {
+                        ""
+                    }
                 );
             }
             ExitCode::SUCCESS
@@ -89,7 +104,7 @@ fn set(args: &[String]) -> ExitCode {
 
 pub(crate) fn policy_cmd(args: &[String]) -> ExitCode {
     let root = repo_path(args);
-    let words = positionals(args, &["--owner", "--repo"]);
+    let words = positionals(args, &["--owner", "--repo", "--sign-key"]);
     match words.first().map(String::as_str) {
         Some("set") => set(args),
         None | Some("show") => match Repo::open(&root) {

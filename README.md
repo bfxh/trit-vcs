@@ -196,15 +196,19 @@ trit-vcs policy set --owner qoder:admin --require-signed-claims
 
 ```sh
 trit-vcs policy --json
-trit-vcs policy set --owner qoder:s1 --require-witness --require-intent --require-signed-claims --require-signed-witness --json
+trit-vcs policy set --owner qoder:s1 --require-witness --require-intent --require-signed-claims --require-signed-witness --require-signed-policy --sign-key ~/.trit/keys/auditor.key --json
 ```
 
 `policy set` 的语义是**整份替换**：没带的开关归 false，不沿用旧 true。每次变更落 `op_begin` +
-`policy` + `op_result`，新事件带 `schema: trit-policy-v1`、`session`、四个开关、`policy_hash`、
-`state_before`/`state_after`；版本化事件缺 `require_signed_claims` / `require_signed_witness` 或显式非布尔值
-都会判红，并在重放时按强制签名处理；无该字段的旧事件仍按关闭处理。`require_signed_witness` 开启后，
+`policy` + `op_result`，新事件带 `schema: trit-policy-v1`、`session`、五个开关、`previous_policy_hash`、
+`policy_hash`、`state_before`/`state_after`；版本化事件缺 `require_signed_claims` / `require_signed_witness`
+或显式非布尔值都会判红，并在重放时按强制签名处理；无该字段的旧事件仍按关闭处理。
+`--sign-key FILE` 用 Ed25519 签旧/新摘要、五个开关、session、时间与 key_id；事件记
+`algorithm`/`key_id`/`signature`/`signed_at_ms`，`policy.json` 形状不变。
+`require_signed_policy` 打开后，后续策略变更必须签名，开启这条的事件自身也必须签名；审计验
+信任表、公钥指纹、签名时点吊销、签名和 `previous_policy_hash` 链。`require_signed_witness` 开启后，
 新提交必须先带 witness，普通 `admit` 也会要求有效 attestation。绕过 CLI 直接改文件会被 `audit` 的
-`state_drift` 或下一次 `op_state_gap` 抓出来。
+`state_drift`、`op_state_gap` 或 `policy_bad`/`policy_unsigned` 抓出来。
 
 信任表也走同一套写前协议（表里存公钥/主体/角色；实际验签由下面的 `signing` 层负责）：
 
@@ -261,8 +265,9 @@ key_id、会话与签名时间。旧 witness 可不声明 `predicate.base`，但
 坏签名、换操作、换认领字段、换状态、重复签名、缺 sidecar、绕过当时策略或授权时点不符分别报
 `claim_signature_invalid` / `claim_signature_operation` / `claim_signature_bad` /
 `claim_signature_missing` / `claim_signature_untrusted` / `claim_signature_revoked`。
-策略重放不是独立信任根：`policy` 事件本身未签名，能删改它并重算整条 journal 的攻击者仍可绕过强制签名
-检查，需要保留的签名检查点/文件锚才能把这段历史钉住。
+策略重放不是独立信任根：`require_signed_policy` 未开启时，`policy` 事件仍可不签名；开启后也必须由
+某个信任 key 签（当前不按角色细分签策略的权限）。能重写整条 journal 与状态、并绕过外部签名检查点/锚的
+攻击者仍可绕过这段历史，需要保留的签名检查点/文件锚才能把它钉住。
 
 签名检查点 v0（仓内 Merkle + 检查点链）与文件锚 v0：
 
@@ -349,9 +354,9 @@ trit-vcs sparse --clear     # 清掉索引，退回全量判定
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test                                                     # 21 个集成测试二进制 / 339 条 crate 测试（2026-11-27 实测，含 MSRV 1.88）
-python scripts/test_surface.py                                 # 11 个单位 / 423 条测试 / 拦 0（2026-11-27 实测）
-python scripts/mutation_check.py --pkg trit-vcs                    # 389 条登记（视图 pin 14 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / checkout 强制检出 3 / 请求来源 4 / deny 鉴权绑定 2 / TVAB 20）
+cargo test                                                     # 21 个集成测试二进制 / 343 条 crate 测试（2026-11-27 实测，含 MSRV 1.88）
+python scripts/test_surface.py                                 # 11 个单位 / 428 条测试 / 拦 0（2026-11-27 实测）
+python scripts/mutation_check.py --pkg trit-vcs                    # 393 条登记（视图 pin 14 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / checkout 强制检出 3 / 请求来源 4 / deny 鉴权绑定 2 / 策略签名 4 / TVAB 20）
 python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/change_policy.py --pkg scripts/ci_integrity.py --pkg scripts/docs_hygiene.py --pkg scripts/module_budget.py --pkg scripts/mutation_check.py --pkg scripts/repo_triage.py --pkg scripts/test_surface.py  # 脚本面 111 条
 ```
 
@@ -368,7 +373,7 @@ python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/cha
 | `store` / `chunk` / `hash` | 内容寻址的对象库、CDC 分块、BLAKE3 id |
 | `bundle` | `TVBD` 包 + 过滤后的**树清单** + 范围内传输（export 与 pull 共用同一条路） |
 | `claims` | 中央仓跨仓认领账本（单写者锁、冲突点名、`add/release/list/export`）；变更进哈希链，可选 Ed25519 sidecar 签名，审计按操作时点信任/吊销重建授权，支持强制签名策略 |
-| `policy` | `policy set` 整份写入门禁开关，`trit-policy-v1` 事件记 session/四个开关/摘要/前后状态；新版缺签名字段 fail-closed，旧事件保持兼容 |
+| `policy` | `policy set` 整份写入门禁开关，`trit-policy-v1` 事件记 session/五个开关/旧新摘要/前后状态；可选 Ed25519 签名，`require_signed_policy` 可强制后续变更签名；新版缺签名字段 fail-closed，旧事件保持兼容 |
 | `keys` | 受审计信任表：`key add/revoke/rotate/list` 写 `.tritvcs/keys.json`，每次变更落 `key` 事件；带公钥的 add 由审计复验 Ed25519 形状、key_id 指纹和信任表一致，rotate 要求旧/新双签并记 `rotated_from` |
 | `signing` | Ed25519 私钥文件、公钥指纹、提交/认领/见证声明签名；`commit/claims --sign-key` 与 `attest --key-file` 落 sidecar 事件，`audit` 用信任表公钥复验 |
 | `attestation` | witness 的 Ed25519 sidecar：绑定提交/树/父树/原始见证/签者/会话，不改提交 id；支持严格策略、操作收口与重复/信任/吊销审计 |

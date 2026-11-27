@@ -102,6 +102,7 @@ fn main() {
             require_intent: false,
             require_signed_claims: false,
             require_signed_witness: false,
+            require_signed_policy: false,
         })
         .unwrap(),
     )
