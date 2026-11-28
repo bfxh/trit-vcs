@@ -6,6 +6,13 @@
 ## [Unreleased]
 
 ### Added
+- 策略变更原因/工单绑定：`Policy` 新增 `require_policy_reason`（默认 false），`policy set` 新增
+  `--require-policy-reason`、`--policy-reason TEXT`、`--policy-ticket TEXT`。打开后每次变更必须带非空原因，
+  关闭这条开关的变更自身也必须说明原因；原因与工单只进事件和签名载荷，不写入 `policy.json`。带原因/工单或
+  `require_policy_reason` 的策略写 `trit-policy-v6`，规范载荷在 `require_signed_policy` 后加入
+  `require_policy_reason`，并在 `policy_principal_quorum` 后加入 `policy_reason`/`policy_ticket`；v6 事件必须
+  显式带这四个字段。审计对缺/非法/空原因与缺工单报 `policy_bad`，篡改原因/工单/开关会使签名失效；
+  v1/v2/v3/v4/v5 事件继续按旧语义重放。
 - 策略每角色最低签名数：`Policy` 新增 `policy_role_thresholds`（默认空，只记大于 1 的角色），
   `policy set --policy-role-threshold ROLE=N` 可重复；键必须在 `policy_roles` 中，未写的角色仍要求 1 个签名，
   `policy_threshold` 不得小于各角色最低数之和（最多 16）。非空角色阈值写 `trit-policy-v5`，v5 规范载荷在

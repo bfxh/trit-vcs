@@ -19,11 +19,15 @@ use crate::hash::Hash;
 use crate::repo::{DIR, Repo, RepoError};
 use crate::signing::KeyFile;
 
+mod statements;
+pub(crate) use statements::{policy_statement_v5_bytes, policy_statement_v6_bytes};
+
 pub(crate) const POLICY_SCHEMA: &str = "trit-policy-v1";
 pub(crate) const POLICY_SCHEMA_V2: &str = "trit-policy-v2";
 pub(crate) const POLICY_SCHEMA_V3: &str = "trit-policy-v3";
 pub(crate) const POLICY_SCHEMA_V4: &str = "trit-policy-v4";
 pub(crate) const POLICY_SCHEMA_V5: &str = "trit-policy-v5";
+pub(crate) const POLICY_SCHEMA_V6: &str = "trit-policy-v6";
 pub const MAX_POLICY_THRESHOLD: u8 = 16;
 pub const MAX_POLICY_ROLES: usize = 4;
 pub const POLICY_SIGNER_ROLES: &[&str] = &["auditor", "release"];
@@ -50,6 +54,9 @@ pub struct Policy {
     /// 打开后，后续 `policy` 事件必须有 Ed25519 签名；开启这条的策略变更自身也必须签名。
     #[serde(default)]
     pub require_signed_policy: bool,
+    /// 打开后，后续策略变更必须提供非空原因；原因只进事件与签名，不写入 `policy.json`。
+    #[serde(default)]
+    pub require_policy_reason: bool,
     /// 严格策略需要多少个不同的签名。`0` 视为非法配置。
     #[serde(default = "default_policy_threshold")]
     pub policy_threshold: u8,
@@ -72,6 +79,7 @@ impl Default for Policy {
             require_signed_claims: false,
             require_signed_witness: false,
             require_signed_policy: false,
+            require_policy_reason: false,
             policy_threshold: 1,
             policy_roles: default_policy_roles(),
             policy_principal_quorum: false,
@@ -254,57 +262,6 @@ pub(crate) fn policy_statement_v4_bytes(
         require_signed_policy: policy.require_signed_policy,
         policy_threshold: policy.policy_threshold,
         policy_roles: &policy.policy_roles,
-        policy_principal_quorum: policy.policy_principal_quorum,
-        previous_policy_hash,
-        policy_hash,
-        signed_at_ms,
-        key_id,
-    })
-    .map_err(|err| RepoError::BadHead(format!("策略签名载荷编码失败：{err}")))
-}
-
-/// 每角色最低签名策略的规范字节。`policy_role_thresholds` 只保存大于 1 的角色；
-/// 没写的角色仍按 1 个签名覆盖，字段顺序固定便于审计复算。
-#[derive(Serialize)]
-struct PolicyStatementV5<'a> {
-    schema: &'static str,
-    action: &'static str,
-    session: &'a str,
-    require_witness: bool,
-    require_intent: bool,
-    require_signed_claims: bool,
-    require_signed_witness: bool,
-    require_signed_policy: bool,
-    policy_threshold: u8,
-    policy_roles: &'a [String],
-    policy_role_thresholds: &'a BTreeMap<String, u8>,
-    policy_principal_quorum: bool,
-    previous_policy_hash: Option<&'a str>,
-    policy_hash: &'a str,
-    signed_at_ms: u64,
-    key_id: &'a str,
-}
-
-pub(crate) fn policy_statement_v5_bytes(
-    session: &str,
-    policy: &Policy,
-    previous_policy_hash: Option<&str>,
-    policy_hash: &str,
-    signed_at_ms: u64,
-    key_id: &str,
-) -> Result<Vec<u8>, RepoError> {
-    serde_json::to_vec(&PolicyStatementV5 {
-        schema: POLICY_SCHEMA_V5,
-        action: "set",
-        session,
-        require_witness: policy.require_witness,
-        require_intent: policy.require_intent,
-        require_signed_claims: policy.require_signed_claims,
-        require_signed_witness: policy.require_signed_witness,
-        require_signed_policy: policy.require_signed_policy,
-        policy_threshold: policy.policy_threshold,
-        policy_roles: &policy.policy_roles,
-        policy_role_thresholds: &policy.policy_role_thresholds,
         policy_principal_quorum: policy.policy_principal_quorum,
         previous_policy_hash,
         policy_hash,
@@ -544,6 +501,24 @@ impl Repo {
         at_ms: u64,
         signers: &[&Path],
     ) -> Result<Hash, RepoError> {
+        self.set_policy_with_reason_and_signers(policy, session, at_ms, signers, None, None)
+    }
+
+    /// 与 `set_policy_with_signers` 相同，并额外记录策略变更原因/工单。
+    ///
+    /// 当前或新策略打开 `require_policy_reason` 时，reason 必须非空；关闭这条开关
+    /// 的变更自身也必须带原因。reason/ticket 进入 v6 事件与签名载荷，但不写入
+    /// `policy.json`。
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_policy_with_reason_and_signers(
+        &mut self,
+        policy: &Policy,
+        session: &str,
+        at_ms: u64,
+        signers: &[&Path],
+        reason: Option<&str>,
+        ticket: Option<&str>,
+    ) -> Result<Hash, RepoError> {
         let _guard = self.lock_state()?;
         ensure_policy_threshold(policy)?;
         let mut next = policy.clone();
@@ -552,6 +527,15 @@ impl Repo {
             normalized_role_thresholds(&next.policy_roles, &next.policy_role_thresholds)?;
         let current = self.policy()?;
         ensure_policy_threshold(&current)?;
+        let reason = reason.map(str::trim).filter(|value| !value.is_empty());
+        let ticket = ticket.map(str::trim).filter(|value| !value.is_empty());
+        if (current.require_policy_reason || next.require_policy_reason) && reason.is_none() {
+            return Err(RepoError::BadHead(
+                "策略要求本次变更提供非空 --policy-reason".to_string(),
+            ));
+        }
+        let reason_owned = reason.unwrap_or("").to_string();
+        let ticket_owned = ticket.map(str::to_string);
         let required_roles = policy_roles_for_change(
             current.require_signed_policy,
             &current.policy_roles,
@@ -644,7 +628,13 @@ impl Repo {
         let policy_owned = next;
         let custom_roles =
             !(policy_owned.policy_roles.len() == 1 && policy_owned.policy_roles[0] == "auditor");
-        let schema = if !policy_owned.policy_role_thresholds.is_empty() {
+        let schema = if current.require_policy_reason
+            || policy_owned.require_policy_reason
+            || reason.is_some()
+            || ticket.is_some()
+        {
+            POLICY_SCHEMA_V6
+        } else if !policy_owned.policy_role_thresholds.is_empty() {
             POLICY_SCHEMA_V5
         } else if policy_owned.policy_principal_quorum {
             POLICY_SCHEMA_V4
@@ -667,10 +657,13 @@ impl Repo {
             "require_signed_claims": policy_owned.require_signed_claims,
             "require_signed_witness": policy_owned.require_signed_witness,
             "require_signed_policy": policy_owned.require_signed_policy,
+            "require_policy_reason": policy_owned.require_policy_reason,
             "policy_threshold": policy_owned.policy_threshold,
             "policy_roles": roles_owned,
             "policy_role_thresholds": role_thresholds_owned,
             "policy_principal_quorum": policy_owned.policy_principal_quorum,
+            "policy_reason": &reason_owned,
+            "policy_ticket": &ticket_owned,
             "signed": !key_ids.is_empty(),
             "key_ids": key_ids,
         });
@@ -685,7 +678,18 @@ impl Repo {
             let signatures = keys
                 .iter()
                 .map(|key| {
-                    let statement = if schema == POLICY_SCHEMA_V5 {
+                    let statement = if schema == POLICY_SCHEMA_V6 {
+                        policy_statement_v6_bytes(
+                            session,
+                            &policy_owned,
+                            &reason_owned,
+                            ticket_owned.as_deref(),
+                            previous_hex.as_deref(),
+                            &policy_hash_hex,
+                            at_ms,
+                            &key.key_id,
+                        )?
+                    } else if schema == POLICY_SCHEMA_V5 {
                         policy_statement_v5_bytes(
                             session,
                             &policy_owned,
@@ -740,20 +744,32 @@ impl Repo {
                 "require_signed_claims": policy_owned.require_signed_claims,
                 "require_signed_witness": policy_owned.require_signed_witness,
                 "require_signed_policy": policy_owned.require_signed_policy,
+                "require_policy_reason": policy_owned.require_policy_reason,
                 "policy_threshold": policy_owned.policy_threshold,
                 "previous_policy_hash": previous_hex,
                 "policy_hash": policy_hash_hex,
                 "state_before": before,
                 "state_after": after,
             });
-            if custom_roles || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5 {
+            if custom_roles
+                || schema == POLICY_SCHEMA_V4
+                || schema == POLICY_SCHEMA_V5
+                || schema == POLICY_SCHEMA_V6
+            {
                 payload["policy_roles"] = json!(policy_owned.policy_roles);
             }
-            if schema == POLICY_SCHEMA_V5 {
+            if schema == POLICY_SCHEMA_V5 || schema == POLICY_SCHEMA_V6 {
                 payload["policy_role_thresholds"] = json!(policy_owned.policy_role_thresholds);
             }
-            if schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5 {
+            if schema == POLICY_SCHEMA_V4
+                || schema == POLICY_SCHEMA_V5
+                || schema == POLICY_SCHEMA_V6
+            {
                 payload["policy_principal_quorum"] = json!(policy_owned.policy_principal_quorum);
+            }
+            if schema == POLICY_SCHEMA_V6 {
+                payload["policy_reason"] = json!(reason_owned);
+                payload["policy_ticket"] = json!(ticket_owned);
             }
             if !signatures.is_empty() {
                 payload["action"] = json!("set");

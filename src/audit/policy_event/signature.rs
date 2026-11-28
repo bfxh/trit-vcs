@@ -1,4 +1,4 @@
-//! v2/v3/v4/v5 策略事件的签名项验证：阈值按不同有效 key 或主体计数，
+//! v2/v3/v4/v5/v6 策略事件的签名项验证：阈值按不同有效 key 或主体计数，
 //! 角色覆盖、角色最低签名数与主体分离单独检查。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -9,7 +9,7 @@ use crate::audit::AuditIssue;
 use crate::journal::Event;
 use crate::policy::{
     Policy, policy_statement_v2_bytes, policy_statement_v3_bytes, policy_statement_v4_bytes,
-    policy_statement_v5_bytes,
+    policy_statement_v5_bytes, policy_statement_v6_bytes,
 };
 
 use super::{SignedFields, verify_one_signer};
@@ -111,6 +111,30 @@ pub(super) fn check_v5_signatures(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn check_v6_signatures(
+    repo: &crate::repo::Repo,
+    event: &Event,
+    required_signatures: usize,
+    required_roles: &[String],
+    required_role_mins: &BTreeMap<String, usize>,
+    require_principals: bool,
+    fields: Option<&SignedFields<'_>>,
+    issues: &mut Vec<AuditIssue>,
+) {
+    check_versioned_signatures(
+        repo,
+        event,
+        required_signatures,
+        required_roles,
+        required_role_mins,
+        require_principals,
+        fields,
+        6,
+        issues,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
 fn check_versioned_signatures(
     repo: &crate::repo::Repo,
     event: &Event,
@@ -188,6 +212,7 @@ fn check_versioned_signatures(
         require_signed_claims: fields.signed_claims,
         require_signed_witness: fields.signed_witness,
         require_signed_policy: fields.signed_policy,
+        require_policy_reason: fields.require_policy_reason,
         policy_threshold: fields.policy_threshold,
         policy_roles: fields.policy_roles.clone(),
         policy_role_thresholds: fields.policy_role_thresholds.clone(),
@@ -236,6 +261,16 @@ fn check_versioned_signatures(
             continue;
         }
         let statement = match version {
+            6 => policy_statement_v6_bytes(
+                fields.session,
+                &policy,
+                fields.policy_reason,
+                fields.policy_ticket,
+                fields.previous_text,
+                fields.policy_hash_text,
+                signed_at_ms,
+                key_id,
+            ),
             5 => policy_statement_v5_bytes(
                 fields.session,
                 &policy,

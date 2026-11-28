@@ -15,7 +15,7 @@ use super::{flag, flags, has, now_secs, positionals, repo_path};
 
 const USAGE: &str = "policy 用法：\n  \
      trit-vcs policy [--json] [--repo PATH]\n  \
-     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--require-signed-policy] [--policy-threshold N] [--policy-role auditor|release]... [--policy-role-threshold ROLE=N]... [--policy-principal-quorum] [--sign-key FILE]... [--json] [--repo PATH]";
+     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--require-signed-policy] [--require-policy-reason] [--policy-threshold N] [--policy-role auditor|release]... [--policy-role-threshold ROLE=N]... [--policy-principal-quorum] [--policy-reason TEXT] [--policy-ticket TEXT] [--sign-key FILE]... [--json] [--repo PATH]";
 
 fn show(repo: &Repo, args: &[String]) -> ExitCode {
     let policy = match repo.policy() {
@@ -31,6 +31,7 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
                 "require_signed_claims": policy.require_signed_claims,
                 "require_signed_witness": policy.require_signed_witness,
                 "require_signed_policy": policy.require_signed_policy,
+                "require_policy_reason": policy.require_policy_reason,
                 "policy_threshold": policy.policy_threshold,
                 "policy_roles": policy.policy_roles,
                 "policy_role_thresholds": policy.policy_role_thresholds,
@@ -44,6 +45,7 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
         println!("require_signed_claims={}", policy.require_signed_claims);
         println!("require_signed_witness={}", policy.require_signed_witness);
         println!("require_signed_policy={}", policy.require_signed_policy);
+        println!("require_policy_reason={}", policy.require_policy_reason);
         println!("policy_threshold={}", policy.policy_threshold);
         println!("policy_roles={}", policy.policy_roles.join(","));
         println!(
@@ -146,11 +148,14 @@ fn set(args: &[String]) -> ExitCode {
         require_signed_claims: has(args, "--require-signed-claims"),
         require_signed_witness: has(args, "--require-signed-witness"),
         require_signed_policy: has(args, "--require-signed-policy"),
+        require_policy_reason: has(args, "--require-policy-reason"),
         policy_threshold: threshold,
         policy_roles: roles.clone(),
         policy_principal_quorum: has(args, "--policy-principal-quorum"),
         policy_role_thresholds: role_thresholds,
     };
+    let policy_reason = flag(args, "--policy-reason");
+    let policy_ticket = flag(args, "--policy-ticket");
     let signer_paths = flags(args, "--sign-key")
         .into_iter()
         .filter(|value| !value.is_empty())
@@ -160,7 +165,14 @@ fn set(args: &[String]) -> ExitCode {
         Ok(repo) => repo,
         Err(err) => return fail_err(&err, &root, owner, args),
     };
-    match repo.set_policy_with_signers(&policy, owner, now_secs() * 1000, &signers) {
+    match repo.set_policy_with_reason_and_signers(
+        &policy,
+        owner,
+        now_secs() * 1000,
+        &signers,
+        policy_reason,
+        policy_ticket,
+    ) {
         Ok(hash) => {
             if has(args, "--json") {
                 println!(
@@ -171,10 +183,13 @@ fn set(args: &[String]) -> ExitCode {
                         "require_signed_claims": policy.require_signed_claims,
                         "require_signed_witness": policy.require_signed_witness,
                         "require_signed_policy": policy.require_signed_policy,
+                        "require_policy_reason": policy.require_policy_reason,
                         "policy_threshold": policy.policy_threshold,
                         "policy_roles": policy.policy_roles,
                         "policy_role_thresholds": policy.policy_role_thresholds,
                         "policy_principal_quorum": policy.policy_principal_quorum,
+                        "policy_reason": policy_reason,
+                        "policy_ticket": policy_ticket,
                         "signed": !signers.is_empty(),
                         "signer_count": signers.len(),
                         "policy": hash.to_hex(),
@@ -183,12 +198,13 @@ fn set(args: &[String]) -> ExitCode {
                 );
             } else {
                 println!(
-                    "策略已更新：require_witness={} require_intent={} require_signed_claims={} require_signed_witness={} require_signed_policy={} policy_threshold={} policy_roles={} policy_role_thresholds={} policy_principal_quorum={}（policy {}{}）",
+                    "策略已更新：require_witness={} require_intent={} require_signed_claims={} require_signed_witness={} require_signed_policy={} require_policy_reason={} policy_threshold={} policy_roles={} policy_role_thresholds={} policy_principal_quorum={}（policy {}{}）",
                     policy.require_witness,
                     policy.require_intent,
                     policy.require_signed_claims,
                     policy.require_signed_witness,
                     policy.require_signed_policy,
+                    policy.require_policy_reason,
                     policy.policy_threshold,
                     policy.policy_roles.join(","),
                     policy
@@ -225,6 +241,8 @@ pub(crate) fn policy_cmd(args: &[String]) -> ExitCode {
             "--policy-threshold",
             "--policy-role",
             "--policy-role-threshold",
+            "--policy-reason",
+            "--policy-ticket",
         ],
     );
     match words.first().map(String::as_str) {

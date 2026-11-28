@@ -196,21 +196,24 @@ trit-vcs policy set --owner qoder:admin --require-signed-claims
 
 ```sh
 trit-vcs policy --json
-trit-vcs policy set --owner qoder:s1 --require-witness --require-intent --require-signed-claims --require-signed-witness --require-signed-policy --policy-threshold 3 --policy-role auditor --policy-role release --policy-role-threshold auditor=2 --sign-key ~/.trit/keys/auditor.key --sign-key ~/.trit/keys/auditor2.key --sign-key ~/.trit/keys/release.key --json
+trit-vcs policy set --owner qoder:s1 --require-witness --require-intent --require-signed-claims --require-signed-witness --require-signed-policy --require-policy-reason --policy-reason "rotate auditor key" --policy-ticket OPS-42 --policy-threshold 3 --policy-role auditor --policy-role release --policy-role-threshold auditor=2 --sign-key ~/.trit/keys/auditor.key --sign-key ~/.trit/keys/auditor2.key --sign-key ~/.trit/keys/release.key --json
 ```
 
 `policy set` 的语义是**整份替换**：没带的开关归 false，不沿用旧 true。每次变更落 `op_begin` +
 `policy` + `op_result`，新事件带 `schema: trit-policy-v2`（默认只有 `auditor` 角色）、
-`trit-policy-v3`（自定义角色集合）、`trit-policy-v4`（`--policy-principal-quorum` 打开后按主体计票）
-或 `trit-policy-v5`（`--policy-role-threshold` 给某个角色提高最低签名数）、
-`session`、五个开关、`policy_threshold`、`policy_roles`、`policy_role_thresholds`（仅 v5）、
-`policy_principal_quorum`（v4/v5）、`previous_policy_hash`、`policy_hash`、`state_before`/`state_after`；
+`trit-policy-v3`（自定义角色集合）、`trit-policy-v4`（`--policy-principal-quorum` 打开后按主体计票）、
+`trit-policy-v5`（`--policy-role-threshold` 给某个角色提高最低签名数）
+或 `trit-policy-v6`（`--require-policy-reason` 打开或本次带 `--policy-reason`/`--policy-ticket`）、
+`session`、五个开关、`policy_threshold`、`policy_roles`、`policy_role_thresholds`（v5/v6）、
+`policy_principal_quorum`（v4/v5/v6）、`policy_reason`/`policy_ticket`（v6）、`previous_policy_hash`、`policy_hash`、`state_before`/`state_after`；
 版本化事件缺 `require_signed_claims` / `require_signed_witness` 或显式非布尔值都会判红，并在重放时按强制签名处理；
 无该字段的旧事件仍按关闭处理。
 `--sign-key FILE` 可重复，每把 key 用 Ed25519 签旧/新摘要、五个开关、阈值、角色集合、每角色最低签名数、
 主体计票开关、session、时间与自己的 key_id；事件记 `algorithm` 与 `signatures[]`（每项
 `key_id`/`signature`/`signed_at_ms`）。
-`v1` 单签、`v2`/`v3`/`v4`/`v5` 阈值多签与角色/主体/角色阈值事件仍可审计。
+`v1` 单签、`v2`/`v3`/`v4`/`v5` 阈值多签与角色/主体/角色阈值事件仍可审计；`v6` 在此之上把变更原因/工单纳入签名。
+`require_policy_reason` 打开后，后续变更必须带非空 `--policy-reason`；关闭这条开关的变更自身也必须说明原因。
+原因与工单只进 v6 事件和签名载荷，不写入 `policy.json`；缺字段、非字符串或空原因报 `policy_bad`，篡改会使签名失效。
 `require_signed_policy` 打开后，后续策略变更必须签名，开启这条的事件自身也必须签名；签名数必须达到
 当前与新策略阈值的较大者、每角色最低签名数合计，并且覆盖当前与新策略要求的**并集**角色，每个角色至少一把不同 key；
 多角色策略还要求不同角色由**不同主体**（`principal`）批准，同一主体不能同时覆盖两个角色。
@@ -371,9 +374,9 @@ trit-vcs sparse --clear     # 清掉索引，退回全量判定
 ```sh
 cargo run --release -p trit-vcs --example vcs_bench -- --central   # 存储 / status / 传输 / 合并 / 中央仓
 cargo run --release -p trit-vcs --example agent_ergonomics         # 被拒负载与预检读数
-cargo test                                                     # 21 个集成测试二进制 / 366 条 crate 测试（2026-11-28 实测，含 MSRV 1.88）
-python scripts/test_surface.py                                 # 11 个单位 / 455 条测试 / 拦 0（2026-11-28 实测）
-python scripts/mutation_check.py --pkg trit-vcs                    # 430 条登记（视图 pin 14 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / checkout 强制检出 3 / 请求来源 4 / deny 鉴权绑定 2 / 策略签名 4 / 策略签名角色 2 / 策略阈值多签 5 / 策略角色集合 9 / 策略角色主体 2 / 策略主体计票 9 / 策略角色阈值 11 / TVAB 20）
+cargo test                                                     # 21 个集成测试二进制 / 370 条 crate 测试（2026-11-28 实测，含 MSRV 1.88）
+python scripts/test_surface.py                                 # 11 个单位 / 460 条测试 / 拦 0（2026-11-28 实测）
+python scripts/mutation_check.py --pkg trit-vcs                    # 442 条登记（视图 pin 14 / 见证签名 13 / 检查点外锚 5 / 审计与 CLI/MCP 接线 8 / checkout 强制检出 3 / 请求来源 4 / deny 鉴权绑定 2 / 策略签名 4 / 策略签名角色 2 / 策略阈值多签 5 / 策略角色集合 9 / 策略角色主体 2 / 策略主体计票 9 / 策略角色阈值 11 / 策略变更原因 12 / TVAB 20）
 python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/change_policy.py --pkg scripts/ci_integrity.py --pkg scripts/docs_hygiene.py --pkg scripts/module_budget.py --pkg scripts/mutation_check.py --pkg scripts/repo_triage.py --pkg scripts/test_surface.py  # 脚本面 111 条
 ```
 
@@ -390,7 +393,7 @@ python scripts/mutation_check.py --pkg scripts/agent_claims.py --pkg scripts/cha
 | `store` / `chunk` / `hash` | 内容寻址的对象库、CDC 分块、BLAKE3 id |
 | `bundle` | `TVBD` 包 + 过滤后的**树清单** + 范围内传输（export 与 pull 共用同一条路） |
 | `claims` | 中央仓跨仓认领账本（单写者锁、冲突点名、`add/release/list/export`）；变更进哈希链，可选 Ed25519 sidecar 签名，审计按操作时点信任/吊销重建授权，支持强制签名策略 |
-| `policy` | `policy set` 整份写入门禁开关，默认 `auditor` 角色写 `trit-policy-v2`，自定义角色集合写 `trit-policy-v3`，`--policy-principal-quorum` 写 `trit-policy-v4`，`--policy-role-threshold` 写 `trit-policy-v5`；事件记 session/五个开关/`policy_threshold`/`policy_roles`/`policy_role_thresholds`/`policy_principal_quorum`/旧新摘要/前后状态与 `signatures[]`；`--sign-key` 可重复，`require_signed_policy` 要求达到当前与新阈值较大者、覆盖当前/新角色并集的不同 key 签名、每个角色达到最低签名数，且不同角色由不同主体批准；`--policy-role auditor/release` 可重复，`--policy-role-threshold ROLE=N` 只作用于已声明角色，`policy_threshold` 不得小于角色数与各角色最低数之和；v4 阈值按不同主体计数；重复 key/总签名不足/角色缺失/角色签名不足/同主体跨角色/主体不足分别报 `policy_signature_duplicate`/`policy_signature_insufficient`/`policy_role_missing`/`policy_role_threshold_insufficient`/`policy_role_principal`/`policy_principal_insufficient`；`v1`/`v2`/`v3`/`v4`/`v5` 事件保持兼容 |
+| `policy` | `policy set` 整份写入门禁开关，默认 `auditor` 角色写 `trit-policy-v2`，自定义角色集合写 `trit-policy-v3`，`--policy-principal-quorum` 写 `trit-policy-v4`，`--policy-role-threshold` 写 `trit-policy-v5`，`--require-policy-reason` 或带原因/工单写 `trit-policy-v6`；事件记 session/五个开关/`policy_threshold`/`policy_roles`/`policy_role_thresholds`/`policy_principal_quorum`/v6 的原因与工单/旧新摘要/前后状态与 `signatures[]`；`--sign-key` 可重复，`require_signed_policy` 要求达到当前与新阈值较大者、覆盖当前/新角色并集的不同 key 签名、每个角色达到最低签名数，且不同角色由不同主体批准；`--policy-role auditor/release` 可重复，`--policy-role-threshold ROLE=N` 只作用于已声明角色，`policy_threshold` 不得小于角色数与各角色最低数之和；v4 阈值按不同主体计数；重复 key/总签名不足/角色缺失/角色签名不足/同主体跨角色/主体不足分别报 `policy_signature_duplicate`/`policy_signature_insufficient`/`policy_role_missing`/`policy_role_threshold_insufficient`/`policy_role_principal`/`policy_principal_insufficient`；`v1`/`v2`/`v3`/`v4`/`v5`/`v6` 事件保持兼容 |
 | `keys` | 受审计信任表：`key add/revoke/rotate/list` 写 `.tritvcs/keys.json`，每次变更落 `key` 事件；带公钥的 add 由审计复验 Ed25519 形状、key_id 指纹和信任表一致，rotate 要求旧/新双签并记 `rotated_from` |
 | `signing` | Ed25519 私钥文件、公钥指纹、提交/认领/见证声明签名；`commit/claims --sign-key` 与 `attest --key-file` 落 sidecar 事件，`audit` 用信任表公钥复验 |
 | `attestation` | witness 的 Ed25519 sidecar：绑定提交/树/父树/原始见证/签者/会话，不改提交 id；支持严格策略、操作收口与重复/信任/吊销审计 |
