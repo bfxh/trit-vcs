@@ -140,6 +140,60 @@ fn principal_quorum_event(name: &str) -> (std::path::PathBuf, Repo, Event) {
     (root, repo, event)
 }
 
+fn role_threshold_event(name: &str) -> (std::path::PathBuf, Repo, Event) {
+    let root = temp(name);
+    let mut repo = Repo::init(&root).unwrap();
+    let auditor_one = KeyFile::generate().unwrap();
+    let auditor_one_path = root.join("auditor-one.key");
+    add_key_principal(
+        &mut repo,
+        &auditor_one,
+        &auditor_one_path,
+        "auditor",
+        "qoder:auditor-one",
+    );
+    let auditor_two = KeyFile::generate().unwrap();
+    let auditor_two_path = root.join("auditor-two.key");
+    add_key_principal(
+        &mut repo,
+        &auditor_two,
+        &auditor_two_path,
+        "auditor",
+        "qoder:auditor-two",
+    );
+    let release = KeyFile::generate().unwrap();
+    let release_path = root.join("release.key");
+    add_key_principal(
+        &mut repo,
+        &release,
+        &release_path,
+        "release",
+        "qoder:release",
+    );
+    repo.set_policy_with_signers(
+        &Policy {
+            require_signed_policy: true,
+            policy_threshold: 3,
+            policy_roles: vec!["auditor".into(), "release".into()],
+            policy_role_thresholds: BTreeMap::from([("auditor".to_string(), 2)]),
+            ..Default::default()
+        },
+        "qoder:policy",
+        2_000,
+        &[&auditor_one_path, &auditor_two_path, &release_path],
+    )
+    .unwrap();
+    let event = repo
+        .journal()
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.kind == "policy")
+        .unwrap()
+        .clone();
+    (root, repo, event)
+}
+
 fn issues(repo: &Repo, event: &Event, required_signatures: usize) -> Vec<AuditIssue> {
     let roles = if required_signatures == 0 {
         Vec::new()
@@ -165,6 +219,24 @@ fn issues_with_roles_and_principals(
     roles: &[String],
     require_principals: bool,
 ) -> Vec<AuditIssue> {
+    issues_with_role_mins(
+        repo,
+        event,
+        required_signatures,
+        roles,
+        &BTreeMap::new(),
+        require_principals,
+    )
+}
+
+fn issues_with_role_mins(
+    repo: &Repo,
+    event: &Event,
+    required_signatures: usize,
+    roles: &[String],
+    role_mins: &BTreeMap<String, usize>,
+    require_principals: bool,
+) -> Vec<AuditIssue> {
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
     check_policy(
@@ -172,6 +244,7 @@ fn issues_with_roles_and_principals(
         event,
         required_signatures,
         roles,
+        role_mins,
         require_principals,
         None,
         &mut issues,
@@ -459,6 +532,144 @@ fn v4_policy_requires_signed_claim_replay_to_cover_the_new_schema() {
             .iter()
             .any(|issue| issue.kind == "claim_signature_missing"),
         "v4 策略必须参与 require_signed_claims 重放：{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn role_threshold_requires_minimum_signatures_per_role() {
+    let (root, repo, event) = role_threshold_event("role-threshold-signatures");
+    assert_eq!(event.payload["schema"], POLICY_SCHEMA_V5);
+    let roles = vec!["auditor".to_string(), "release".to_string()];
+    let role_mins = BTreeMap::from([
+        ("auditor".to_string(), 2usize),
+        ("release".to_string(), 1usize),
+    ]);
+    assert!(
+        issues_with_role_mins(&repo, &event, 3, &roles, &role_mins, false).is_empty(),
+        "两把 auditor 加一把 release 必须通过"
+    );
+
+    let mut missing_auditor = event.clone();
+    missing_auditor
+        .payload
+        .get_mut("signatures")
+        .and_then(serde_json::Value::as_array_mut)
+        .unwrap()
+        .remove(1);
+    assert!(
+        issues_with_role_mins(&repo, &missing_auditor, 3, &roles, &role_mins, false)
+            .iter()
+            .any(|issue| issue.kind == "policy_role_threshold_insufficient"),
+        "总签名数不够且 auditor 只剩一个时必须报角色阈值不足"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn v5_policy_event_requires_the_role_threshold_map() {
+    let (root, repo, event) = role_threshold_event("role-threshold-map-required");
+    let roles = vec!["auditor".to_string(), "release".to_string()];
+    let role_mins = BTreeMap::from([
+        ("auditor".to_string(), 2usize),
+        ("release".to_string(), 1usize),
+    ]);
+    let mut missing = event;
+    missing
+        .payload
+        .as_object_mut()
+        .unwrap()
+        .remove("policy_role_thresholds");
+    let issues = issues_with_role_mins(&repo, &missing, 3, &roles, &role_mins, false);
+    assert!(
+        issues.iter().any(|issue| issue.kind == "policy_bad"),
+        "v5 缺角色阈值对象必须报 policy_bad：{issues:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn v5_policy_event_rejects_noncanonical_role_thresholds() {
+    let (root, repo, event) = role_threshold_event("role-threshold-noncanonical");
+    let roles = vec!["auditor".to_string(), "release".to_string()];
+    let role_mins = BTreeMap::from([
+        ("auditor".to_string(), 2usize),
+        ("release".to_string(), 1usize),
+    ]);
+    let mut changed = event;
+    changed.payload["policy_role_thresholds"]["auditor"] = json!(1);
+    let issues = issues_with_role_mins(&repo, &changed, 3, &roles, &role_mins, false);
+    assert!(
+        issues.iter().any(|issue| issue.kind == "policy_bad"),
+        "v5 不应记录值为 1 的角色阈值：{issues:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn v5_role_thresholds_are_bound_to_the_signature() {
+    let (root, repo, event) = role_threshold_event("role-threshold-binding");
+    let roles = vec!["auditor".to_string(), "release".to_string()];
+    let role_mins = BTreeMap::from([
+        ("auditor".to_string(), 2usize),
+        ("release".to_string(), 1usize),
+    ]);
+    let mut changed = event;
+    changed.payload["policy_threshold"] = json!(4);
+    changed.payload["policy_role_thresholds"]["auditor"] = json!(3);
+    assert!(
+        issues_with_role_mins(&repo, &changed, 4, &roles, &role_mins, false)
+            .iter()
+            .any(|issue| issue.kind == "policy_signature_invalid"),
+        "改角色最低签名数必须使 v5 签名失效"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn v5_policy_requires_signed_claim_replay_to_cover_the_new_schema() {
+    let root = temp("policy-v5-claims");
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.append_audit(
+        "policy",
+        json!({
+            "schema": "trit-policy-v5",
+            "session": "audit:test",
+            "require_witness": false,
+            "require_intent": false,
+            "require_signed_witness": false,
+            "require_signed_policy": false,
+            "policy_threshold": 3,
+            "policy_roles": ["auditor", "release"],
+            "policy_role_thresholds": {"auditor": 2},
+            "policy_principal_quorum": false,
+            "policy_hash": Hash::of(b"policy-v5").to_hex(),
+            "state_before": digest,
+            "state_after": digest,
+        }),
+        2_000,
+    )
+    .unwrap();
+    repo.append_audit(
+        "claim_add",
+        json!({
+            "signed": false,
+            "state_before": digest,
+            "state_after": digest,
+        }),
+        2_001,
+    )
+    .unwrap();
+
+    let report = crate::audit::status(&repo).unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == "claim_signature_missing"),
+        "v5 策略必须参与 require_signed_claims 重放：{:?}",
         report.issues
     );
     let _ = std::fs::remove_dir_all(&root);

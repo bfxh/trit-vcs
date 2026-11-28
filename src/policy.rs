@@ -5,10 +5,10 @@
 //! 这里补上 `policy` 事件，并让 `policy_hash` 与 `state_digest` 使用同一套字节哈希。
 //!
 //! 可选 Ed25519 签名把“改策略的人”绑到事件：`policy set --sign-key` 会签
-//! 旧/新策略摘要、五个开关、阈值、角色集合、session、时间和 key id；`require_signed_policy`
-//! 打开后，后续策略变更必须带足够数量、覆盖所需角色且由不同主体批准的策略签名，否则审计判红。
+//! 旧/新策略摘要、五个开关、阈值、角色集合、每角色最低签名数、session、时间和 key id；
+//! `require_signed_policy` 打开后，后续策略变更必须带足够数量、覆盖所需角色且由不同主体批准的策略签名，否则审计判红。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -23,6 +23,7 @@ pub(crate) const POLICY_SCHEMA: &str = "trit-policy-v1";
 pub(crate) const POLICY_SCHEMA_V2: &str = "trit-policy-v2";
 pub(crate) const POLICY_SCHEMA_V3: &str = "trit-policy-v3";
 pub(crate) const POLICY_SCHEMA_V4: &str = "trit-policy-v4";
+pub(crate) const POLICY_SCHEMA_V5: &str = "trit-policy-v5";
 pub const MAX_POLICY_THRESHOLD: u8 = 16;
 pub const MAX_POLICY_ROLES: usize = 4;
 pub const POLICY_SIGNER_ROLES: &[&str] = &["auditor", "release"];
@@ -58,6 +59,9 @@ pub struct Policy {
     /// 阈值按不同主体（principal）而不是不同 key 计数；默认关闭，保持旧事件语义。
     #[serde(default)]
     pub policy_principal_quorum: bool,
+    /// 每个策略角色的最低签名数；空表示每个角色只要求 1 个。键必须在 `policy_roles` 中。
+    #[serde(default)]
+    pub policy_role_thresholds: BTreeMap<String, u8>,
 }
 
 impl Default for Policy {
@@ -71,6 +75,7 @@ impl Default for Policy {
             policy_threshold: 1,
             policy_roles: default_policy_roles(),
             policy_principal_quorum: false,
+            policy_role_thresholds: BTreeMap::new(),
         }
     }
 }
@@ -258,6 +263,57 @@ pub(crate) fn policy_statement_v4_bytes(
     .map_err(|err| RepoError::BadHead(format!("策略签名载荷编码失败：{err}")))
 }
 
+/// 每角色最低签名策略的规范字节。`policy_role_thresholds` 只保存大于 1 的角色；
+/// 没写的角色仍按 1 个签名覆盖，字段顺序固定便于审计复算。
+#[derive(Serialize)]
+struct PolicyStatementV5<'a> {
+    schema: &'static str,
+    action: &'static str,
+    session: &'a str,
+    require_witness: bool,
+    require_intent: bool,
+    require_signed_claims: bool,
+    require_signed_witness: bool,
+    require_signed_policy: bool,
+    policy_threshold: u8,
+    policy_roles: &'a [String],
+    policy_role_thresholds: &'a BTreeMap<String, u8>,
+    policy_principal_quorum: bool,
+    previous_policy_hash: Option<&'a str>,
+    policy_hash: &'a str,
+    signed_at_ms: u64,
+    key_id: &'a str,
+}
+
+pub(crate) fn policy_statement_v5_bytes(
+    session: &str,
+    policy: &Policy,
+    previous_policy_hash: Option<&str>,
+    policy_hash: &str,
+    signed_at_ms: u64,
+    key_id: &str,
+) -> Result<Vec<u8>, RepoError> {
+    serde_json::to_vec(&PolicyStatementV5 {
+        schema: POLICY_SCHEMA_V5,
+        action: "set",
+        session,
+        require_witness: policy.require_witness,
+        require_intent: policy.require_intent,
+        require_signed_claims: policy.require_signed_claims,
+        require_signed_witness: policy.require_signed_witness,
+        require_signed_policy: policy.require_signed_policy,
+        policy_threshold: policy.policy_threshold,
+        policy_roles: &policy.policy_roles,
+        policy_role_thresholds: &policy.policy_role_thresholds,
+        policy_principal_quorum: policy.policy_principal_quorum,
+        previous_policy_hash,
+        policy_hash,
+        signed_at_ms,
+        key_id,
+    })
+    .map_err(|err| RepoError::BadHead(format!("策略签名载荷编码失败：{err}")))
+}
+
 /// 本次变更必须覆盖的角色：当前与新严格策略的角色并集。关闭严格策略
 /// 也必须由旧角色批准，避免单钥把多角色策略直接关掉。
 pub(crate) fn policy_roles_for_change(
@@ -332,6 +388,58 @@ pub(crate) fn policy_quorum(
     current.max(next)
 }
 
+fn normalized_role_thresholds(
+    roles: &[String],
+    thresholds: &BTreeMap<String, u8>,
+) -> Result<BTreeMap<String, u8>, RepoError> {
+    let mut normalized = BTreeMap::new();
+    for (role, threshold) in thresholds {
+        if !roles.contains(role) {
+            return Err(RepoError::BadHead(format!(
+                "policy_role_thresholds 含未在 policy_roles 中的角色：{role}"
+            )));
+        }
+        if !(1..=MAX_POLICY_THRESHOLD).contains(threshold) {
+            return Err(RepoError::BadHead(format!(
+                "角色 {role} 的签名阈值必须在 1..={MAX_POLICY_THRESHOLD}；收到 {threshold}"
+            )));
+        }
+        if *threshold > 1 {
+            normalized.insert(role.clone(), *threshold);
+        }
+    }
+    Ok(normalized)
+}
+
+fn effective_role_threshold(thresholds: &BTreeMap<String, u8>, role: &str) -> u8 {
+    thresholds.get(role).copied().unwrap_or(1)
+}
+
+pub(crate) fn policy_role_mins_for_change(
+    current_require: bool,
+    current_thresholds: &BTreeMap<String, u8>,
+    next_require: bool,
+    next_thresholds: &BTreeMap<String, u8>,
+    required_roles: &[String],
+) -> BTreeMap<String, usize> {
+    required_roles
+        .iter()
+        .map(|role| {
+            let current = if current_require {
+                usize::from(effective_role_threshold(current_thresholds, role))
+            } else {
+                0
+            };
+            let next = if next_require {
+                usize::from(effective_role_threshold(next_thresholds, role))
+            } else {
+                0
+            };
+            (role.clone(), current.max(next))
+        })
+        .collect()
+}
+
 fn ensure_policy_threshold(policy: &Policy) -> Result<(), RepoError> {
     if !(1..=MAX_POLICY_THRESHOLD).contains(&policy.policy_threshold) {
         return Err(RepoError::BadHead(format!(
@@ -340,11 +448,32 @@ fn ensure_policy_threshold(policy: &Policy) -> Result<(), RepoError> {
         )));
     }
     let roles = normalize_policy_roles(&policy.policy_roles)?;
+    normalized_role_thresholds(&roles, &policy.policy_role_thresholds)?;
+    let role_min_sum = roles
+        .iter()
+        .map(|role| {
+            u16::from(effective_role_threshold(
+                &policy.policy_role_thresholds,
+                role,
+            ))
+        })
+        .sum::<u16>();
+    if role_min_sum > u16::from(MAX_POLICY_THRESHOLD) {
+        return Err(RepoError::BadHead(format!(
+            "每个角色最低签名数合计 {role_min_sum} 超过上限 {MAX_POLICY_THRESHOLD}"
+        )));
+    }
     if usize::from(policy.policy_threshold) < roles.len() {
         return Err(RepoError::BadHead(format!(
             "policy_threshold {} 小于策略角色数 {}；每个角色至少需要一个签名",
             policy.policy_threshold,
             roles.len()
+        )));
+    }
+    if usize::from(policy.policy_threshold) < usize::from(role_min_sum) {
+        return Err(RepoError::BadHead(format!(
+            "policy_threshold {} 小于每角色最低签名数合计 {role_min_sum}",
+            policy.policy_threshold
         )));
     }
     Ok(())
@@ -419,6 +548,8 @@ impl Repo {
         ensure_policy_threshold(policy)?;
         let mut next = policy.clone();
         next.policy_roles = normalize_policy_roles(&next.policy_roles)?;
+        next.policy_role_thresholds =
+            normalized_role_thresholds(&next.policy_roles, &next.policy_role_thresholds)?;
         let current = self.policy()?;
         ensure_policy_threshold(&current)?;
         let required_roles = policy_roles_for_change(
@@ -427,13 +558,21 @@ impl Repo {
             next.require_signed_policy,
             &next.policy_roles,
         );
+        let role_mins = policy_role_mins_for_change(
+            current.require_signed_policy,
+            &current.policy_role_thresholds,
+            next.require_signed_policy,
+            &next.policy_role_thresholds,
+            &required_roles,
+        );
         let required = policy_quorum(
             current.require_signed_policy,
             current.policy_threshold,
             next.require_signed_policy,
             next.policy_threshold,
         )
-        .max(required_roles.len());
+        .max(required_roles.len())
+        .max(role_mins.values().sum());
         let require_principals = current.policy_principal_quorum || next.policy_principal_quorum;
         let keys = signers
             .iter()
@@ -454,6 +593,7 @@ impl Repo {
         }
         let mut seen = HashSet::new();
         let mut covered = HashSet::new();
+        let mut role_counts: HashMap<String, usize> = HashMap::new();
         let mut principal_roles: HashMap<String, String> = HashMap::new();
         for key in &keys {
             if !seen.insert(key.key_id.clone()) {
@@ -472,6 +612,7 @@ impl Repo {
             } else {
                 principal_roles.insert(principal, role.clone());
             }
+            *role_counts.entry(role.clone()).or_default() += 1;
             covered.insert(role);
         }
         if let Some(missing) = required_roles
@@ -482,6 +623,14 @@ impl Repo {
                 "策略要求签名覆盖角色 {}；缺少 {missing}",
                 required_roles.join("/")
             )));
+        }
+        for (role, minimum) in &role_mins {
+            let count = role_counts.get(role).copied().unwrap_or(0);
+            if count < *minimum {
+                return Err(RepoError::BadHead(format!(
+                    "策略要求角色 {role} 至少 {minimum} 个签名；只收到 {count} 个"
+                )));
+            }
         }
         if require_principals && principal_roles.len() < required {
             return Err(RepoError::BadHead(format!(
@@ -495,7 +644,9 @@ impl Repo {
         let policy_owned = next;
         let custom_roles =
             !(policy_owned.policy_roles.len() == 1 && policy_owned.policy_roles[0] == "auditor");
-        let schema = if policy_owned.policy_principal_quorum {
+        let schema = if !policy_owned.policy_role_thresholds.is_empty() {
+            POLICY_SCHEMA_V5
+        } else if policy_owned.policy_principal_quorum {
             POLICY_SCHEMA_V4
         } else if custom_roles {
             POLICY_SCHEMA_V3
@@ -508,6 +659,7 @@ impl Repo {
             .collect::<Vec<_>>();
         let session_owned = session.to_string();
         let roles_owned = policy_owned.policy_roles.clone();
+        let role_thresholds_owned = policy_owned.policy_role_thresholds.clone();
         let args = json!({
             "session": session_owned,
             "require_witness": policy_owned.require_witness,
@@ -517,6 +669,7 @@ impl Repo {
             "require_signed_policy": policy_owned.require_signed_policy,
             "policy_threshold": policy_owned.policy_threshold,
             "policy_roles": roles_owned,
+            "policy_role_thresholds": role_thresholds_owned,
             "policy_principal_quorum": policy_owned.policy_principal_quorum,
             "signed": !key_ids.is_empty(),
             "key_ids": key_ids,
@@ -532,7 +685,16 @@ impl Repo {
             let signatures = keys
                 .iter()
                 .map(|key| {
-                    let statement = if schema == POLICY_SCHEMA_V4 {
+                    let statement = if schema == POLICY_SCHEMA_V5 {
+                        policy_statement_v5_bytes(
+                            session,
+                            &policy_owned,
+                            previous_hex.as_deref(),
+                            &policy_hash_hex,
+                            at_ms,
+                            &key.key_id,
+                        )?
+                    } else if schema == POLICY_SCHEMA_V4 {
                         policy_statement_v4_bytes(
                             session,
                             &policy_owned,
@@ -584,10 +746,13 @@ impl Repo {
                 "state_before": before,
                 "state_after": after,
             });
-            if custom_roles || schema == POLICY_SCHEMA_V4 {
+            if custom_roles || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5 {
                 payload["policy_roles"] = json!(policy_owned.policy_roles);
             }
-            if schema == POLICY_SCHEMA_V4 {
+            if schema == POLICY_SCHEMA_V5 {
+                payload["policy_role_thresholds"] = json!(policy_owned.policy_role_thresholds);
+            }
+            if schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5 {
                 payload["policy_principal_quorum"] = json!(policy_owned.policy_principal_quorum);
             }
             if !signatures.is_empty() {
