@@ -21,10 +21,17 @@ use crate::signing::KeyFile;
 
 pub(crate) const POLICY_SCHEMA: &str = "trit-policy-v1";
 pub(crate) const POLICY_SCHEMA_V2: &str = "trit-policy-v2";
+pub(crate) const POLICY_SCHEMA_V3: &str = "trit-policy-v3";
 pub const MAX_POLICY_THRESHOLD: u8 = 16;
+pub const MAX_POLICY_ROLES: usize = 4;
+pub const POLICY_SIGNER_ROLES: &[&str] = &["auditor", "release"];
 
 fn default_policy_threshold() -> u8 {
     1
+}
+
+fn default_policy_roles() -> Vec<String> {
+    vec!["auditor".to_string()]
 }
 
 /// 仓库策略（`.tritvcs/policy.json`）。默认全关：不影响别项目，成熟后逐项目 opt-in。
@@ -41,9 +48,12 @@ pub struct Policy {
     /// 打开后，后续 `policy` 事件必须有 Ed25519 签名；开启这条的策略变更自身也必须签名。
     #[serde(default)]
     pub require_signed_policy: bool,
-    /// 严格策略需要多少个不同的 `auditor` 签名。`0` 视为非法配置。
+    /// 严格策略需要多少个不同的签名。`0` 视为非法配置。
     #[serde(default = "default_policy_threshold")]
     pub policy_threshold: u8,
+    /// 严格策略必须覆盖的角色，每个角色至少一个签名；默认只有 `auditor`。
+    #[serde(default = "default_policy_roles")]
+    pub policy_roles: Vec<String>,
 }
 
 impl Default for Policy {
@@ -55,6 +65,7 @@ impl Default for Policy {
             require_signed_witness: false,
             require_signed_policy: false,
             policy_threshold: 1,
+            policy_roles: default_policy_roles(),
         }
     }
 }
@@ -146,8 +157,105 @@ pub(crate) fn policy_statement_v2_bytes(
     .map_err(|err| RepoError::BadHead(format!("策略签名载荷编码失败：{err}")))
 }
 
-/// 本次变更必须收集的签名数：当前严格阈值与新严格阈值取较大者。
-/// 调低阈值也必须先满足旧阈值，避免用单钥把 3-of-N 降成 1-of-N。
+/// 混合角色策略的规范字节。`policy_roles` 已按字典序规范化，签名者必须
+/// 覆盖每个角色的至少一把 key；阈值仍按不同 key 计数。
+#[derive(Serialize)]
+struct PolicyStatementV3<'a> {
+    schema: &'static str,
+    action: &'static str,
+    session: &'a str,
+    require_witness: bool,
+    require_intent: bool,
+    require_signed_claims: bool,
+    require_signed_witness: bool,
+    require_signed_policy: bool,
+    policy_threshold: u8,
+    policy_roles: &'a [String],
+    previous_policy_hash: Option<&'a str>,
+    policy_hash: &'a str,
+    signed_at_ms: u64,
+    key_id: &'a str,
+}
+
+pub(crate) fn policy_statement_v3_bytes(
+    session: &str,
+    policy: &Policy,
+    previous_policy_hash: Option<&str>,
+    policy_hash: &str,
+    signed_at_ms: u64,
+    key_id: &str,
+) -> Result<Vec<u8>, RepoError> {
+    serde_json::to_vec(&PolicyStatementV3 {
+        schema: POLICY_SCHEMA_V3,
+        action: "set",
+        session,
+        require_witness: policy.require_witness,
+        require_intent: policy.require_intent,
+        require_signed_claims: policy.require_signed_claims,
+        require_signed_witness: policy.require_signed_witness,
+        require_signed_policy: policy.require_signed_policy,
+        policy_threshold: policy.policy_threshold,
+        policy_roles: &policy.policy_roles,
+        previous_policy_hash,
+        policy_hash,
+        signed_at_ms,
+        key_id,
+    })
+    .map_err(|err| RepoError::BadHead(format!("策略签名载荷编码失败：{err}")))
+}
+
+/// 本次变更必须覆盖的角色：当前与新严格策略的角色并集。关闭严格策略
+/// 也必须由旧角色批准，避免单钥把多角色策略直接关掉。
+pub(crate) fn policy_roles_for_change(
+    current_require: bool,
+    current_roles: &[String],
+    next_require: bool,
+    next_roles: &[String],
+) -> Vec<String> {
+    if !current_require && !next_require {
+        return Vec::new();
+    }
+    let mut roles = Vec::new();
+    if current_require {
+        roles.extend(current_roles.iter().cloned());
+    }
+    if next_require {
+        roles.extend(next_roles.iter().cloned());
+    }
+    roles.sort();
+    roles.dedup();
+    roles
+}
+
+/// 把角色列表规范化成固定顺序；重复、空列表和未知角色都拒绝。
+pub fn normalize_policy_roles(roles: &[String]) -> Result<Vec<String>, RepoError> {
+    if roles.is_empty() {
+        return Err(RepoError::BadHead("policy_roles 不能为空".to_string()));
+    }
+    if roles.len() > MAX_POLICY_ROLES {
+        return Err(RepoError::BadHead(format!(
+            "policy_roles 最多 {MAX_POLICY_ROLES} 个；收到 {}",
+            roles.len()
+        )));
+    }
+    let mut seen = HashSet::new();
+    for role in roles {
+        if !POLICY_SIGNER_ROLES.contains(&role.as_str()) {
+            return Err(RepoError::BadHead(format!(
+                "policy_roles 只支持 auditor/release；收到 {role}"
+            )));
+        }
+        if !seen.insert(role.clone()) {
+            return Err(RepoError::BadHead(format!("policy_roles 不能重复：{role}")));
+        }
+    }
+    let mut normalized = roles.to_vec();
+    normalized.sort();
+    Ok(normalized)
+}
+
+/// 本次变更必须收集的签名数：当前严格阈值与新严格阈值取较大者，
+/// 至少覆盖所有要求角色（每个角色至少一个有效签名）。
 pub(crate) fn policy_quorum(
     current_require: bool,
     current_threshold: u8,
@@ -177,6 +285,14 @@ fn ensure_policy_threshold(policy: &Policy) -> Result<(), RepoError> {
             policy.policy_threshold
         )));
     }
+    let roles = normalize_policy_roles(&policy.policy_roles)?;
+    if usize::from(policy.policy_threshold) < roles.len() {
+        return Err(RepoError::BadHead(format!(
+            "policy_threshold {} 小于策略角色数 {}；每个角色至少需要一个签名",
+            policy.policy_threshold,
+            roles.len()
+        )));
+    }
     Ok(())
 }
 
@@ -191,8 +307,8 @@ fn policy_file_hash(path: &Path) -> Result<Option<Hash>, RepoError> {
 fn ensure_trusted_signer(
     repo: &Repo,
     key: &KeyFile,
-    require_auditor: bool,
-) -> Result<(), RepoError> {
+    required_roles: &[String],
+) -> Result<String, RepoError> {
     let keys = repo.keys()?;
     let Some(entry) = keys.keys.get(&key.key_id) else {
         return Err(RepoError::BadHead(format!(
@@ -209,13 +325,15 @@ fn ensure_trusted_signer(
     if entry.is_revoked() {
         return Err(RepoError::BadHead(format!("key {} 已吊销", key.key_id)));
     }
-    if require_auditor && entry.role != "auditor" {
+    if !required_roles.is_empty() && !required_roles.iter().any(|role| role == &entry.role) {
         return Err(RepoError::BadHead(format!(
-            "策略签名要求 auditor 角色；key {} 的角色是 {}",
-            key.key_id, entry.role
+            "策略签名要求角色 {}；key {} 的角色是 {}",
+            required_roles.join("/"),
+            key.key_id,
+            entry.role
         )));
     }
-    Ok(())
+    Ok(entry.role.clone())
 }
 
 impl Repo {
@@ -233,8 +351,9 @@ impl Repo {
     /// 与 `set_policy` 相同，但可用一组 Ed25519 私钥给本次策略变更签名。
     ///
     /// 当前策略或新策略打开 `require_signed_policy` 时，签名数必须达到
-    /// 两边阈值的较大者，且每把 key 都必须是信任表里 `auditor` 角色的
-    /// 不同 key；签名覆盖旧/新摘要、完整开关、阈值、session 与各自 key id。
+    /// 两边阈值的较大者，并且覆盖当前/新策略要求的所有角色；每把 key 都必须是
+    /// 信任表里对应角色的不同 key。签名覆盖旧/新摘要、完整开关、阈值、角色、
+    /// session 与各自 key id。
     pub fn set_policy_with_signers(
         &mut self,
         policy: &Policy,
@@ -244,30 +363,42 @@ impl Repo {
     ) -> Result<Hash, RepoError> {
         let _guard = self.lock_state()?;
         ensure_policy_threshold(policy)?;
+        let mut next = policy.clone();
+        next.policy_roles = normalize_policy_roles(&next.policy_roles)?;
         let current = self.policy()?;
         ensure_policy_threshold(&current)?;
+        let required_roles = policy_roles_for_change(
+            current.require_signed_policy,
+            &current.policy_roles,
+            next.require_signed_policy,
+            &next.policy_roles,
+        );
         let required = policy_quorum(
             current.require_signed_policy,
             current.policy_threshold,
-            policy.require_signed_policy,
-            policy.policy_threshold,
-        );
+            next.require_signed_policy,
+            next.policy_threshold,
+        )
+        .max(required_roles.len());
         let keys = signers
             .iter()
             .map(|path| KeyFile::load(path))
             .collect::<Result<Vec<_>, _>>()?;
         if required > 0 && keys.is_empty() {
             return Err(RepoError::BadHead(format!(
-                "策略要求 {required} 个 auditor 签名；policy set 需要 --sign-key <私钥文件>"
+                "策略要求 {required} 个签名（角色 {}）；policy set 需要 --sign-key <私钥文件>",
+                required_roles.join("/")
             )));
         }
         if required > 0 && keys.len() < required {
             return Err(RepoError::BadHead(format!(
-                "策略要求至少 {required} 个不同 auditor 签名；只收到 {} 个 --sign-key",
+                "策略要求至少 {required} 个不同签名（角色 {}）；只收到 {} 个 --sign-key",
+                required_roles.join("/"),
                 keys.len()
             )));
         }
         let mut seen = HashSet::new();
+        let mut covered = HashSet::new();
         for key in &keys {
             if !seen.insert(key.key_id.clone()) {
                 return Err(RepoError::BadHead(format!(
@@ -275,24 +406,43 @@ impl Repo {
                     key.key_id
                 )));
             }
-            ensure_trusted_signer(self, key, required > 0)?;
+            let role = ensure_trusted_signer(self, key, &required_roles)?;
+            covered.insert(role);
+        }
+        if let Some(missing) = required_roles
+            .iter()
+            .find(|role| !covered.contains(role.as_str()))
+        {
+            return Err(RepoError::BadHead(format!(
+                "策略要求签名覆盖角色 {}；缺少 {missing}",
+                required_roles.join("/")
+            )));
         }
 
         let path = self.root().join(DIR).join("policy.json");
-        let policy_owned = policy.clone();
+        let policy_owned = next;
+        let custom_roles =
+            !(policy_owned.policy_roles.len() == 1 && policy_owned.policy_roles[0] == "auditor");
+        let schema = if custom_roles {
+            POLICY_SCHEMA_V3
+        } else {
+            POLICY_SCHEMA_V2
+        };
         let key_ids = keys
             .iter()
             .map(|key| key.key_id.clone())
             .collect::<Vec<_>>();
         let session_owned = session.to_string();
+        let roles_owned = policy_owned.policy_roles.clone();
         let args = json!({
             "session": session_owned,
-            "require_witness": policy.require_witness,
-            "require_intent": policy.require_intent,
-            "require_signed_claims": policy.require_signed_claims,
-            "require_signed_witness": policy.require_signed_witness,
-            "require_signed_policy": policy.require_signed_policy,
-            "policy_threshold": policy.policy_threshold,
+            "require_witness": policy_owned.require_witness,
+            "require_intent": policy_owned.require_intent,
+            "require_signed_claims": policy_owned.require_signed_claims,
+            "require_signed_witness": policy_owned.require_signed_witness,
+            "require_signed_policy": policy_owned.require_signed_policy,
+            "policy_threshold": policy_owned.policy_threshold,
+            "policy_roles": roles_owned,
             "signed": !key_ids.is_empty(),
             "key_ids": key_ids,
         });
@@ -307,14 +457,25 @@ impl Repo {
             let signatures = keys
                 .iter()
                 .map(|key| {
-                    let statement = policy_statement_v2_bytes(
-                        session,
-                        &policy_owned,
-                        previous_hex.as_deref(),
-                        &policy_hash_hex,
-                        at_ms,
-                        &key.key_id,
-                    )?;
+                    let statement = if custom_roles {
+                        policy_statement_v3_bytes(
+                            session,
+                            &policy_owned,
+                            previous_hex.as_deref(),
+                            &policy_hash_hex,
+                            at_ms,
+                            &key.key_id,
+                        )?
+                    } else {
+                        policy_statement_v2_bytes(
+                            session,
+                            &policy_owned,
+                            previous_hex.as_deref(),
+                            &policy_hash_hex,
+                            at_ms,
+                            &key.key_id,
+                        )?
+                    };
                     Ok::<_, RepoError>(json!({
                         "key_id": key.key_id.clone(),
                         "signature": key.sign_hex(&statement)?,
@@ -326,7 +487,7 @@ impl Repo {
             fs::write(&path, &bytes)?;
             let after = repo.state_digest()?.to_hex();
             let mut payload = json!({
-                "schema": POLICY_SCHEMA_V2,
+                "schema": schema,
                 "session": session,
                 "require_witness": policy_owned.require_witness,
                 "require_intent": policy_owned.require_intent,
@@ -339,6 +500,9 @@ impl Repo {
                 "state_before": before,
                 "state_after": after,
             });
+            if custom_roles {
+                payload["policy_roles"] = json!(policy_owned.policy_roles);
+            }
             if !signatures.is_empty() {
                 payload["action"] = json!("set");
                 payload["algorithm"] = json!("ed25519");
@@ -363,155 +527,5 @@ impl Repo {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::keys::TrustEntry;
-
-    fn temp(name: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("trit-vcs-policy-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn signed_setup(name: &str) -> (std::path::PathBuf, Repo, KeyFile, std::path::PathBuf) {
-        let root = temp(name);
-        let mut repo = Repo::init(&root).unwrap();
-        let key = KeyFile::generate().unwrap();
-        let key_path = root.join("policy.key");
-        key.save_new(&key_path).unwrap();
-        repo.add_key(
-            TrustEntry {
-                key_id: key.key_id.clone(),
-                principal: "qoder:policy".to_string(),
-                role: "auditor".to_string(),
-                added_at_ms: 1_000,
-                public_key: Some(key.public.clone()),
-                rotated_from: None,
-                revoked_at_ms: None,
-                revoke_reason: None,
-            },
-            "qoder:admin",
-            1_000,
-        )
-        .unwrap();
-        (root, repo, key, key_path)
-    }
-
-    #[test]
-    fn signed_policy_change_is_audited_and_attributes_the_key() {
-        let (root, mut repo, key, key_path) = signed_setup("signed");
-        let policy = Policy {
-            require_signed_policy: true,
-            ..Default::default()
-        };
-        repo.set_policy_with_signer(&policy, "qoder:policy", 2_000, Some(&key_path))
-            .unwrap();
-        let report = crate::audit::status(&repo).unwrap();
-        assert!(report.ok, "{:?}", report.issues);
-
-        let event = repo
-            .journal()
-            .events()
-            .iter()
-            .rev()
-            .find(|event| event.kind == "policy")
-            .unwrap();
-        assert_eq!(event.payload["require_signed_policy"], true);
-        assert_eq!(event.payload["policy_threshold"], 1);
-        assert_eq!(event.payload["algorithm"], "ed25519");
-        assert_eq!(event.payload["schema"], POLICY_SCHEMA_V2);
-        assert_eq!(event.payload["signatures"][0]["key_id"], key.key_id);
-        assert!(event.payload["previous_policy_hash"].is_null());
-        assert!(
-            event.payload["signatures"][0]["signature"]
-                .as_str()
-                .is_some_and(|value| {
-                    value.len() == 128 && value.chars().all(|ch| ch.is_ascii_hexdigit())
-                })
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn policy_quorum_requires_multiple_auditor_signatures_and_blocks_threshold_downgrade() {
-        let (root, mut repo, key, key_path) = signed_setup("quorum");
-        let second = KeyFile::generate().unwrap();
-        let second_path = root.join("policy-second.key");
-        second.save_new(&second_path).unwrap();
-        repo.add_key(
-            TrustEntry {
-                key_id: second.key_id.clone(),
-                principal: "qoder:policy-second".to_string(),
-                role: "auditor".to_string(),
-                added_at_ms: 1_500,
-                public_key: Some(second.public.clone()),
-                rotated_from: None,
-                revoked_at_ms: None,
-                revoke_reason: None,
-            },
-            "qoder:admin",
-            1_500,
-        )
-        .unwrap();
-
-        let strict_two = Policy {
-            require_signed_policy: true,
-            policy_threshold: 2,
-            ..Default::default()
-        };
-        let err = repo
-            .set_policy_with_signers(&strict_two, "qoder:policy", 2_000, &[&key_path])
-            .unwrap_err();
-        assert!(err.to_string().contains("至少 2"), "{err}");
-        repo.set_policy_with_signers(
-            &strict_two,
-            "qoder:policy",
-            2_000,
-            &[&key_path, &second_path],
-        )
-        .unwrap();
-        let report = crate::audit::status(&repo).unwrap();
-        assert!(report.ok, "{:?}", report.issues);
-        let event = repo
-            .journal()
-            .events()
-            .iter()
-            .rev()
-            .find(|event| event.kind == "policy")
-            .unwrap();
-        assert_eq!(event.payload["policy_threshold"], 2);
-        assert_eq!(event.payload["signatures"].as_array().unwrap().len(), 2);
-        assert_eq!(event.payload["signatures"][0]["key_id"], key.key_id);
-
-        let lower = Policy {
-            policy_threshold: 1,
-            ..Default::default()
-        };
-        let err = repo
-            .set_policy_with_signers(&lower, "qoder:policy", 3_000, &[&key_path])
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("至少 2"),
-            "调低阈值也必须先满足旧阈值：{err}"
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn strict_policy_refuses_unsigned_policy_change() {
-        let (root, mut repo, _key, key_path) = signed_setup("refuse");
-        let policy = Policy {
-            require_signed_policy: true,
-            ..Default::default()
-        };
-        repo.set_policy_with_signer(&policy, "qoder:policy", 2_000, Some(&key_path))
-            .unwrap();
-        let err = repo
-            .set_policy_with_signer(&Policy::default(), "qoder:policy", 3_000, None)
-            .unwrap_err();
-        assert!(err.to_string().contains("需要 --sign-key"), "{err}");
-        let _ = fs::remove_dir_all(&root);
-    }
-}
+#[cfg(test)]
+mod tests;

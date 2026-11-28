@@ -99,12 +99,27 @@ fn quorum_event(name: &str) -> (std::path::PathBuf, Repo, Event) {
 }
 
 fn issues(repo: &Repo, event: &Event, required_signatures: usize) -> Vec<AuditIssue> {
+    let roles = if required_signatures == 0 {
+        Vec::new()
+    } else {
+        vec!["auditor".to_string()]
+    };
+    issues_with_roles(repo, event, required_signatures, &roles)
+}
+
+fn issues_with_roles(
+    repo: &Repo,
+    event: &Event,
+    required_signatures: usize,
+    roles: &[String],
+) -> Vec<AuditIssue> {
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
     check_policy(
         repo,
         event,
         required_signatures,
+        roles,
         None,
         &mut issues,
         &mut warnings,
@@ -205,6 +220,66 @@ fn policy_quorum_counts_only_distinct_valid_signatures() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+fn mixed_role_event(name: &str) -> (std::path::PathBuf, Repo, Event) {
+    let root = temp(name);
+    let mut repo = Repo::init(&root).unwrap();
+    let auditor = KeyFile::generate().unwrap();
+    let auditor_path = root.join("auditor.key");
+    add_key(&mut repo, &auditor, &auditor_path, "auditor");
+    let release = KeyFile::generate().unwrap();
+    let release_path = root.join("release.key");
+    add_key(&mut repo, &release, &release_path, "release");
+    repo.set_policy_with_signers(
+        &Policy {
+            require_signed_policy: true,
+            policy_threshold: 2,
+            policy_roles: vec!["auditor".into(), "release".into()],
+            ..Default::default()
+        },
+        "qoder:policy",
+        2_000,
+        &[&auditor_path, &release_path],
+    )
+    .unwrap();
+    let event = repo
+        .journal()
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.kind == "policy")
+        .unwrap()
+        .clone();
+    (root, repo, event)
+}
+
+#[test]
+fn mixed_role_policy_requires_each_role_and_binds_role_list() {
+    let (root, repo, event) = mixed_role_event("mixed-role");
+    let roles = vec!["auditor".to_string(), "release".to_string()];
+    assert!(issues_with_roles(&repo, &event, 2, &roles).is_empty());
+
+    let mut missing_release = event.clone();
+    missing_release.payload["signatures"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    assert!(
+        issues_with_roles(&repo, &missing_release, 2, &roles)
+            .iter()
+            .any(|issue| issue.kind == "policy_role_missing")
+    );
+
+    let mut changed_roles = event;
+    changed_roles.payload["policy_roles"] = json!(["auditor"]);
+    assert!(
+        issues_with_roles(&repo, &changed_roles, 2, &roles)
+            .iter()
+            .any(|issue| issue.kind == "policy_signature_invalid"),
+        "policy_roles 必须进入 v3 签名载荷"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn policy_threshold_is_part_of_the_signed_statement() {
     let (root, repo, event) = quorum_event("threshold-binding");
@@ -215,6 +290,52 @@ fn policy_threshold_is_part_of_the_signed_statement() {
             .iter()
             .any(|issue| issue.kind == "policy_signature_invalid"),
         "改低阈值必须使签名失效"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn v3_policy_requires_signed_claim_replay_to_cover_the_new_schema() {
+    let root = temp("policy-v3-claims");
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.append_audit(
+        "policy",
+        json!({
+            "schema": "trit-policy-v3",
+            "session": "audit:test",
+            "require_witness": false,
+            "require_intent": false,
+            "require_signed_witness": false,
+            "require_signed_policy": false,
+            "policy_threshold": 1,
+            "policy_roles": ["auditor"],
+            "policy_hash": Hash::of(b"policy-v3").to_hex(),
+            "state_before": digest,
+            "state_after": digest,
+        }),
+        2_000,
+    )
+    .unwrap();
+    repo.append_audit(
+        "claim_add",
+        json!({
+            "signed": false,
+            "state_before": digest,
+            "state_after": digest,
+        }),
+        2_001,
+    )
+    .unwrap();
+
+    let report = crate::audit::status(&repo).unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == "claim_signature_missing"),
+        "v3 策略必须参与 require_signed_claims 重放：{:?}",
+        report.issues
     );
     let _ = std::fs::remove_dir_all(&root);
 }

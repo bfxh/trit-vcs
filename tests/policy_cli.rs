@@ -143,6 +143,11 @@ fn signed_policy_change_is_attributed_and_strict_mode_requires_it() {
         "{}",
         stderr(&non_auditor)
     );
+    assert!(
+        stderr(&non_auditor).contains("角色是 author"),
+        "必须报签名 key 的角色不匹配，而不是只报缺少角色：{}",
+        stderr(&non_auditor)
+    );
 
     let unsigned = run(
         &root,
@@ -279,6 +284,125 @@ fn policy_quorum_cli_requires_multiple_auditor_keys() {
     );
     assert!(!lower.status.success(), "调低阈值也必须满足旧阈值");
     assert!(stderr(&lower).contains("至少 2"), "{}", stderr(&lower));
+}
+
+#[test]
+fn mixed_role_policy_cli_requires_auditor_and_release() {
+    let root = temp("mixed-role");
+    let init = run(&root, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    for (key_file, principal, role) in [
+        ("policy-auditor.key", "qoder:auditor", "auditor"),
+        ("policy-release.key", "qoder:release", "release"),
+    ] {
+        let key = run(&root, &["key", "init", "--out", key_file, "--json"]);
+        assert!(key.status.success(), "{}", stderr(&key));
+        let add = run(
+            &root,
+            &[
+                "key",
+                "add",
+                "--key-file",
+                key_file,
+                "--principal",
+                principal,
+                "--role",
+                role,
+                "--owner",
+                "qoder:policy",
+            ],
+        );
+        assert!(add.status.success(), "{}", stderr(&add));
+    }
+
+    let invalid_role = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--policy-role",
+            "owner",
+            "--json",
+        ],
+    );
+    assert!(!invalid_role.status.success(), "未知策略角色必须拒绝");
+    assert!(
+        stderr(&invalid_role).contains("只支持 auditor/release"),
+        "{}",
+        stderr(&invalid_role)
+    );
+
+    let one = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "2",
+            "--policy-role",
+            "release",
+            "--policy-role",
+            "auditor",
+            "--sign-key",
+            "policy-auditor.key",
+            "--json",
+        ],
+    );
+    assert!(!one.status.success(), "混合角色策略不能被单个角色开启");
+    assert!(stderr(&one).contains("至少 2"), "{}", stderr(&one));
+
+    let both = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "2",
+            "--policy-role",
+            "release",
+            "--policy-role",
+            "auditor",
+            "--sign-key",
+            "policy-auditor.key",
+            "--sign-key",
+            "policy-release.key",
+            "--json",
+        ],
+    );
+    assert!(both.status.success(), "{}", stderr(&both));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&both)).unwrap();
+    assert_eq!(
+        value["policy_roles"],
+        serde_json::json!(["auditor", "release"])
+    );
+    assert_eq!(value["signer_count"], 2);
+
+    let audit = run(&root, &["audit", "status", "--json"]);
+    assert!(audit.status.success(), "{}", stderr(&audit));
+    let log = run(&root, &["audit", "log", "--json"]);
+    assert!(log.status.success(), "{}", stderr(&log));
+    let events: serde_json::Value = serde_json::from_str(&stdout(&log)).unwrap();
+    let policy = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["kind"] == "policy")
+        .unwrap();
+    assert_eq!(policy["payload"]["schema"], "trit-policy-v3");
+    assert_eq!(
+        policy["payload"]["policy_roles"],
+        serde_json::json!(["auditor", "release"])
+    );
+    assert_eq!(policy["payload"]["signatures"].as_array().unwrap().len(), 2);
 }
 
 #[test]

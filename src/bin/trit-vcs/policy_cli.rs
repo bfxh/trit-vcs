@@ -14,7 +14,7 @@ use super::{flag, flags, has, now_secs, positionals, repo_path};
 
 const USAGE: &str = "policy 用法：\n  \
      trit-vcs policy [--json] [--repo PATH]\n  \
-     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--require-signed-policy] [--policy-threshold N] [--sign-key FILE]... [--json] [--repo PATH]";
+     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--require-signed-policy] [--policy-threshold N] [--policy-role auditor|release]... [--sign-key FILE]... [--json] [--repo PATH]";
 
 fn show(repo: &Repo, args: &[String]) -> ExitCode {
     let policy = match repo.policy() {
@@ -31,6 +31,7 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
                 "require_signed_witness": policy.require_signed_witness,
                 "require_signed_policy": policy.require_signed_policy,
                 "policy_threshold": policy.policy_threshold,
+                "policy_roles": policy.policy_roles,
             }))
             .unwrap_or_else(|_| "{}".to_string())
         );
@@ -41,6 +42,7 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
         println!("require_signed_witness={}", policy.require_signed_witness);
         println!("require_signed_policy={}", policy.require_signed_policy);
         println!("policy_threshold={}", policy.policy_threshold);
+        println!("policy_roles={}", policy.policy_roles.join(","));
     }
     ExitCode::SUCCESS
 }
@@ -72,6 +74,17 @@ fn set(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let mut roles = flags(args, "--policy-role");
+    if roles.is_empty() {
+        roles.push("auditor".to_string());
+    }
+    let roles = match trit_vcs::repo::normalize_policy_roles(&roles) {
+        Ok(roles) => roles,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(2);
+        }
+    };
     let policy = Policy {
         require_witness: has(args, "--require-witness"),
         require_intent: has(args, "--require-intent"),
@@ -79,6 +92,7 @@ fn set(args: &[String]) -> ExitCode {
         require_signed_witness: has(args, "--require-signed-witness"),
         require_signed_policy: has(args, "--require-signed-policy"),
         policy_threshold: threshold,
+        policy_roles: roles.clone(),
     };
     let signer_paths = flags(args, "--sign-key")
         .into_iter()
@@ -101,6 +115,7 @@ fn set(args: &[String]) -> ExitCode {
                         "require_signed_witness": policy.require_signed_witness,
                         "require_signed_policy": policy.require_signed_policy,
                         "policy_threshold": policy.policy_threshold,
+                        "policy_roles": policy.policy_roles,
                         "signed": !signers.is_empty(),
                         "signer_count": signers.len(),
                         "policy": hash.to_hex(),
@@ -109,13 +124,14 @@ fn set(args: &[String]) -> ExitCode {
                 );
             } else {
                 println!(
-                    "策略已更新：require_witness={} require_intent={} require_signed_claims={} require_signed_witness={} require_signed_policy={} policy_threshold={}（policy {}{}）",
+                    "策略已更新：require_witness={} require_intent={} require_signed_claims={} require_signed_witness={} require_signed_policy={} policy_threshold={} policy_roles={}（policy {}{}）",
                     policy.require_witness,
                     policy.require_intent,
                     policy.require_signed_claims,
                     policy.require_signed_witness,
                     policy.require_signed_policy,
                     policy.policy_threshold,
+                    policy.policy_roles.join(","),
                     hash.short(),
                     if signers.is_empty() {
                         ""
@@ -136,7 +152,13 @@ pub(crate) fn policy_cmd(args: &[String]) -> ExitCode {
     let root = repo_path(args);
     let words = positionals(
         args,
-        &["--owner", "--repo", "--sign-key", "--policy-threshold"],
+        &[
+            "--owner",
+            "--repo",
+            "--sign-key",
+            "--policy-threshold",
+            "--policy-role",
+        ],
     );
     match words.first().map(String::as_str) {
         Some("set") => set(args),

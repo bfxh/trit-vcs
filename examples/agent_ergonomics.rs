@@ -104,6 +104,7 @@ fn main() {
             require_signed_witness: false,
             require_signed_policy: false,
             policy_threshold: 1,
+            policy_roles: vec!["auditor".to_string()],
         })
         .unwrap(),
     )
