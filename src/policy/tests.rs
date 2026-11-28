@@ -256,6 +256,68 @@ fn mixed_role_policy_requires_each_role_and_blocks_role_drop() {
 }
 
 #[test]
+fn mixed_role_policy_rejects_same_principal_for_two_roles() {
+    let root = temp("same-principal");
+    let mut repo = Repo::init(&root).unwrap();
+    let auditor = KeyFile::generate().unwrap();
+    let auditor_path = root.join("auditor.key");
+    auditor.save_new(&auditor_path).unwrap();
+    repo.add_key(
+        TrustEntry {
+            key_id: auditor.key_id.clone(),
+            principal: "qoder:shared".to_string(),
+            role: "auditor".to_string(),
+            added_at_ms: 1_000,
+            public_key: Some(auditor.public.clone()),
+            rotated_from: None,
+            revoked_at_ms: None,
+            revoke_reason: None,
+        },
+        "qoder:admin",
+        1_000,
+    )
+    .unwrap();
+    let release = KeyFile::generate().unwrap();
+    let release_path = root.join("release.key");
+    release.save_new(&release_path).unwrap();
+    repo.add_key(
+        TrustEntry {
+            key_id: release.key_id.clone(),
+            principal: "qoder:shared".to_string(),
+            role: "release".to_string(),
+            added_at_ms: 1_500,
+            public_key: Some(release.public.clone()),
+            rotated_from: None,
+            revoked_at_ms: None,
+            revoke_reason: None,
+        },
+        "qoder:admin",
+        1_500,
+    )
+    .unwrap();
+
+    let mixed = Policy {
+        require_signed_policy: true,
+        policy_threshold: 2,
+        policy_roles: vec!["auditor".into(), "release".into()],
+        ..Default::default()
+    };
+    let err = repo
+        .set_policy_with_signers(
+            &mixed,
+            "qoder:policy",
+            2_000,
+            &[&auditor_path, &release_path],
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("同一主体不能同时批准多个策略角色"),
+        "混合角色必须由不同主体批准：{err}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn policy_rejects_unknown_or_unbalanced_roles() {
     let (root, mut repo, _key, _key_path) = signed_setup("roles-invalid");
     let unknown = Policy {

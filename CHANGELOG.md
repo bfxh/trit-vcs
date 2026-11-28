@@ -13,6 +13,7 @@
   严格策略也必须由旧角色批准。默认 `auditor` 仍写 `trit-policy-v2`；自定义角色集合写 `trit-policy-v3`，
   规范签名载荷按 `schema`/`action`/`session`/五个开关/`policy_threshold`/`policy_roles`/旧新摘要/
   `signed_at_ms`/`key_id` 固定顺序编码，v2 事件不新增未签名字段。审计新增 `policy_role_missing`，
+  多角色策略还要求不同角色由不同主体批准，同一主体跨角色报 `policy_role_principal`；
   v1/v2/v3 事件都可重放；`policy --json`、`policy set` 输出与 README 同步 `policy_roles`。
 - 显式 `--force` 的审计事件 `trit-force-v1`：`publish --force` 非快进改写与 `pull --force`
   （本地/HTTP 客户端）成功应用后追加 `force` 事件，记录 action/transport/side/name/op_id/commit/
