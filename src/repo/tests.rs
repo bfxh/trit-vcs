@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 
 fn temp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("trit-vcs-repo-{name}-{}", std::process::id()));
@@ -582,5 +583,130 @@ fn merge_base_walks_to_common_ancestor() {
         .id;
     assert_eq!(repo.merge_base(&second, &third).unwrap(), Some(second));
     assert_eq!(repo.merge_base(&first, &first).unwrap(), Some(first));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn crash_after_begin_rolls_back_state_on_next_write() {
+    let root = temp("txn-rollback");
+    let mut repo = Repo::init(&root).unwrap();
+    repo.stage(&files(&[("a.txt", "one")]), 1_000).unwrap();
+    let first = repo
+        .commit(CommitRequest {
+            message: "first".to_string(),
+            session: "qoder:s1".to_string(),
+            claims: vec![claim("qoder:s1", &["a.txt"], 9_999)],
+            now_secs: 1_000,
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    repo.stage(&files(&[("a.txt", "two")]), 2_000).unwrap();
+    let second = repo
+        .commit(CommitRequest {
+            message: "second".to_string(),
+            session: "qoder:s1".to_string(),
+            claims: vec![claim("qoder:s1", &["a.txt"], 9_999)],
+            now_secs: 2_000,
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    let guard = repo.lock_state().unwrap();
+    let begin = repo
+        .begin_operation_locked("simulate_crash", json!({}), 3_000)
+        .unwrap();
+    // 模拟操作体只改了一半：HEAD 退到第一条，但 op_result 还没写。
+    repo.write_head(&first).unwrap();
+    drop(guard);
+    drop(repo);
+
+    let mut reopened = Repo::open(&root).unwrap();
+    assert!(reopened.pending_txn().is_some(), "残留 txn 必须可见");
+    reopened.set_ref("main", &second).unwrap();
+    assert_eq!(
+        reopened.head().unwrap(),
+        Some(second),
+        "下一次写必须回滚到快照"
+    );
+    assert!(reopened.pending_txn().is_none(), "恢复后 txn 应清掉");
+    let recovered = reopened
+        .journal()
+        .events()
+        .iter()
+        .find(|event| {
+            event.kind == "op_result"
+                && event.payload.get("begin").and_then(|value| value.as_u64()) == Some(begin.seq)
+        })
+        .expect("崩溃的操作必须补一条 op_result");
+    assert_eq!(recovered.payload["status"], "failed");
+    assert_eq!(recovered.payload["recovered"], true);
+    assert!(crate::audit::status(&reopened).unwrap().ok);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn corrupt_txn_meta_blocks_writes_instead_of_guessing() {
+    let root = temp("txn-corrupt");
+    let mut repo = Repo::init(&root).unwrap();
+    repo.stage(&files(&[("a.txt", "one")]), 1_000).unwrap();
+    let first = repo
+        .commit(CommitRequest {
+            message: "first".to_string(),
+            session: "qoder:s1".to_string(),
+            claims: vec![claim("qoder:s1", &["a.txt"], 9_999)],
+            now_secs: 1_000,
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    let state = repo.state_digest().unwrap().to_hex();
+    let guard = repo.lock_state().unwrap();
+    repo.prepare_txn_locked("broken", "noop", &json!({}), &state)
+        .unwrap();
+    drop(guard);
+    drop(repo);
+    fs::remove_file(root.join(".tritvcs/txn/meta.json")).unwrap();
+
+    let mut reopened = Repo::open(&root).unwrap();
+    let err = reopened.set_ref("main", &first).unwrap_err();
+    assert!(matches!(err, RepoError::TxnCorrupt(_)), "{err:?}");
+    assert_eq!(reopened.head().unwrap(), Some(first), "失败闭合时不改状态");
+    assert!(reopened.pending_txn().is_some(), "坏现场必须保留");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn orphan_txn_without_begin_is_discarded() {
+    let root = temp("txn-orphan");
+    let mut repo = Repo::init(&root).unwrap();
+    repo.stage(&files(&[("a.txt", "one")]), 1_000).unwrap();
+    let first = repo
+        .commit(CommitRequest {
+            message: "first".to_string(),
+            session: "qoder:s1".to_string(),
+            claims: vec![claim("qoder:s1", &["a.txt"], 9_999)],
+            now_secs: 1_000,
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    let state = repo.state_digest().unwrap().to_hex();
+    let guard = repo.lock_state().unwrap();
+    repo.prepare_txn_locked("orphan", "noop", &json!({}), &state)
+        .unwrap();
+    drop(guard);
+    drop(repo);
+
+    let mut reopened = Repo::open(&root).unwrap();
+    assert!(reopened.pending_txn().is_some());
+    reopened.set_ref("main", &first).unwrap();
+    assert!(reopened.pending_txn().is_none(), "没有 begin 的快照应丢弃");
+    assert_eq!(
+        reopened.head().unwrap(),
+        Some(first),
+        "状态没动过就不该回滚"
+    );
+    assert!(crate::audit::status(&reopened).unwrap().ok);
     let _ = fs::remove_dir_all(&root);
 }

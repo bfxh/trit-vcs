@@ -41,6 +41,8 @@ pub enum RepoError {
     NotInitialized(String),
     #[error("仓库状态写入被锁：{0}")]
     StateLocked(String),
+    #[error("事务快照损坏：{0}")]
+    TxnCorrupt(String),
     #[error("暂存区是空的：先 `add`")]
     NothingStaged,
     #[error("未认领：{paths:?} 没有在效认领覆盖（默认拒绝；要放行加 --allow-unclaimed）")]
@@ -785,6 +787,7 @@ pub struct VerifyReport {
 
 mod graph;
 mod state;
+mod txn;
 
 #[cfg(test)]
 mod tests;

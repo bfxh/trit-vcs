@@ -6,6 +6,15 @@
 ## [Unreleased]
 
 ### Added
+- 操作级状态快照与持锁崩溃恢复（G5 Phase 1）：每个 `with_operation` 在写 `op_begin` 前把
+  `HEAD`、`index.json`、`refs/**`、`policy.json`、`claims.json`、`keys.json` 的原始字节快照到
+  `.tritvcs/txn.tmp/`，`meta.json` 落盘后原子改名为 `.tritvcs/txn/`，`op_begin` 增加 `txn_id`。
+  下一次拿 `claims.lock` 的写操作先恢复：无匹配 `op_begin` 的快照在状态未变时丢弃；有 `op_begin`、
+  无 `op_result` 的从 `before/` 回滚并补 `status=failed`、`recovered=true` 的收口；已有 `op_result`
+  的只校验 `state_after` 后清目录。`meta`/备份缺失或摘要对不上报 `RepoError::TxnCorrupt`（kind
+  `txn_corrupt`）；`audit status` 对残留 `.tritvcs/txn/` 报 `txn_pending`，顶层 `verify` 因此判红。
+  清理先原子改名为 `txn.trash` 再删，避免删到一半留下无 `meta.json` 的不可恢复现场。新增 3 个库面
+  回归（回滚并收口、孤儿快照丢弃、坏 `meta.json` 失败闭合）与 1 个 CLI 回归（残留事务让 `verify` 报 `txn_pending`）。
 - 顶层 `trit-vcs verify` 接审计对账：改用 `Repo::open_for_audit` 打开，对象/提交检查后复用
   `audit::status`；`journal_missing`、`head_mismatch`、`journal_broken` 等 issue 以及
   `open_ops > 0` 的未收口操作都直接判 `verify_audit` 失败，`--json` 同时返回 verify 读数与 audit 报告。新增 5 个 CLI 回归，覆盖

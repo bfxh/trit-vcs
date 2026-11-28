@@ -4429,5 +4429,55 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "test:verify_reconcile"
+ },
+ {
+  "name": "vcs: 崩溃恢复不回滚快照",
+  "file": "src/repo/txn.rs",
+  "old": "                restore(self, &meta)?;",
+  "new": "                let _ = &meta;",
+  "filter": "repo::tests::crash_after_begin_rolls_back_state_on_next_write",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 没有 op_begin 的孤儿快照不丢弃",
+  "file": "src/repo/txn.rs",
+  "old": "                remove_txn(self)?;\n            }\n            (Some((seq, hash)), None) => {",
+  "new": "                // remove_txn(self)?;\n            }\n            (Some((seq, hash)), None) => {",
+  "filter": "repo::tests::orphan_txn_without_begin_is_discarded",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: op_begin 不写 txn_id（崩溃后认不出自己的快照）",
+  "file": "src/op.rs",
+  "old": "                \"txn_id\": txn_id,",
+  "new": "                \"txn_id_ignored\": txn_id,",
+  "filter": "repo::tests::crash_after_begin_rolls_back_state_on_next_write",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: audit 不报未完成事务",
+  "file": "src/audit.rs",
+  "old": "        push_issue(&mut issues, \"txn_pending\", msg);",
+  "new": "        let _ = msg;",
+  "filter": "verify_fails_when_a_transaction_is_pending",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:verify_reconcile"
+ },
+ {
+  "name": "vcs: 事务快照损坏时继续猜（清掉现场后照常写）",
+  "file": "src/repo/txn.rs",
+  "old": "        let meta = read_meta(&dir)?;",
+  "new": "        let meta = match read_meta(&dir) { Ok(meta) => meta, Err(_) => { remove_txn(self)?; return Ok(()); } };",
+  "filter": "repo::tests::corrupt_txn_meta_blocks_writes_instead_of_guessing",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]
