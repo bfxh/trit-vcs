@@ -34,6 +34,7 @@ mod remote_cli;
 mod sparse_cli;
 mod transport;
 mod verdict;
+mod verify_cli;
 use cli_args::{collect, commit_request, current_tree};
 use verdict::{fail_err, fail_repo};
 
@@ -697,29 +698,7 @@ fn main() -> ExitCode {
                 Err(err) => fail_err(&err, &root, "", &args),
             }
         }
-        "verify" => {
-            let root = repo_path(&args);
-            let repo = match Repo::open(&root) {
-                Ok(repo) => repo,
-                Err(err) => return fail_repo(&err, &root, "", &args),
-            };
-            match repo.verify() {
-                Ok(report) => {
-                    println!(
-                        "绿：事件 {} 条，对象 {} 个，提交 {} 条（带见证 {} 条，带认领快照 {} 条，判据回执 {} 条），HEAD {}",
-                        report.events,
-                        report.objects,
-                        report.commits,
-                        report.witnessed,
-                        report.claim_sets,
-                        report.receipts,
-                        report.head.unwrap_or_else(|| "-".to_string())
-                    );
-                    ExitCode::SUCCESS
-                }
-                Err(err) => fail_err(&err, &root, "", &args),
-            }
-        }
+        "verify" => verify_cli::verify_cmd(&args),
         "audit" => audit_cli::audit_cmd(&args),
         "stats" => {
             let root = repo_path(&args);

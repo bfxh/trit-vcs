@@ -6,6 +6,10 @@
 ## [Unreleased]
 
 ### Added
+- 顶层 `trit-vcs verify` 接审计对账：改用 `Repo::open_for_audit` 打开，对象/提交检查后复用
+  `audit::status`；`journal_missing`、`head_mismatch`、`journal_broken` 等 issue 以及
+  `open_ops > 0` 的未收口操作都直接判 `verify_audit` 失败，`--json` 同时返回 verify 读数与 audit 报告。新增 5 个 CLI 回归，覆盖
+  干净仓、删日志、回滚 HEAD、漏记 commit 与未收口操作。
 - 策略变更原因/工单绑定：`Policy` 新增 `require_policy_reason`（默认 false），`policy set` 新增
   `--require-policy-reason`、`--policy-reason TEXT`、`--policy-ticket TEXT`。打开后每次变更必须带非空原因，
   关闭这条开关的变更自身也必须说明原因；原因与工单只进事件和签名载荷，不写入 `policy.json`。带原因/工单或

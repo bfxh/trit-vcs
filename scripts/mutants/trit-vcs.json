@@ -4419,5 +4419,15 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: verify 不比对审计对账（删日志仍绿）",
+  "file": "src/bin/trit-vcs/verify_cli.rs",
+  "old": "if !audit_report.ok || !failures.is_empty() {",
+  "new": "if false && (!audit_report.ok || !failures.is_empty()) {",
+  "filter": "verify_fails_when_journal_is_deleted",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "test:verify_reconcile"
  }
 ]
