@@ -4075,7 +4075,7 @@
   "file": "src/audit/policy_event.rs",
   "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
   "new": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
-  "filter": "audit::extra_tests::v3_policy_requires_signed_claim_replay_to_cover_the_new_schema",
+  "filter": "audit::policy_event::tests::v3_policy_requires_signed_claim_replay_to_cover_the_new_schema",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
