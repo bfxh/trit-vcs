@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::repo::{Repo, RepoError};
+use crate::store::ObjectWatermark;
 
 const TXN: &str = "txn";
 const TMP: &str = "txn.tmp";
@@ -31,6 +32,8 @@ struct Meta {
     op: String,
     args: Value,
     state_before: String,
+    #[serde(default)]
+    objects: Option<ObjectWatermark>,
     files: Vec<FileMeta>,
 }
 
@@ -266,6 +269,7 @@ impl Repo {
         state_before: &str,
     ) -> Result<(), RepoError> {
         let before = state_files(self)?;
+        let objects = Some(self.store.watermark()?);
         let files = before
             .keys()
             .enumerate()
@@ -283,6 +287,7 @@ impl Repo {
             op: op.to_string(),
             args: args.clone(),
             state_before: state_before.to_string(),
+            objects,
             files,
         };
         write_snapshot(self, &meta, &before)
@@ -339,6 +344,11 @@ impl Repo {
                         "回滚后状态与快照不一致（期望 {}，实际 {restored}）",
                         meta.state_before
                     )));
+                }
+                if let Some(objects) = meta.objects {
+                    // 状态已经安全回到操作前，再回收操作体可能写进对象库的
+                    // 新块和索引行；对象只追加，截回旧水位不会碰到历史对象。
+                    self.store.truncate_to(objects)?;
                 }
                 self.journal_mut().append(
                     "op_result",

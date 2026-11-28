@@ -27,6 +27,7 @@ pub fn kind_store(err: &StoreError) -> &'static str {
         StoreError::BadMap(_) => "store_bad_map",
         StoreError::Locked(_) => "store_locked",
         StoreError::BadIndex(_) => "store_bad_index",
+        StoreError::BadWatermark(_) => "store_bad_watermark",
     }
 }
 
@@ -47,7 +48,7 @@ fn refetch_from_peer(repo: &str, object: &str) -> Vec<String> {
 pub fn commands_store(err: &StoreError, ctx: Context<'_>) -> Vec<String> {
     let repo = ctx.dir.display().to_string();
     match err {
-        StoreError::Io(_) | StoreError::BadIndex(_) => {
+        StoreError::Io(_) | StoreError::BadIndex(_) | StoreError::BadWatermark(_) => {
             vec![
                 format!("{VCS} verify --repo {repo}"),
                 format!("{VCS} stats --repo {repo}"),
