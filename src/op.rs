@@ -38,13 +38,17 @@ impl Repo {
         args: Value,
         at_ms: u64,
     ) -> Result<Event, RepoError> {
+        self.recover_txn_locked()?;
         let state_before = self.state_digest()?.to_hex();
+        let txn_id = Repo::new_txn_id(&state_before, self.journal().events().len() as u64);
+        self.prepare_txn_locked(&txn_id, op, &args, &state_before)?;
         Ok(self.journal_mut().append(
             "op_begin",
             json!({
                 "op": op,
                 "args": args,
                 "state_before": state_before,
+                "txn_id": txn_id,
             }),
             at_ms,
         )?)
@@ -72,7 +76,7 @@ impl Repo {
         at_ms: u64,
     ) -> Result<Event, RepoError> {
         let state_after = self.state_digest()?.to_hex();
-        Ok(self.journal_mut().append(
+        let event = self.journal_mut().append(
             "op_result",
             json!({
                 "op": op,
@@ -83,7 +87,11 @@ impl Repo {
                 "result": result,
             }),
             at_ms,
-        )?)
+        )?;
+        // 快照清不掉不改变已收口的事实；残留 txn 会在下一次持锁写时按
+        // “已有 op_result”分支只清目录，不会回滚。
+        let _ = self.clear_txn_locked();
+        Ok(event)
     }
 
     pub fn append_audit(

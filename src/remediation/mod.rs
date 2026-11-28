@@ -45,6 +45,7 @@ pub fn kind(err: &RepoError) -> &'static str {
         RepoError::Journal(_) => "journal",
         RepoError::NotInitialized(_) => "not_initialized",
         RepoError::StateLocked(_) => "state_locked",
+        RepoError::TxnCorrupt(_) => "txn_corrupt",
         RepoError::NothingStaged => "nothing_staged",
         RepoError::Unclaimed { .. } => "unclaimed",
         RepoError::Conflict { .. } => "claim_conflict",
@@ -84,6 +85,11 @@ pub fn commands(err: &RepoError, ctx: Context<'_>) -> Vec<String> {
         RepoError::StateLocked(_) => vec![
             format!("{VCS} claims list --central {repo}"),
             "在持锁的仓库状态写入结束后重试；锁文件是正在写入的证据，别删".to_string(),
+        ],
+        RepoError::TxnCorrupt(_) => vec![
+            format!("{VCS} audit status --json --repo {repo}"),
+            "保留 .tritvcs/txn 现场并人工核对 meta.json 与 before/ 快照；确认后可删掉该目录再重跑"
+                .to_string(),
         ],
         RepoError::NothingStaged => vec![format!("{VCS} add <文件或目录> --repo {repo}")],
         RepoError::Unclaimed { paths } => {

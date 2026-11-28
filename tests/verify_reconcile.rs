@@ -167,3 +167,14 @@ fn verify_fails_when_journal_loses_a_commit_event() {
     assert!(!verify.status.success(), "{}", stdout(&verify));
     assert!(stderr(&verify).contains("verify_audit"));
 }
+
+#[test]
+fn verify_fails_when_a_transaction_is_pending() {
+    let root = temp("pending-txn");
+    seed(&root, "a.txt", "a\n");
+    fs::create_dir_all(root.join(".tritvcs/txn")).unwrap();
+    let verify = run(&root, &["verify"]);
+    assert!(!verify.status.success(), "{}", stdout(&verify));
+    let err = stderr(&verify);
+    assert!(err.contains("txn_pending"), "{err}");
+}

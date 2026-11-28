@@ -136,6 +136,10 @@ pub fn status(repo: &Repo) -> Result<AuditReport, AuditError> {
     }
 
     let open_ops = ops::check_operations(events, &mut issues, &mut warnings);
+    if let Some(pending) = repo.pending_txn() {
+        let msg = format!("发现未完成事务 {pending}；下一次持锁写操作会先回滚快照再继续");
+        push_issue(&mut issues, "txn_pending", msg);
+    }
 
     let actual_head = repo.head()?;
     let mut expected_head = None;
