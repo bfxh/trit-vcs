@@ -32,6 +32,34 @@ fn signed_setup(name: &str) -> (std::path::PathBuf, Repo, KeyFile, std::path::Pa
     (root, repo, key, key_path)
 }
 
+fn add_policy_key(
+    repo: &mut Repo,
+    root: &std::path::Path,
+    name: &str,
+    role: &str,
+    principal: &str,
+) -> (KeyFile, std::path::PathBuf) {
+    let key = KeyFile::generate().unwrap();
+    let path = root.join(format!("{name}.key"));
+    key.save_new(&path).unwrap();
+    repo.add_key(
+        TrustEntry {
+            key_id: key.key_id.clone(),
+            principal: principal.to_string(),
+            role: role.to_string(),
+            added_at_ms: 1_000,
+            public_key: Some(key.public.clone()),
+            rotated_from: None,
+            revoked_at_ms: None,
+            revoke_reason: None,
+        },
+        "qoder:admin",
+        1_000,
+    )
+    .unwrap();
+    (key, path)
+}
+
 #[test]
 fn signed_policy_change_is_audited_and_attributes_the_key() {
     let (root, mut repo, key, key_path) = signed_setup("signed");
@@ -370,4 +398,96 @@ fn policy_role_list_changes_the_v3_statement_bytes() {
         policy_statement_v3_bytes("qoder:policy", &auditor_only, None, "hash", 1, "key").unwrap();
     let two = policy_statement_v3_bytes("qoder:policy", &mixed, None, "hash", 1, "key").unwrap();
     assert_ne!(one, two, "v3 签名载荷必须覆盖 policy_roles");
+}
+
+#[test]
+fn policy_principal_quorum_changes_the_v4_statement_bytes() {
+    let key_quorum = Policy {
+        require_signed_policy: true,
+        policy_threshold: 2,
+        ..Default::default()
+    };
+    let principal_quorum = Policy {
+        require_signed_policy: true,
+        policy_threshold: 2,
+        policy_principal_quorum: true,
+        ..Default::default()
+    };
+    let one =
+        policy_statement_v4_bytes("qoder:policy", &key_quorum, None, "hash", 1, "key").unwrap();
+    let two = policy_statement_v4_bytes("qoder:policy", &principal_quorum, None, "hash", 1, "key")
+        .unwrap();
+    assert_ne!(one, two, "v4 签名载荷必须覆盖 policy_principal_quorum");
+}
+
+#[test]
+fn principal_quorum_requires_distinct_principals_not_just_distinct_keys() {
+    let root = temp("principal-quorum");
+    let mut repo = Repo::init(&root).unwrap();
+    let (_, first_path) =
+        add_policy_key(&mut repo, &root, "auditor-first", "auditor", "qoder:shared");
+    let (_, second_path) = add_policy_key(
+        &mut repo,
+        &root,
+        "auditor-second",
+        "auditor",
+        "qoder:shared",
+    );
+    let (_, third_path) =
+        add_policy_key(&mut repo, &root, "auditor-third", "auditor", "qoder:other");
+
+    let key_quorum = Policy {
+        require_signed_policy: true,
+        policy_threshold: 2,
+        ..Default::default()
+    };
+    repo.set_policy_with_signers(
+        &key_quorum,
+        "qoder:policy",
+        2_000,
+        &[&first_path, &second_path],
+    )
+    .unwrap();
+    let report = crate::audit::status(&repo).unwrap();
+    assert!(report.ok, "{:?}", report.issues);
+
+    let principal_quorum = Policy {
+        require_signed_policy: true,
+        policy_threshold: 2,
+        policy_principal_quorum: true,
+        ..Default::default()
+    };
+    let err = repo
+        .set_policy_with_signers(
+            &principal_quorum,
+            "qoder:policy",
+            3_000,
+            &[&first_path, &second_path],
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("不同主体"),
+        "同一主体的两把 key 不能凑主体阈值：{err}"
+    );
+
+    repo.set_policy_with_signers(
+        &principal_quorum,
+        "qoder:policy",
+        4_000,
+        &[&first_path, &third_path],
+    )
+    .unwrap();
+    let report = crate::audit::status(&repo).unwrap();
+    assert!(report.ok, "{:?}", report.issues);
+    let event = repo
+        .journal()
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.kind == "policy")
+        .unwrap();
+    assert_eq!(event.payload["schema"], POLICY_SCHEMA_V4);
+    assert_eq!(event.payload["policy_principal_quorum"], true);
+    assert_eq!(event.payload["signatures"].as_array().unwrap().len(), 2);
+    let _ = fs::remove_dir_all(&root);
 }

@@ -6,6 +6,13 @@
 ## [Unreleased]
 
 ### Added
+- 策略主体计票：`Policy` 新增 `policy_principal_quorum`（默认 false），`policy set --policy-principal-quorum`
+  打开后阈值按不同 `principal` 而不是不同 key 计数，同角色同主体的多把 key 只算一个主体；自定义角色集合写
+  `trit-policy-v3`，打开主体计票写 `trit-policy-v4`，v4 规范载荷在 `policy_roles` 后固定加入
+  `policy_principal_quorum`。开启/关闭开关、调低阈值或改角色时仍先满足旧/新阈值与角色并集，且只要当前或新
+  策略开主体计票，就同时要求不同 key 与不同主体数达到阈值。审计新增 `policy_principal_insufficient`；
+  `policy_principal_quorum` 必须进入 v4 签名载荷与事件，缺失/非布尔报 `policy_bad`；v1/v2/v3 事件继续按不同
+  key 重放。
 - 策略角色集合与混合角色批准：`Policy` 新增 `policy_roles`（默认 `["auditor"]`，最多 4 个），
   `policy set --policy-role auditor|release` 可重复；只开放 `auditor`/`release`，拒绝空、重复、未知角色，
   `policy_threshold` 不得小于角色数。`require_signed_policy` 生效时，本次所需签名数取当前/新阈值与

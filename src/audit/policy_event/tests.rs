@@ -14,11 +14,21 @@ fn temp(name: &str) -> std::path::PathBuf {
 }
 
 fn add_key(repo: &mut Repo, key: &KeyFile, path: &std::path::Path, role: &str) {
+    add_key_principal(repo, key, path, role, &format!("qoder:{role}"));
+}
+
+fn add_key_principal(
+    repo: &mut Repo,
+    key: &KeyFile,
+    path: &std::path::Path,
+    role: &str,
+    principal: &str,
+) {
     key.save_new(path).unwrap();
     repo.add_key(
         TrustEntry {
             key_id: key.key_id.clone(),
-            principal: format!("qoder:{role}"),
+            principal: principal.to_string(),
             role: role.to_string(),
             added_at_ms: 1_000,
             public_key: Some(key.public.clone()),
@@ -98,6 +108,38 @@ fn quorum_event(name: &str) -> (std::path::PathBuf, Repo, Event) {
     (root, repo, event)
 }
 
+fn principal_quorum_event(name: &str) -> (std::path::PathBuf, Repo, Event) {
+    let root = temp(name);
+    let mut repo = Repo::init(&root).unwrap();
+    let first = KeyFile::generate().unwrap();
+    let first_path = root.join("policy-first.key");
+    add_key_principal(&mut repo, &first, &first_path, "auditor", "qoder:first");
+    let second = KeyFile::generate().unwrap();
+    let second_path = root.join("policy-second.key");
+    add_key_principal(&mut repo, &second, &second_path, "auditor", "qoder:second");
+    repo.set_policy_with_signers(
+        &Policy {
+            require_signed_policy: true,
+            policy_threshold: 2,
+            policy_principal_quorum: true,
+            ..Default::default()
+        },
+        "qoder:policy",
+        2_000,
+        &[&first_path, &second_path],
+    )
+    .unwrap();
+    let event = repo
+        .journal()
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.kind == "policy")
+        .unwrap()
+        .clone();
+    (root, repo, event)
+}
+
 fn issues(repo: &Repo, event: &Event, required_signatures: usize) -> Vec<AuditIssue> {
     let roles = if required_signatures == 0 {
         Vec::new()
@@ -113,6 +155,16 @@ fn issues_with_roles(
     required_signatures: usize,
     roles: &[String],
 ) -> Vec<AuditIssue> {
+    issues_with_roles_and_principals(repo, event, required_signatures, roles, false)
+}
+
+fn issues_with_roles_and_principals(
+    repo: &Repo,
+    event: &Event,
+    required_signatures: usize,
+    roles: &[String],
+    require_principals: bool,
+) -> Vec<AuditIssue> {
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
     check_policy(
@@ -120,6 +172,7 @@ fn issues_with_roles(
         event,
         required_signatures,
         roles,
+        require_principals,
         None,
         &mut issues,
         &mut warnings,
@@ -303,6 +356,109 @@ fn mixed_role_policy_rejects_same_principal_across_roles() {
             .iter()
             .any(|issue| issue.kind == "policy_role_principal"),
         "审计必须拒绝同一主体同时覆盖多个策略角色：{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn principal_quorum_rejects_same_principal_and_binds_the_flag() {
+    let (root, repo, event) = principal_quorum_event("principal-quorum");
+    let roles = vec!["auditor".to_string()];
+    assert!(
+        issues_with_roles_and_principals(&repo, &event, 2, &roles, true).is_empty(),
+        "两个不同主体应满足 2-of-2"
+    );
+
+    let mut changed_flag = event.clone();
+    changed_flag.payload["policy_principal_quorum"] = json!(false);
+    assert!(
+        issues_with_roles_and_principals(&repo, &changed_flag, 2, &roles, true)
+            .iter()
+            .any(|issue| issue.kind == "policy_signature_invalid"),
+        "policy_principal_quorum 必须进入 v4 签名载荷"
+    );
+
+    let mut missing_flag = event.clone();
+    missing_flag
+        .payload
+        .as_object_mut()
+        .unwrap()
+        .remove("policy_principal_quorum");
+    assert!(
+        issues_with_roles_and_principals(&repo, &missing_flag, 2, &roles, true)
+            .iter()
+            .any(|issue| issue.kind == "policy_bad"),
+        "v4 事件必须显式携带 policy_principal_quorum"
+    );
+
+    let first_id = event.payload["signatures"][0]["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let second_id = event.payload["signatures"][1]["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut store = TrustStore::load(&root).unwrap();
+    let first_principal = store.keys[&first_id].principal.clone();
+    store.keys.get_mut(&second_id).unwrap().principal = first_principal;
+    store.save(&root).unwrap();
+
+    let report = crate::audit::status(&repo).unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == "policy_principal_insufficient"),
+        "同一主体的两把 key 不能被审计当成两个主体：{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn v4_policy_requires_signed_claim_replay_to_cover_the_new_schema() {
+    let root = temp("policy-v4-claims");
+    let mut repo = Repo::init(&root).unwrap();
+    let digest = repo.state_digest().unwrap().to_hex();
+    repo.append_audit(
+        "policy",
+        json!({
+            "schema": "trit-policy-v4",
+            "session": "audit:test",
+            "require_witness": false,
+            "require_intent": false,
+            "require_signed_witness": false,
+            "require_signed_policy": false,
+            "policy_threshold": 1,
+            "policy_roles": ["auditor"],
+            "policy_principal_quorum": true,
+            "policy_hash": Hash::of(b"policy-v4").to_hex(),
+            "state_before": digest,
+            "state_after": digest,
+        }),
+        2_000,
+    )
+    .unwrap();
+    repo.append_audit(
+        "claim_add",
+        json!({
+            "signed": false,
+            "state_before": digest,
+            "state_after": digest,
+        }),
+        2_001,
+    )
+    .unwrap();
+
+    let report = crate::audit::status(&repo).unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == "claim_signature_missing"),
+        "v4 策略必须参与 require_signed_claims 重放：{:?}",
         report.issues
     );
     let _ = std::fs::remove_dir_all(&root);

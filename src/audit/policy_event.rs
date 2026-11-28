@@ -13,19 +13,21 @@ use crate::hash::Hash;
 use crate::journal::Event;
 use crate::keys::public_key_id;
 use crate::policy::{
-    MAX_POLICY_THRESHOLD, POLICY_SCHEMA, POLICY_SCHEMA_V2, POLICY_SCHEMA_V3, Policy,
-    normalize_policy_roles, policy_quorum, policy_roles_for_change, policy_statement_bytes,
+    MAX_POLICY_THRESHOLD, POLICY_SCHEMA, POLICY_SCHEMA_V2, POLICY_SCHEMA_V3, POLICY_SCHEMA_V4,
+    Policy, normalize_policy_roles, policy_quorum, policy_roles_for_change, policy_statement_bytes,
 };
 use crate::repo::Repo;
 use crate::signing;
 
 mod signature;
-use signature::{check_v2_signatures, check_v3_signatures, push_missing_roles};
+use signature::{
+    check_v2_signatures, check_v3_signatures, check_v4_signatures, push_missing_roles,
+};
 
 pub(super) fn require_signed_witness(event: &Event) -> bool {
     let versioned = matches!(
         event.payload.get("schema").and_then(Value::as_str),
-        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3
+        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4
     );
     match event.payload.get("require_signed_witness") {
         Some(Value::Bool(value)) => *value,
@@ -37,7 +39,7 @@ pub(super) fn require_signed_witness(event: &Event) -> bool {
 pub(super) fn require_signed_claims(event: &Event) -> bool {
     let versioned = matches!(
         event.payload.get("schema").and_then(Value::as_str),
-        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3
+        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4
     );
     event
         .payload
@@ -51,6 +53,7 @@ pub(super) struct PolicyReplay {
     require_signature: bool,
     threshold: u8,
     roles: Vec<String>,
+    principal_quorum: bool,
     last_hash: Option<Hash>,
 }
 
@@ -69,6 +72,7 @@ impl PolicyReplay {
             .unwrap_or(false);
         let next_threshold = event_threshold(event);
         let next_roles = event_policy_roles(event).unwrap_or_else(|_| vec!["auditor".into()]);
+        let next_principal_quorum = event_policy_principal_quorum(event);
         let required_roles = policy_roles_for_change(
             self.require_signature,
             &self.roles,
@@ -82,11 +86,13 @@ impl PolicyReplay {
             next_threshold,
         )
         .max(required_roles.len());
+        let require_principals = self.principal_quorum || next_principal_quorum;
         check_policy(
             repo,
             event,
             required,
             &required_roles,
+            require_principals,
             self.last_hash,
             issues,
             warnings,
@@ -94,6 +100,7 @@ impl PolicyReplay {
         self.require_signature = next_require;
         self.threshold = next_threshold;
         self.roles = next_roles;
+        self.principal_quorum = next_principal_quorum;
         if let Some(hash) = parse_hash(event.payload.get("policy_hash")) {
             self.last_hash = Some(hash);
         }
@@ -116,7 +123,7 @@ fn event_policy_roles(event: &Event) -> Result<Vec<String>, String> {
 
 fn event_policy_roles_raw(event: &Event) -> Result<Vec<String>, String> {
     let schema = event.payload.get("schema").and_then(Value::as_str);
-    if schema != Some(POLICY_SCHEMA_V3) {
+    if schema != Some(POLICY_SCHEMA_V3) && schema != Some(POLICY_SCHEMA_V4) {
         return Ok(vec!["auditor".into()]);
     }
     let Some(values) = event.payload.get("policy_roles").and_then(Value::as_array) else {
@@ -132,6 +139,18 @@ fn event_policy_roles_raw(event: &Event) -> Result<Vec<String>, String> {
     Ok(roles)
 }
 
+fn event_policy_principal_quorum(event: &Event) -> bool {
+    let schema = event.payload.get("schema").and_then(Value::as_str);
+    if schema != Some(POLICY_SCHEMA_V4) {
+        return false;
+    }
+    event
+        .payload
+        .get("policy_principal_quorum")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 struct SignedFields<'a> {
     session: &'a str,
     witness: bool,
@@ -144,13 +163,16 @@ struct SignedFields<'a> {
     policy_hash_text: &'a str,
     policy_threshold: u8,
     policy_roles: Vec<String>,
+    policy_principal_quorum: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check_policy(
     repo: &Repo,
     event: &Event,
     required_signatures: usize,
     required_roles: &[String],
+    require_principals: bool,
     last_policy_hash: Option<Hash>,
     issues: &mut Vec<AuditIssue>,
     warnings: &mut Vec<AuditIssue>,
@@ -176,10 +198,14 @@ pub(super) fn check_policy(
     let schema = event.payload.get("schema").and_then(Value::as_str);
     let v2 = schema == Some(POLICY_SCHEMA_V2);
     let v3 = schema == Some(POLICY_SCHEMA_V3);
-    let versioned = schema == Some(POLICY_SCHEMA) || v2 || v3;
+    let v4 = schema == Some(POLICY_SCHEMA_V4);
+    let versioned = schema == Some(POLICY_SCHEMA) || v2 || v3 || v4;
     if event.payload.get("schema").is_some()
         && schema.is_none_or(|schema| {
-            schema != POLICY_SCHEMA && schema != POLICY_SCHEMA_V2 && schema != POLICY_SCHEMA_V3
+            schema != POLICY_SCHEMA
+                && schema != POLICY_SCHEMA_V2
+                && schema != POLICY_SCHEMA_V3
+                && schema != POLICY_SCHEMA_V4
         })
     {
         issues.push(AuditIssue::new(
@@ -221,12 +247,33 @@ pub(super) fn check_policy(
         .payload
         .get("require_signed_policy")
         .and_then(Value::as_bool);
-    if signed_policy.is_none() && (v2 || v3 || event.payload.get("require_signed_policy").is_some())
+    if signed_policy.is_none()
+        && (v2 || v3 || v4 || event.payload.get("require_signed_policy").is_some())
     {
         issues.push(AuditIssue::new(
             "policy_bad",
             format!(
                 "第 {} 条 policy 事件的 require_signed_policy 不是布尔值",
+                event.seq
+            ),
+        ));
+    }
+    if v4 && event.payload.get("policy_principal_quorum").is_none() {
+        issues.push(AuditIssue::new(
+            "policy_bad",
+            format!("第 {} 条 policy 事件缺 policy_principal_quorum", event.seq),
+        ));
+    }
+    if v4
+        && event
+            .payload
+            .get("policy_principal_quorum")
+            .is_some_and(|value| !value.is_boolean())
+    {
+        issues.push(AuditIssue::new(
+            "policy_bad",
+            format!(
+                "第 {} 条 policy 事件的 policy_principal_quorum 不是布尔值",
                 event.seq
             ),
         ));
@@ -287,7 +334,7 @@ pub(super) fn check_policy(
         ));
     }
 
-    let policy_threshold = if v2 || v3 {
+    let policy_threshold = if v2 || v3 || v4 {
         match event
             .payload
             .get("policy_threshold")
@@ -318,12 +365,12 @@ pub(super) fn check_policy(
     } else {
         1
     };
-    let raw_policy_roles = if v3 {
+    let raw_policy_roles = if v3 || v4 {
         event_policy_roles_raw(event).ok()
     } else {
         None
     };
-    let policy_roles = if v3 {
+    let policy_roles = if v3 || v4 {
         match event_policy_roles(event) {
             Ok(roles) => roles,
             Err(err) => {
@@ -337,7 +384,7 @@ pub(super) fn check_policy(
     } else {
         vec!["auditor".into()]
     };
-    if v3 {
+    if v3 || v4 {
         if raw_policy_roles
             .as_ref()
             .is_some_and(|raw| raw != &policy_roles)
@@ -362,6 +409,12 @@ pub(super) fn check_policy(
             ));
         }
     }
+
+    let policy_principal_quorum = if v4 {
+        event_policy_principal_quorum(event)
+    } else {
+        false
+    };
 
     let fields = match (
         session,
@@ -392,6 +445,7 @@ pub(super) fn check_policy(
             policy_hash_text,
             policy_threshold,
             policy_roles: policy_roles.clone(),
+            policy_principal_quorum,
         }),
         _ => None,
     };
@@ -402,6 +456,7 @@ pub(super) fn check_policy(
             event,
             required_signatures,
             required_roles,
+            require_principals,
             fields.as_ref(),
             issues,
         );
@@ -411,6 +466,17 @@ pub(super) fn check_policy(
             event,
             required_signatures,
             required_roles,
+            require_principals,
+            fields.as_ref(),
+            issues,
+        );
+    } else if v4 {
+        check_v4_signatures(
+            repo,
+            event,
+            required_signatures,
+            required_roles,
+            require_principals,
             fields.as_ref(),
             issues,
         );
@@ -520,6 +586,7 @@ fn check_v1_signature(
         require_signed_policy: fields.signed_policy,
         policy_threshold: 1,
         policy_roles: vec!["auditor".into()],
+        policy_principal_quorum: false,
     };
     let statement = match policy_statement_bytes(
         fields.session,
