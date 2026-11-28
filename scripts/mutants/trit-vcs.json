@@ -4365,7 +4365,7 @@
   "file": "src/audit/policy_event.rs",
   "old": "    } else if v6 {",
   "new": "    } else if false && v6 {",
-  "filter": "audit::policy_event::tests::v6_reason_and_ticket_are_bound_to_the_signature",
+  "filter": "audit::policy_event::tests::reason_tests::v6_reason_and_ticket_are_bound_to_the_signature",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
@@ -4375,7 +4375,7 @@
   "file": "src/audit/policy_event/parse.rs",
   "old": "    if v6 && event.payload.get(\"require_policy_reason\").is_none() {",
   "new": "    if false && v6 && event.payload.get(\"require_policy_reason\").is_none() {",
-  "filter": "audit::policy_event::tests::v6_policy_event_requires_reason_fields",
+  "filter": "audit::policy_event::tests::reason_tests::v6_policy_event_requires_reason_fields",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
@@ -4385,7 +4385,7 @@
   "file": "src/audit/policy_event/parse.rs",
   "old": "    if require_reason && (!v6 || policy_reason.trim().is_empty()) {",
   "new": "    if false && require_reason && (!v6 || policy_reason.trim().is_empty()) {",
-  "filter": "audit::policy_event::tests::v6_policy_event_requires_reason_fields",
+  "filter": "audit::policy_event::tests::reason_tests::v6_policy_event_requires_reason_fields",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
@@ -4395,7 +4395,7 @@
   "file": "src/audit/policy_event/signature.rs",
   "old": "                fields.policy_reason,",
   "new": "                \"\",",
-  "filter": "audit::policy_event::tests::v6_reason_and_ticket_are_bound_to_the_signature",
+  "filter": "audit::policy_event::tests::reason_tests::v6_reason_and_ticket_are_bound_to_the_signature",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
@@ -4405,7 +4405,7 @@
   "file": "src/audit/policy_event/signature.rs",
   "old": "                fields.policy_ticket,",
   "new": "                None,",
-  "filter": "audit::policy_event::tests::v6_reason_and_ticket_are_bound_to_the_signature",
+  "filter": "audit::policy_event::tests::reason_tests::v6_reason_and_ticket_are_bound_to_the_signature",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
@@ -4415,7 +4415,7 @@
   "file": "src/audit/policy_event/parse.rs",
   "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5 || schema == POLICY_SCHEMA_V6\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
   "new": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
-  "filter": "audit::policy_event::tests::v6_policy_requires_signed_claim_replay_to_cover_the_new_schema",
+  "filter": "audit::policy_event::tests::reason_tests::v6_policy_requires_signed_claim_replay_to_cover_the_new_schema",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
