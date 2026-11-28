@@ -1,5 +1,5 @@
 use super::*;
-use crate::keys::TrustEntry;
+use crate::keys::{TrustEntry, TrustStore};
 use crate::signing::KeyFile;
 use serde_json::json;
 
@@ -18,7 +18,7 @@ fn add_key(repo: &mut Repo, key: &KeyFile, path: &std::path::Path, role: &str) {
     repo.add_key(
         TrustEntry {
             key_id: key.key_id.clone(),
-            principal: "qoder:policy".to_string(),
+            principal: format!("qoder:{role}"),
             role: role.to_string(),
             added_at_ms: 1_000,
             public_key: Some(key.public.clone()),
@@ -276,6 +276,34 @@ fn mixed_role_policy_requires_each_role_and_binds_role_list() {
             .iter()
             .any(|issue| issue.kind == "policy_signature_invalid"),
         "policy_roles 必须进入 v3 签名载荷"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn mixed_role_policy_rejects_same_principal_across_roles() {
+    let (root, repo, event) = mixed_role_event("mixed-role-principal");
+    let auditor_id = event.payload["signatures"][0]["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let release_id = event.payload["signatures"][1]["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut store = TrustStore::load(&root).unwrap();
+    let auditor_principal = store.keys[&auditor_id].principal.clone();
+    store.keys.get_mut(&release_id).unwrap().principal = auditor_principal;
+    store.save(&root).unwrap();
+
+    let report = crate::audit::status(&repo).unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == "policy_role_principal"),
+        "审计必须拒绝同一主体同时覆盖多个策略角色：{:?}",
+        report.issues
     );
     let _ = std::fs::remove_dir_all(&root);
 }

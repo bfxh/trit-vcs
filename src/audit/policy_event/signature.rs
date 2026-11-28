@@ -1,6 +1,6 @@
-//! v2/v3 策略事件的签名项验证：阈值按不同有效 key 计数，角色覆盖单独检查。
+//! v2/v3 策略事件的签名项验证：阈值按不同有效 key 计数，角色覆盖与主体分离单独检查。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -129,6 +129,7 @@ fn check_versioned_signatures(
     let mut seen = HashSet::new();
     let mut valid = 0usize;
     let mut covered = HashSet::new();
+    let mut principal_roles: HashMap<String, String> = HashMap::new();
     for entry in entries {
         let Some(value) = entry.as_object() else {
             issues.push(AuditIssue::new(
@@ -195,7 +196,7 @@ fn check_versioned_signatures(
                 continue;
             }
         };
-        if let Some(role) = verify_one_signer(
+        if let Some((role, principal)) = verify_one_signer(
             repo,
             event,
             key_id,
@@ -206,6 +207,19 @@ fn check_versioned_signatures(
             issues,
         ) {
             valid += 1;
+            if let Some(existing_role) = principal_roles.get(&principal)
+                && existing_role != &role
+            {
+                issues.push(AuditIssue::new(
+                    "policy_role_principal",
+                    format!(
+                        "第 {} 条 policy 事件由同一主体 {principal} 同时覆盖 {existing_role} 与 {role}",
+                        event.seq
+                    ),
+                ));
+                continue;
+            }
+            principal_roles.insert(principal, role.clone());
             covered.insert(role);
         }
     }

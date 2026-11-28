@@ -549,7 +549,7 @@ fn check_v1_signature(
         issues,
     );
     let mut covered = HashSet::new();
-    if let Some(role) = valid_role {
+    if let Some((role, _)) = valid_role {
         covered.insert(role);
     }
     if !covered.is_empty() && (1 < required_signatures || required_roles.len() > 1) {
@@ -575,7 +575,7 @@ fn verify_one_signer(
     required_roles: &[String],
     statement: &[u8],
     issues: &mut Vec<AuditIssue>,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let keys = match repo.keys() {
         Ok(keys) => keys,
         Err(err) => {
@@ -648,7 +648,7 @@ fn verify_one_signer(
         ));
         return None;
     }
-    Some(entry.role.clone())
+    Some((entry.role.clone(), entry.principal.clone()))
 }
 
 #[cfg(test)]

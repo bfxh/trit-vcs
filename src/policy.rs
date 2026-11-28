@@ -5,10 +5,10 @@
 //! 这里补上 `policy` 事件，并让 `policy_hash` 与 `state_digest` 使用同一套字节哈希。
 //!
 //! 可选 Ed25519 签名把“改策略的人”绑到事件：`policy set --sign-key` 会签
-//! 旧/新策略摘要、五个开关、阈值、session、时间和 key id；`require_signed_policy`
-//! 打开后，后续策略变更必须带足够数量的 `auditor` 签名，否则审计判红。
+//! 旧/新策略摘要、五个开关、阈值、角色集合、session、时间和 key id；`require_signed_policy`
+//! 打开后，后续策略变更必须带足够数量、覆盖所需角色且由不同主体批准的策略签名，否则审计判红。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -308,7 +308,7 @@ fn ensure_trusted_signer(
     repo: &Repo,
     key: &KeyFile,
     required_roles: &[String],
-) -> Result<String, RepoError> {
+) -> Result<(String, String), RepoError> {
     let keys = repo.keys()?;
     let Some(entry) = keys.keys.get(&key.key_id) else {
         return Err(RepoError::BadHead(format!(
@@ -333,7 +333,7 @@ fn ensure_trusted_signer(
             entry.role
         )));
     }
-    Ok(entry.role.clone())
+    Ok((entry.role.clone(), entry.principal.clone()))
 }
 
 impl Repo {
@@ -399,6 +399,7 @@ impl Repo {
         }
         let mut seen = HashSet::new();
         let mut covered = HashSet::new();
+        let mut principal_roles: HashMap<String, String> = HashMap::new();
         for key in &keys {
             if !seen.insert(key.key_id.clone()) {
                 return Err(RepoError::BadHead(format!(
@@ -406,7 +407,16 @@ impl Repo {
                     key.key_id
                 )));
             }
-            let role = ensure_trusted_signer(self, key, &required_roles)?;
+            let (role, principal) = ensure_trusted_signer(self, key, &required_roles)?;
+            if let Some(existing_role) = principal_roles.get(&principal) {
+                if existing_role != &role {
+                    return Err(RepoError::BadHead(format!(
+                        "同一主体不能同时批准多个策略角色：{principal} 同时覆盖 {existing_role} 与 {role}"
+                    )));
+                }
+            } else {
+                principal_roles.insert(principal, role.clone());
+            }
             covered.insert(role);
         }
         if let Some(missing) = required_roles

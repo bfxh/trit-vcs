@@ -4071,6 +4071,26 @@
   "target": "lib"
  },
  {
+  "name": "vcs: 混合角色允许同一主体覆盖两个角色",
+  "file": "src/policy.rs",
+  "old": "            if let Some(existing_role) = principal_roles.get(&principal) {\n                if existing_role != &role {",
+  "new": "            if let Some(existing_role) = principal_roles.get(&principal) {\n                if false && existing_role != &role {",
+  "filter": "policy::tests::mixed_role_policy_rejects_same_principal_for_two_roles",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不拦同一主体覆盖多个策略角色",
+  "file": "src/audit/policy_event/signature.rs",
+  "old": "            if let Some(existing_role) = principal_roles.get(&principal)\n                && existing_role != &role\n            {",
+  "new": "            if let Some(existing_role) = principal_roles.get(&principal)\n                && existing_role == &role\n            {",
+  "filter": "audit::policy_event::tests::mixed_role_policy_rejects_same_principal_across_roles",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
   "name": "vcs: 认领签名审计只把 v1/v2 策略当版本化",
   "file": "src/audit/policy_event.rs",
   "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
