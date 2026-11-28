@@ -15,6 +15,15 @@
   `txn_corrupt`）；`audit status` 对残留 `.tritvcs/txn/` 报 `txn_pending`，顶层 `verify` 因此判红。
   清理先原子改名为 `txn.trash` 再删，避免删到一半留下无 `meta.json` 的不可恢复现场。新增 3 个库面
   回归（回滚并收口、孤儿快照丢弃、坏 `meta.json` 失败闭合）与 1 个 CLI 回归（残留事务让 `verify` 报 `txn_pending`）。
+- 崩溃回滚回收本次操作新增对象：`meta.json` 记操作开始时的 pack/index 字节水位；恢复时先回滚状态并校验
+  `state_digest`，再按水位截断对象库尾部，回收操作体写入但未被已提交状态引用的块和索引行；历史对象都在水位之前，
+  不受影响。旧 `meta.json` 没有 `objects` 字段时跳过对象截断，只恢复状态文件。水位比当前文件长时报
+  `StoreError::BadWatermark`（kind `store_bad_watermark`），不反向撑大文件。新增 1 个库面回归：模拟操作写完对象
+  后崩溃，下一次写必须把对象库恢复到操作前水位。边界：只回收崩溃操作追加的尾部，不处理历史已索引但不可达的孤立对象。
+- 对象写入加 RAII 尾部租约：`put_chunk` 在追加 pack 前记水位，正常写完才 `commit`；索引追加失败、提前返回或
+  可展开的 panic 由 `Drop` 把 pack/index 截回写前状态，不再留下“payload 已写但索引没写”的尾块。新增 1 个库面回归：
+  把 `index.jsonl` 换成目录制造追加失败，断言 pack 长度回到 0 且后续写仍成功。`SIGKILL`/断电不跑 `Drop`，仍由事务
+  快照里的持久水位兜底。
 - 顶层 `trit-vcs verify` 接审计对账：改用 `Repo::open_for_audit` 打开，对象/提交检查后复用
   `audit::status`；`journal_missing`、`head_mismatch`、`journal_broken` 等 issue 以及
   `open_ops > 0` 的未收口操作都直接判 `verify_audit` 失败，`--json` 同时返回 verify 读数与 audit 报告。新增 5 个 CLI 回归，覆盖

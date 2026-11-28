@@ -4479,5 +4479,25 @@
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
+ },
+ {
+  "name": "vcs: 崩溃回滚不回收本次操作新增的对象",
+  "file": "src/repo/txn.rs",
+  "old": "                if let Some(objects) = meta.objects {\n                    // 状态已经安全回到操作前，再回收操作体可能写进对象库的\n                    // 新块和索引行；对象只追加，截回旧水位不会碰到历史对象。\n                    self.store.truncate_to(objects)?;\n                }",
+  "new": "                if let Some(objects) = meta.objects {\n                    let _ = objects;\n                }",
+  "filter": "repo::tests::crash_rollback_reclaims_objects_written_by_the_operation",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 对象索引写失败后不截回 pack 尾块",
+  "file": "src/store/gc.rs",
+  "old": "        if !self.committed {\n            // 原始错误优先返回；回收失败由后续打开/审计再暴露，不能在这里覆盖它。\n            let _ = self.store.truncate_to(self.watermark);\n        }",
+  "new": "        if !self.committed {\n            // 不截\n        }",
+  "filter": "store::gc::tests::failed_index_append_rolls_back_pack_tail",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
  }
 ]

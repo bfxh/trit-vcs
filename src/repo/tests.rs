@@ -646,6 +646,48 @@ fn crash_after_begin_rolls_back_state_on_next_write() {
 }
 
 #[test]
+fn crash_rollback_reclaims_objects_written_by_the_operation() {
+    let root = temp("txn-objects");
+    let mut repo = Repo::init(&root).unwrap();
+    repo.stage(&files(&[("a.txt", "one")]), 1_000).unwrap();
+    let first = repo
+        .commit(CommitRequest {
+            message: "first".to_string(),
+            session: "qoder:s1".to_string(),
+            claims: vec![claim("qoder:s1", &["a.txt"], 9_999)],
+            now_secs: 1_000,
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    let guard = repo.lock_state().unwrap();
+    let mark = repo.store.watermark().unwrap();
+    repo.begin_operation_locked("simulate_object_crash", json!({}), 2_000)
+        .unwrap();
+    let orphan = Hash::of(b"orphan-object");
+    let (id, is_new) = repo.store.put_chunk(b"orphan-object").unwrap();
+    assert!(is_new);
+    assert_eq!(id, orphan);
+    assert!(repo.store.has(&orphan));
+    drop(guard);
+    drop(repo);
+
+    let mut reopened = Repo::open(&root).unwrap();
+    assert!(reopened.pending_txn().is_some());
+    reopened.set_ref("main", &first).unwrap();
+    assert!(reopened.pending_txn().is_none());
+    assert!(!reopened.store.has(&orphan), "操作新增的对象必须回收");
+    assert_eq!(
+        reopened.store.watermark().unwrap(),
+        mark,
+        "对象库应回到操作前水位"
+    );
+    assert_eq!(reopened.head().unwrap(), Some(first));
+    assert!(crate::audit::status(&reopened).unwrap().ok);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn corrupt_txn_meta_blocks_writes_instead_of_guessing() {
     let root = temp("txn-corrupt");
     let mut repo = Repo::init(&root).unwrap();

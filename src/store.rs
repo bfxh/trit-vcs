@@ -71,7 +71,12 @@ pub enum StoreError {
     Locked(String),
     #[error("索引行坏了：{0}")]
     BadIndex(String),
+    #[error("对象库水位对不上：{0}")]
+    BadWatermark(String),
 }
+
+mod gc;
+pub(crate) use gc::ObjectWatermark;
 
 /// 对象库：`objects/pack-000001.pack` + `objects/index.jsonl`。
 #[derive(Clone, Debug)]
@@ -181,6 +186,7 @@ impl Store {
         }
         let lock = self.lock()?;
         let result = (|| -> Result<(), StoreError> {
+            let tail = self.tail_guard()?;
             let full = compress(bytes)?;
             let mut plan = PackPlan::full(full);
             if let Some(base_hash) = base
@@ -198,7 +204,9 @@ impl Store {
                 prefix: plan.prefix,
                 suffix: plan.suffix,
             };
-            self.append_index(&hash, entry)
+            self.append_index(&hash, entry)?;
+            tail.commit();
+            Ok(())
         })();
         let _ = fs::remove_file(&lock);
         result?;
