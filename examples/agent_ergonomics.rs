@@ -103,6 +103,7 @@ fn main() {
             require_signed_claims: false,
             require_signed_witness: false,
             require_signed_policy: false,
+            require_policy_reason: false,
             policy_threshold: 1,
             policy_roles: vec!["auditor".to_string()],
             policy_principal_quorum: false,

@@ -620,3 +620,116 @@ fn role_thresholds_are_validated_and_bound_to_the_policy() {
     );
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn policy_reason_is_required_and_bound_to_v6_statement() {
+    let (root, mut repo, _key, key_path) = signed_setup("policy-reason");
+    let strict_reason = Policy {
+        require_signed_policy: true,
+        require_policy_reason: true,
+        ..Default::default()
+    };
+    let err = repo
+        .set_policy_with_signers(&strict_reason, "qoder:policy", 2_000, &[&key_path])
+        .unwrap_err();
+    assert!(err.to_string().contains("--policy-reason"), "{err}");
+    repo.set_policy_with_reason_and_signers(
+        &strict_reason,
+        "qoder:policy",
+        2_000,
+        &[&key_path],
+        Some("  rotate auditor key  "),
+        Some("OPS-42"),
+    )
+    .unwrap();
+    let report = crate::audit::status(&repo).unwrap();
+    assert!(report.ok, "{:?}", report.issues);
+    let event = repo
+        .journal()
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.kind == "policy")
+        .unwrap();
+    assert_eq!(event.payload["schema"], POLICY_SCHEMA_V6);
+    assert_eq!(event.payload["require_policy_reason"], true);
+    assert_eq!(event.payload["policy_reason"], "rotate auditor key");
+    assert_eq!(event.payload["policy_ticket"], "OPS-42");
+
+    let closed = Policy {
+        require_signed_policy: true,
+        ..Default::default()
+    };
+    let err = repo
+        .set_policy_with_signers(&closed, "qoder:policy", 2_500, &[&key_path])
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("--policy-reason"),
+        "关闭原因开关也必须说明原因：{err}"
+    );
+    repo.set_policy_with_reason_and_signers(
+        &closed,
+        "qoder:policy",
+        2_500,
+        &[&key_path],
+        Some("关闭原因门槛"),
+        None,
+    )
+    .unwrap();
+    let report = crate::audit::status(&repo).unwrap();
+    assert!(report.ok, "{:?}", report.issues);
+    let event = repo
+        .journal()
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.kind == "policy")
+        .unwrap();
+    assert_eq!(event.payload["schema"], POLICY_SCHEMA_V6);
+    assert_eq!(event.payload["require_policy_reason"], false);
+    assert_eq!(event.payload["policy_reason"], "关闭原因门槛");
+    assert!(event.payload["policy_ticket"].is_null());
+    let _ = fs::remove_dir_all(&root);
+
+    let policy = Policy {
+        require_policy_reason: true,
+        policy_threshold: 2,
+        policy_roles: vec!["auditor".into(), "release".into()],
+        ..Default::default()
+    };
+    let first = policy_statement_v6_bytes(
+        "qoder:policy",
+        &policy,
+        "rotate",
+        Some("OPS-1"),
+        None,
+        "policy",
+        2_000,
+        "key",
+    )
+    .unwrap();
+    let second = policy_statement_v6_bytes(
+        "qoder:policy",
+        &policy,
+        "rotate",
+        Some("OPS-2"),
+        None,
+        "policy",
+        2_000,
+        "key",
+    )
+    .unwrap();
+    assert_ne!(first, second, "工单必须进入 v6 签名载荷");
+    let third = policy_statement_v6_bytes(
+        "qoder:policy",
+        &policy,
+        "compromise",
+        Some("OPS-1"),
+        None,
+        "policy",
+        2_000,
+        "key",
+    )
+    .unwrap();
+    assert_ne!(first, third, "原因必须进入 v6 签名载荷");
+}

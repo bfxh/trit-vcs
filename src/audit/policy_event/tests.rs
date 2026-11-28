@@ -1,3 +1,5 @@
+mod reason_tests;
+
 use super::*;
 use crate::keys::{TrustEntry, TrustStore};
 use crate::signing::KeyFile;
@@ -246,6 +248,7 @@ fn issues_with_role_mins(
         roles,
         role_mins,
         require_principals,
+        false,
         None,
         &mut issues,
         &mut warnings,

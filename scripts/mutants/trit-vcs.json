@@ -2432,7 +2432,7 @@
  },
  {
   "name": "vcs: 新版策略缺签名字段时回放为不要求",
-  "file": "src/audit/policy_event.rs",
+  "file": "src/audit/policy_event/parse.rs",
   "old": "        .unwrap_or(versioned)",
   "new": "        .unwrap_or(false)",
   "filter": "versioned_policy_without_signed_claim_flag_fails_closed",
@@ -2483,7 +2483,7 @@
  {
   "name": "vcs: policy 审计把显式非字符串 schema 当旧事件",
   "file": "src/audit/policy_event.rs",
-  "old": "    if event.payload.get(\"schema\").is_some()\n        && schema.is_none_or(|schema| {\n            schema != POLICY_SCHEMA\n                && schema != POLICY_SCHEMA_V2\n                && schema != POLICY_SCHEMA_V3\n                && schema != POLICY_SCHEMA_V4\n                && schema != POLICY_SCHEMA_V5\n        })\n    {",
+  "old": "    if event.payload.get(\"schema\").is_some()\n        && schema.is_none_or(|schema| {\n            schema != POLICY_SCHEMA\n                && schema != POLICY_SCHEMA_V2\n                && schema != POLICY_SCHEMA_V3\n                && schema != POLICY_SCHEMA_V4\n                && schema != POLICY_SCHEMA_V5\n                && schema != POLICY_SCHEMA_V6\n        })\n    {",
   "new": "    if schema.is_some_and(|schema| {\n        schema != POLICY_SCHEMA\n            && schema != POLICY_SCHEMA_V2\n            && schema != POLICY_SCHEMA_V3\n            && schema != POLICY_SCHEMA_V4\n            && schema != POLICY_SCHEMA_V5\n    }) {",
   "filter": "explicit_non_string_policy_schema_is_red",
   "pkg": "trit-vcs",
@@ -2732,7 +2732,7 @@
  },
  {
   "name": "vcs: 审计把非法严格见证策略当关闭",
-  "file": "src/audit/policy_event.rs",
+  "file": "src/audit/policy_event/parse.rs",
   "old": "        Some(_) => true,",
   "new": "        Some(_) => false,",
   "filter": "policy_event_accepts_legacy_shape_but_rejects_non_boolean_signed_witness",
@@ -2742,7 +2742,7 @@
  },
  {
   "name": "vcs: 审计把新版缺失严格见证策略当关闭",
-  "file": "src/audit/policy_event.rs",
+  "file": "src/audit/policy_event/parse.rs",
   "old": "        None => versioned,",
   "new": "        None => false,",
   "filter": "policy_event_accepts_legacy_shape_but_rejects_non_boolean_signed_witness",
@@ -3942,7 +3942,7 @@
  },
  {
   "name": "vcs: 认领签名审计只把 v1 策略当版本化",
-  "file": "src/audit/policy_event.rs",
+  "file": "src/audit/policy_event/parse.rs",
   "old": "    event\n        .payload\n        .get(\"require_signed_claims\")\n        .and_then(Value::as_bool)\n        .unwrap_or(versioned)",
   "new": "    event\n        .payload\n        .get(\"require_signed_claims\")\n        .and_then(Value::as_bool)\n        .unwrap_or(false)",
   "filter": "audit::extra_tests::v2_policy_requires_signed_claim_replay_to_cover_the_new_schema",
@@ -4092,8 +4092,8 @@
  },
  {
   "name": "vcs: 认领签名审计只把 v1/v2 策略当版本化",
-  "file": "src/audit/policy_event.rs",
-  "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
+  "file": "src/audit/policy_event/parse.rs",
+  "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5 || schema == POLICY_SCHEMA_V6\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
   "new": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
   "filter": "audit::policy_event::tests::v3_policy_requires_signed_claim_replay_to_cover_the_new_schema",
   "pkg": "trit-vcs",
@@ -4173,8 +4173,8 @@
  {
   "name": "vcs: v4 事件不记录角色集合",
   "file": "src/policy.rs",
-  "old": "            if custom_roles || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5 {",
-  "new": "            if custom_roles || schema == POLICY_SCHEMA_V5 {",
+  "old": "            if custom_roles\n                || schema == POLICY_SCHEMA_V4\n                || schema == POLICY_SCHEMA_V5\n                || schema == POLICY_SCHEMA_V6\n            {",
+  "new": "            if custom_roles\n                || schema == POLICY_SCHEMA_V5\n                || schema == POLICY_SCHEMA_V6\n            {",
   "filter": "policy::tests::principal_quorum_requires_distinct_principals_not_just_distinct_keys",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -4182,9 +4182,9 @@
  },
  {
   "name": "vcs: v4 策略不参与认领签名重放",
-  "file": "src/audit/policy_event.rs",
-  "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
-  "new": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V5\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
+  "file": "src/audit/policy_event/parse.rs",
+  "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5 || schema == POLICY_SCHEMA_V6\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
+  "new": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V5 || schema == POLICY_SCHEMA_V6\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
   "filter": "audit::policy_event::tests::v4_policy_requires_signed_claim_replay_to_cover_the_new_schema",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -4222,9 +4222,9 @@
  },
  {
   "name": "vcs: v5 策略签名不覆盖角色阈值",
-  "file": "src/policy.rs",
-  "old": "        policy_role_thresholds: &policy.policy_role_thresholds,",
-  "new": "        policy_role_thresholds: &BTreeMap::new(),",
+  "file": "src/policy/statements.rs",
+  "old": "    serde_json::to_vec(&PolicyStatementV5 {\n        schema: POLICY_SCHEMA_V5,\n        action: \"set\",\n        session,\n        require_witness: policy.require_witness,\n        require_intent: policy.require_intent,\n        require_signed_claims: policy.require_signed_claims,\n        require_signed_witness: policy.require_signed_witness,\n        require_signed_policy: policy.require_signed_policy,\n        policy_threshold: policy.policy_threshold,\n        policy_roles: &policy.policy_roles,\n        policy_role_thresholds: &policy.policy_role_thresholds,",
+  "new": "    serde_json::to_vec(&PolicyStatementV5 {\n        schema: POLICY_SCHEMA_V5,\n        action: \"set\",\n        session,\n        require_witness: policy.require_witness,\n        require_intent: policy.require_intent,\n        require_signed_claims: policy.require_signed_claims,\n        require_signed_witness: policy.require_signed_witness,\n        require_signed_policy: policy.require_signed_policy,\n        policy_threshold: policy.policy_threshold,\n        policy_roles: &policy.policy_roles,\n        policy_role_thresholds: &BTreeMap::new(),",
   "filter": "policy::tests::policy_role_thresholds_change_the_v5_statement_bytes",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -4233,8 +4233,8 @@
  {
   "name": "vcs: 角色阈值策略仍写 v4 事件",
   "file": "src/policy.rs",
-  "old": "        let schema = if !policy_owned.policy_role_thresholds.is_empty() {",
-  "new": "        let schema = if false && !policy_owned.policy_role_thresholds.is_empty() {",
+  "old": "        } else if !policy_owned.policy_role_thresholds.is_empty() {",
+  "new": "        } else if false && !policy_owned.policy_role_thresholds.is_empty() {",
   "filter": "policy::tests::role_thresholds_require_distinct_role_signatures",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -4282,9 +4282,9 @@
  },
  {
   "name": "vcs: v5 策略不参与认领签名重放",
-  "file": "src/audit/policy_event.rs",
-  "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
-  "new": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
+  "file": "src/audit/policy_event/parse.rs",
+  "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5 || schema == POLICY_SCHEMA_V6\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
+  "new": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V6\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
   "filter": "audit::policy_event::tests::v5_policy_requires_signed_claim_replay_to_cover_the_new_schema",
   "pkg": "trit-vcs",
   "runner": "cargo",
@@ -4293,9 +4293,129 @@
  {
   "name": "vcs: 审计不校验 v5 角色阈值对象",
   "file": "src/audit/policy_event.rs",
-  "old": "    if v5 {",
-  "new": "    if false && v5 {",
+  "old": "    if v5 || v6 {",
+  "new": "    if false && (v5 || v6) {",
   "filter": "audit::policy_event::tests::v5_policy_event_rejects_noncanonical_role_thresholds",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 策略写入忽略变更原因要求",
+  "file": "src/policy.rs",
+  "old": "        if (current.require_policy_reason || next.require_policy_reason) && reason.is_none() {",
+  "new": "        if false && (current.require_policy_reason || next.require_policy_reason) && reason.is_none() {",
+  "filter": "policy::tests::policy_reason_is_required_and_bound_to_v6_statement",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: v6 策略签名不覆盖变更原因",
+  "file": "src/policy/statements.rs",
+  "old": "        policy_reason: reason,",
+  "new": "        policy_reason: \"\",",
+  "filter": "policy::tests::policy_reason_is_required_and_bound_to_v6_statement",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: v6 策略签名不覆盖工单",
+  "file": "src/policy/statements.rs",
+  "old": "        policy_ticket: ticket,",
+  "new": "        policy_ticket: None,",
+  "filter": "policy::tests::policy_reason_is_required_and_bound_to_v6_statement",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 原因策略仍写 v5 事件",
+  "file": "src/policy.rs",
+  "old": "        let schema = if current.require_policy_reason\n            || policy_owned.require_policy_reason\n            || reason.is_some()\n            || ticket.is_some()\n        {",
+  "new": "        let schema = if false\n            && (current.require_policy_reason\n                || policy_owned.require_policy_reason\n                || reason.is_some()\n                || ticket.is_some())\n        {",
+  "filter": "policy::tests::policy_reason_is_required_and_bound_to_v6_statement",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: v6 事件不记录变更原因",
+  "file": "src/policy.rs",
+  "old": "                payload[\"policy_reason\"] = json!(reason_owned);",
+  "new": "                payload[\"policy_reason\"] = json!(\"\");",
+  "filter": "policy::tests::policy_reason_is_required_and_bound_to_v6_statement",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: v6 事件不记录工单",
+  "file": "src/policy.rs",
+  "old": "                payload[\"policy_ticket\"] = json!(ticket_owned);",
+  "new": "                payload[\"policy_ticket\"] = json!(null);",
+  "filter": "policy::tests::policy_reason_is_required_and_bound_to_v6_statement",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: v6 原因事件不分发到 v6 验证",
+  "file": "src/audit/policy_event.rs",
+  "old": "    } else if v6 {",
+  "new": "    } else if false && v6 {",
+  "filter": "audit::policy_event::tests::v6_reason_and_ticket_are_bound_to_the_signature",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不校验 v6 原因开关字段",
+  "file": "src/audit/policy_event/parse.rs",
+  "old": "    if v6 && event.payload.get(\"require_policy_reason\").is_none() {",
+  "new": "    if false && v6 && event.payload.get(\"require_policy_reason\").is_none() {",
+  "filter": "audit::policy_event::tests::v6_policy_event_requires_reason_fields",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: 审计不要求非空变更原因",
+  "file": "src/audit/policy_event/parse.rs",
+  "old": "    if require_reason && (!v6 || policy_reason.trim().is_empty()) {",
+  "new": "    if false && require_reason && (!v6 || policy_reason.trim().is_empty()) {",
+  "filter": "audit::policy_event::tests::v6_policy_event_requires_reason_fields",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: v6 验证不覆盖变更原因",
+  "file": "src/audit/policy_event/signature.rs",
+  "old": "                fields.policy_reason,",
+  "new": "                \"\",",
+  "filter": "audit::policy_event::tests::v6_reason_and_ticket_are_bound_to_the_signature",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: v6 验证不覆盖工单",
+  "file": "src/audit/policy_event/signature.rs",
+  "old": "                fields.policy_ticket,",
+  "new": "                None,",
+  "filter": "audit::policy_event::tests::v6_reason_and_ticket_are_bound_to_the_signature",
+  "pkg": "trit-vcs",
+  "runner": "cargo",
+  "target": "lib"
+ },
+ {
+  "name": "vcs: v6 策略不参与认领签名重放",
+  "file": "src/audit/policy_event/parse.rs",
+  "old": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5 || schema == POLICY_SCHEMA_V6\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
+  "new": "    let versioned = matches!(\n        event.payload.get(\"schema\").and_then(Value::as_str),\n        Some(schema) if schema == POLICY_SCHEMA || schema == POLICY_SCHEMA_V2 || schema == POLICY_SCHEMA_V3 || schema == POLICY_SCHEMA_V4 || schema == POLICY_SCHEMA_V5\n    );\n    event\n        .payload\n        .get(\"require_signed_claims\")",
+  "filter": "audit::policy_event::tests::v6_policy_requires_signed_claim_replay_to_cover_the_new_schema",
   "pkg": "trit-vcs",
   "runner": "cargo",
   "target": "lib"
