@@ -95,9 +95,10 @@ jobs:
   mutation:
     name: mutation gate (${{ matrix.target }})
     runs-on: ubuntu-latest
-    # 350 条登记顺序重编已经顶到 60 分钟上限（2026-11-26 实测 60:14 被取消）；
-    # 加到 90 分钟留出 runner 抖动，不靠删条目换速度。
-    timeout-minutes: 90
+    # 448 条登记顺序重编顶到 90 分钟上限（2026-11-28 实测 90:16 被取消）；
+    # 状态快照让每次仓库操作的测试更慢，加到 120 分钟留出 runner 抖动，
+    # 与 nightly 全量口径一致，不靠删条目换速度。
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
