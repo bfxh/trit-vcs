@@ -406,6 +406,127 @@ fn mixed_role_policy_cli_requires_auditor_and_release() {
 }
 
 #[test]
+fn principal_quorum_cli_requires_distinct_principals() {
+    let root = temp("principal-quorum");
+    let init = run(&root, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    for (key_file, principal, role) in [
+        ("policy-first.key", "qoder:shared", "auditor"),
+        ("policy-second.key", "qoder:shared", "auditor"),
+        ("policy-third.key", "qoder:other", "auditor"),
+    ] {
+        let key = run(&root, &["key", "init", "--out", key_file, "--json"]);
+        assert!(key.status.success(), "{}", stderr(&key));
+        let add = run(
+            &root,
+            &[
+                "key",
+                "add",
+                "--key-file",
+                key_file,
+                "--principal",
+                principal,
+                "--role",
+                role,
+                "--owner",
+                "qoder:policy",
+            ],
+        );
+        assert!(add.status.success(), "{}", stderr(&add));
+    }
+
+    let key_quorum = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "2",
+            "--sign-key",
+            "policy-first.key",
+            "--sign-key",
+            "policy-second.key",
+            "--json",
+        ],
+    );
+    assert!(
+        key_quorum.status.success(),
+        "旧 key 计票模式应允许同一主体的两把 key：{}",
+        stderr(&key_quorum)
+    );
+
+    let same_principal = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "2",
+            "--policy-principal-quorum",
+            "--sign-key",
+            "policy-first.key",
+            "--sign-key",
+            "policy-second.key",
+            "--json",
+        ],
+    );
+    assert!(
+        !same_principal.status.success(),
+        "主体计票不能被同一主体的两把 key 满足"
+    );
+    assert!(
+        stderr(&same_principal).contains("不同主体"),
+        "{}",
+        stderr(&same_principal)
+    );
+
+    let distinct = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "2",
+            "--policy-principal-quorum",
+            "--sign-key",
+            "policy-first.key",
+            "--sign-key",
+            "policy-third.key",
+            "--json",
+        ],
+    );
+    assert!(distinct.status.success(), "{}", stderr(&distinct));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&distinct)).unwrap();
+    assert_eq!(value["policy_principal_quorum"], true);
+    assert_eq!(value["signer_count"], 2);
+
+    let audit = run(&root, &["audit", "status", "--json"]);
+    assert!(audit.status.success(), "{}", stderr(&audit));
+    let log = run(&root, &["audit", "log", "--json"]);
+    assert!(log.status.success(), "{}", stderr(&log));
+    let events: serde_json::Value = serde_json::from_str(&stdout(&log)).unwrap();
+    let policy = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["kind"] == "policy")
+        .unwrap();
+    assert_eq!(policy["payload"]["schema"], "trit-policy-v4");
+    assert_eq!(policy["payload"]["policy_principal_quorum"], true);
+    assert_eq!(policy["payload"]["signatures"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn policy_set_is_audited_and_manual_edit_is_red() {
     let root = temp("flow");
     let init = run(&root, &["init"]);

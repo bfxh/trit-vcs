@@ -1,4 +1,5 @@
-//! v2/v3 策略事件的签名项验证：阈值按不同有效 key 计数，角色覆盖与主体分离单独检查。
+//! v2/v3/v4 策略事件的签名项验证：阈值按不同有效 key 或主体计数，
+//! 角色覆盖与主体分离单独检查。
 
 use std::collections::{HashMap, HashSet};
 
@@ -6,7 +7,9 @@ use serde_json::Value;
 
 use crate::audit::AuditIssue;
 use crate::journal::Event;
-use crate::policy::{Policy, policy_statement_v2_bytes, policy_statement_v3_bytes};
+use crate::policy::{
+    Policy, policy_statement_v2_bytes, policy_statement_v3_bytes, policy_statement_v4_bytes,
+};
 
 use super::{SignedFields, verify_one_signer};
 
@@ -15,6 +18,7 @@ pub(super) fn check_v2_signatures(
     event: &Event,
     required_signatures: usize,
     required_roles: &[String],
+    require_principals: bool,
     fields: Option<&SignedFields<'_>>,
     issues: &mut Vec<AuditIssue>,
 ) {
@@ -23,8 +27,9 @@ pub(super) fn check_v2_signatures(
         event,
         required_signatures,
         required_roles,
+        require_principals,
         fields,
-        false,
+        2,
         issues,
     );
 }
@@ -34,6 +39,7 @@ pub(super) fn check_v3_signatures(
     event: &Event,
     required_signatures: usize,
     required_roles: &[String],
+    require_principals: bool,
     fields: Option<&SignedFields<'_>>,
     issues: &mut Vec<AuditIssue>,
 ) {
@@ -42,19 +48,43 @@ pub(super) fn check_v3_signatures(
         event,
         required_signatures,
         required_roles,
+        require_principals,
         fields,
-        true,
+        3,
         issues,
     );
 }
 
+pub(super) fn check_v4_signatures(
+    repo: &crate::repo::Repo,
+    event: &Event,
+    required_signatures: usize,
+    required_roles: &[String],
+    require_principals: bool,
+    fields: Option<&SignedFields<'_>>,
+    issues: &mut Vec<AuditIssue>,
+) {
+    check_versioned_signatures(
+        repo,
+        event,
+        required_signatures,
+        required_roles,
+        require_principals,
+        fields,
+        4,
+        issues,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
 fn check_versioned_signatures(
     repo: &crate::repo::Repo,
     event: &Event,
     required_signatures: usize,
     required_roles: &[String],
+    require_principals: bool,
     fields: Option<&SignedFields<'_>>,
-    include_roles: bool,
+    version: u8,
     issues: &mut Vec<AuditIssue>,
 ) {
     let Some(fields) = fields else {
@@ -125,6 +155,7 @@ fn check_versioned_signatures(
         require_signed_policy: fields.signed_policy,
         policy_threshold: fields.policy_threshold,
         policy_roles: fields.policy_roles.clone(),
+        policy_principal_quorum: fields.policy_principal_quorum,
     };
     let mut seen = HashSet::new();
     let mut valid = 0usize;
@@ -167,24 +198,31 @@ fn check_versioned_signatures(
             ));
             continue;
         }
-        let statement = if include_roles {
-            policy_statement_v3_bytes(
+        let statement = match version {
+            4 => policy_statement_v4_bytes(
                 fields.session,
                 &policy,
                 fields.previous_text,
                 fields.policy_hash_text,
                 signed_at_ms,
                 key_id,
-            )
-        } else {
-            policy_statement_v2_bytes(
+            ),
+            3 => policy_statement_v3_bytes(
                 fields.session,
                 &policy,
                 fields.previous_text,
                 fields.policy_hash_text,
                 signed_at_ms,
                 key_id,
-            )
+            ),
+            _ => policy_statement_v2_bytes(
+                fields.session,
+                &policy,
+                fields.previous_text,
+                fields.policy_hash_text,
+                signed_at_ms,
+                key_id,
+            ),
         };
         let statement = match statement {
             Ok(bytes) => bytes,
@@ -229,6 +267,16 @@ fn check_versioned_signatures(
             format!(
                 "第 {} 条 policy 事件有 {valid} 个有效签名，要求 {required_signatures} 个",
                 event.seq
+            ),
+        ));
+    }
+    if require_principals && principal_roles.len() < required_signatures {
+        issues.push(AuditIssue::new(
+            "policy_principal_insufficient",
+            format!(
+                "第 {} 条 policy 事件只覆盖 {} 个不同主体，要求 {required_signatures} 个",
+                event.seq,
+                principal_roles.len()
             ),
         ));
     }

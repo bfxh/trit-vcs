@@ -14,7 +14,7 @@ use super::{flag, flags, has, now_secs, positionals, repo_path};
 
 const USAGE: &str = "policy 用法：\n  \
      trit-vcs policy [--json] [--repo PATH]\n  \
-     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--require-signed-policy] [--policy-threshold N] [--policy-role auditor|release]... [--sign-key FILE]... [--json] [--repo PATH]";
+     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--require-signed-policy] [--policy-threshold N] [--policy-role auditor|release]... [--policy-principal-quorum] [--sign-key FILE]... [--json] [--repo PATH]";
 
 fn show(repo: &Repo, args: &[String]) -> ExitCode {
     let policy = match repo.policy() {
@@ -32,6 +32,7 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
                 "require_signed_policy": policy.require_signed_policy,
                 "policy_threshold": policy.policy_threshold,
                 "policy_roles": policy.policy_roles,
+                "policy_principal_quorum": policy.policy_principal_quorum,
             }))
             .unwrap_or_else(|_| "{}".to_string())
         );
@@ -43,6 +44,7 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
         println!("require_signed_policy={}", policy.require_signed_policy);
         println!("policy_threshold={}", policy.policy_threshold);
         println!("policy_roles={}", policy.policy_roles.join(","));
+        println!("policy_principal_quorum={}", policy.policy_principal_quorum);
     }
     ExitCode::SUCCESS
 }
@@ -93,6 +95,7 @@ fn set(args: &[String]) -> ExitCode {
         require_signed_policy: has(args, "--require-signed-policy"),
         policy_threshold: threshold,
         policy_roles: roles.clone(),
+        policy_principal_quorum: has(args, "--policy-principal-quorum"),
     };
     let signer_paths = flags(args, "--sign-key")
         .into_iter()
@@ -116,6 +119,7 @@ fn set(args: &[String]) -> ExitCode {
                         "require_signed_policy": policy.require_signed_policy,
                         "policy_threshold": policy.policy_threshold,
                         "policy_roles": policy.policy_roles,
+                        "policy_principal_quorum": policy.policy_principal_quorum,
                         "signed": !signers.is_empty(),
                         "signer_count": signers.len(),
                         "policy": hash.to_hex(),
@@ -124,7 +128,7 @@ fn set(args: &[String]) -> ExitCode {
                 );
             } else {
                 println!(
-                    "策略已更新：require_witness={} require_intent={} require_signed_claims={} require_signed_witness={} require_signed_policy={} policy_threshold={} policy_roles={}（policy {}{}）",
+                    "策略已更新：require_witness={} require_intent={} require_signed_claims={} require_signed_witness={} require_signed_policy={} policy_threshold={} policy_roles={} policy_principal_quorum={}（policy {}{}）",
                     policy.require_witness,
                     policy.require_intent,
                     policy.require_signed_claims,
@@ -132,6 +136,7 @@ fn set(args: &[String]) -> ExitCode {
                     policy.require_signed_policy,
                     policy.policy_threshold,
                     policy.policy_roles.join(","),
+                    policy.policy_principal_quorum,
                     hash.short(),
                     if signers.is_empty() {
                         ""
