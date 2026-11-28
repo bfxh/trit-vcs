@@ -1,7 +1,7 @@
 # trit-vcs 审计强度路线图
 
 > 状态：P0 首批与单文件离线审计包 TVAB v1 已落地（L2 对账、认领快照、判据回执、信任表 v0、Ed25519 提交/认领/witness sidecar、双签轮换、仓内签名 Merkle 检查点 v0、单事件 inclusion proof、检查点间 consistency proof v0、仓内文件锚 v0、调用方钉住外部公钥的独立外锚 v1、`audit bundle` / `audit verify-bundle`）；跨机同一视图 v0（单客户端 pin + 服务端视图/一致性证明 + 可选 Ed25519 签名）已落地，跨客户端分裂视图仍未；Git 桥 v2（完整多父图 + 作者/时间元数据 + bridge 事件）已落地，显式 `publish/pull --force` 已单独落 `force` 事件，Git 标签名可往返（附注标签降级为轻量标签并记账），Git 签名信任映射/submodule 仍未
-> 日期：2026-11-27
+> 日期：2026-11-28
 > 目标：审计面做到“第三方可以离线复算”，不是“再加一条日志”
 > 一句话：现在有**链**、有**对账**、有**提交/认领/witness 签名及双签轮换**、有**仓内签名 Merkle 检查点**、有**单事件 inclusion proof**、有**检查点间一致性证明**、有**仓内文件锚、独立外锚与单文件离线审计包**，还有**单客户端跨机视图 pin、服务端签名视图与回滚/同高换根检测**；仓内文件锚仍只是受信副本，独立外锚只认调用方从仓外钉住的公钥，真实独立性取决于外部密钥保管与部署；跨客户端分裂视图仍无共享锚；有**认领**、有**授权快照**；有 `verify`、也有 `audit`。下一步是补跨客户端透明视图，并把 Git 桥从多父图/标签名推进到签名信任与 submodule 映射。
 
@@ -109,11 +109,11 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 
 | 编号 | 缺口 | 现状事实 | 会导致什么 | 优先级 |
 |---|---|---|---|---|
-| G1 | 日志不能解释状态 | `Repo::verify` 仍只统计事件数、跑对象 fsck、体检 HEAD 可达的全父图；但 `audit status` 已比对 journal 与 refs/HEAD/claims/policy/state_digest | `verify` 单独跑仍可能绿（不比对 refs、claims 与日志缺口），用 `audit` 才会抓删日志/手改 ref/漏记 commit | P0，**部分关闭** |
+| G1 | 日志不能解释状态 | `Repo::verify` 仍只统计事件数、跑对象 fsck、体检 HEAD 可达的全父图；但顶层 `trit-vcs verify` 已改为 `open_for_audit` + 复用 `audit::status` 对账，`journal_missing`/`head_mismatch`/`journal_broken` 等直接判 `verify_audit`；`audit status` 本身也比对 journal 与 refs/HEAD/claims/policy/state_digest | 直接调用库面 `Repo::verify` 的代码仍可能只看到对象库绿；CLI 审计员不再需要记得另跑 `audit` | P0，**CLI 已关闭，库面仍需调用方显式对账** |
 | G2 | 链可截断、可换整条 | 仓内签名 Merkle 检查点、单事件 inclusion proof、检查点间 consistency proof、仓内文件锚与独立外锚 v1 已落；独立外锚只认调用方钉住的仓外公钥，但公钥渠道/私钥保管仍须独立 | 保留较新锚时可发现其后的删尾；旧到新换链会被一致性证明拒绝；仓库、锚副本和信任表被同一管理域整体改写仍可能验不出 | P0，**机制关闭，部署信任根未关闭** |
 | G3 | 身份不可验证 | `session` 是自由字符串；提交已有可选 Ed25519 `signature` sidecar；`claims add/release --sign-key` 已有 `claim_signature` sidecar 并核完整 `ClaimSpec`/操作/状态/授权；`key rotate` 要求旧/新钥双签；`checkpoint` 由 auditor/release 钥签名；witness 已有可选 `attestation` sidecar 并核提交/树/父树/信任/签名 | 提交、已签认领变更、检查点与已签 witness 是谁做的可验证；轮换有双钥同意；未签操作和证据仍可能被自称的主体替换 | P0，**部分关闭** |
 | G4 | 操作覆盖不全 | 状态变更已走 `op_begin/op_result`（`stage`/`commit`/`ref`/`adopt`/`claim_*`/`policy`/`key`/`sign_commit`/`merge`/`checkpoint`），提交门拒绝落 `gate`，策略变更落 `policy`，合并落 `merge`，成功/失败鉴权落 `trit-auth-v2`（服务端 actor + 独立 request id + TCP 对端 IP `source`），成功 publish/pull 落 `trit-sync-v1`（op id + HTTP request id + side/stage），publish 业务/请求形状拒绝、服务端 pull 拒绝、本地 pull 业务拒绝落 `deny`（HTTP 入口带 `source`，并核前置放行鉴权的 request id/source/actor），信任表 add/revoke/rotate 落 `key`，提交与认领变更签名分别落 `signature`/`claim_signature`，`git-import`/`git-export` 落 `git_bridge`（成功/失败、merge 数、标签数、map digest），`publish` 的非快进改写与 `pull --force` 成功应用后落 `force`（绑定 op_id/previous/reason，并核对应同步事件），`checkout --force` 放行并覆盖未提交改动落 `checkout`（绑定目标提交/前缀/脏集合摘要/前后状态） | 仓库状态变更与 Git 桥动作已可按操作/请求关联；`checkout`/`sparse` 只改工作树、不在 `state_digest`，普通检出仍不作状态路径；actor 仍是部署配置；两本 journal 没有互链或共同锚，来源地址为 TCP 对端 IP（旧事件可缺，反代后是代理地址；带 `source` 的 `deny` 已和前置放行鉴权对账），跨仓仍无原子事务 | P0，**部分关闭** |
-| G5 | 并发与崩溃会撕裂日志 | `Journal::append` 已有 `journal.lock` 单写者链；认领/策略/信任/提交签名/检查点、普通仓库状态写、中央仓 publish/pull、merge 与独立审计事件共用 `claims.lock` 状态锁；提交预检和写入在同一临界区；关键状态变更前有 `op_begin.state_before`、后有 `op_result.state_after` | 锁住并发写，检查点快照与追加不会插入其他事件；写前协议让“操作开始”有账，但仍不能阻止进程死在中间，只能让审计抓到 | P0，**部分关闭** |
+| G5 | 并发与崩溃会撕裂日志 | `Journal::append` 已有 `journal.lock` 单写者链；认领/策略/信任/提交签名/检查点、普通仓库状态写、中央仓 publish/pull、merge 与独立审计事件共用 `claims.lock` 状态锁；提交预检和写入在同一临界区；关键状态变更前有 `op_begin.state_before`、后有 `op_result.state_after` | 锁住并发写，检查点快照与追加不会插入其他事件；写前协议让“操作开始”有账，顶层 `trit-vcs verify` 也把 `open_ops>0` 直接判红，但仍不能阻止进程死在中间，也不会自动回滚 | P0，**部分关闭** |
 | G6 | 授权不可事后复核 | 已落 `ClaimSet` 不可变快照，claim 事件补 `path_list` 和完整 `ClaimSpec`，可选 `claim_signature` 证明中央账本变更；账本 TTL 过后原条目仍会消失 | 快照能证明当时授权；已签账本变更有签名历史；未签历史与导出的 `ClaimSpec` 快照仍不能抗替换 | P0，**部分关闭** |
 | G7 | 证据不可验证 | witness 已有可选签名 `attestation` sidecar，绑定 commit/树/实际父树/原始 witness/签者/会话；`accept` 结果已落 `AcceptReceipt` 对象/事件；handoff 仍不携带 witness/accept/attestation | 已签 witness 可复核“谁说了通过并绑哪棵树”；未签 witness 与回执仍可被替换，离线 handoff 证据链未闭合 | P1，**部分关闭** |
 | G8 | 跨机没有同一视图 | 客户端 journal 与中央仓 journal 是两本账；成功 publish/pull 已用 op id/request id 关联，但两本账不互链、不共享锚；多 token 已能把不同 bearer 映射到不同 actor，但每个 actor 仍是部署配置且权限相同；ref 是普通文件。v0 增加了 `GET /v1/view` 与客户端 pin：每次成功同步把服务端高度/头/根写进 `trit-sync-v1`，下一次先要旧→新 consistency proof；可选 `--view-key` 对视图签 Ed25519，客户端钉住签名者 | 关联号能对账一次操作；pin 能发现本客户端见过的服务端回滚、同高换根与已落账前缀被换，并在发 publish/收对象前中止；签名视图还能抓换钥/去签名。两个客户端没见过对方的 pin，跨客户端分裂视图仍发现不了；整条换链仍要靠签名检查点/外锚 | P1，**部分关闭（单客户端）** |
@@ -124,9 +124,9 @@ Git / GitHub / in-toto / Sigstore 分别有其中一两项，但它们不在同�
 
 ### 2.3 最刺眼的三个具体事实（以及现在的边界）
 
-1. **删掉 `.tritvcs/journal.jsonl`，`trit-vcs verify` 仍可能报绿。**
+1. **删掉 `.tritvcs/journal.jsonl`，库面 `Repo::verify` 仍可能报绿。**
    它验的是对象库和 HEAD 可达提交，不是“日志是否完整记录了这些状态变化”。
-   **现在**：`trit-vcs audit status` 会报 `journal_missing` / `head_unlogged` 并退出非零；但审计员必须知道要跑 `audit`，不能只看 `verify` 的一行绿。
+   **现在**：顶层 `trit-vcs verify` 已复用 `audit status` 的 `journal_missing` / `head_mismatch` / `journal_broken` 判据并退出非零；直接调库的代码仍需自己再跑 `audit`，CLI 审计员不再需要记得多跑一条命令。
 
 2. **`set_ref` 先 `fs::write` 再 `journal.append`。**
    两次系统调用之间崩溃，ref 已经动了，账上却没有这一笔。审计日志不是写前日志（WAL）。
