@@ -106,6 +106,7 @@ fn main() {
             policy_threshold: 1,
             policy_roles: vec!["auditor".to_string()],
             policy_principal_quorum: false,
+            policy_role_thresholds: Default::default(),
         })
         .unwrap(),
     )

@@ -406,6 +406,144 @@ fn mixed_role_policy_cli_requires_auditor_and_release() {
 }
 
 #[test]
+fn role_threshold_cli_requires_minimum_signatures_per_role() {
+    let root = temp("role-threshold");
+    let init = run(&root, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    for (key_file, principal, role) in [
+        ("auditor-one.key", "qoder:auditor-one", "auditor"),
+        ("auditor-two.key", "qoder:auditor-two", "auditor"),
+        ("release-one.key", "qoder:release-one", "release"),
+        ("release-two.key", "qoder:release-two", "release"),
+    ] {
+        let key = run(&root, &["key", "init", "--out", key_file, "--json"]);
+        assert!(key.status.success(), "{}", stderr(&key));
+        let add = run(
+            &root,
+            &[
+                "key",
+                "add",
+                "--key-file",
+                key_file,
+                "--principal",
+                principal,
+                "--role",
+                role,
+                "--owner",
+                "qoder:policy",
+            ],
+        );
+        assert!(add.status.success(), "{}", stderr(&add));
+    }
+
+    let strict = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "3",
+            "--policy-role",
+            "auditor",
+            "--policy-role",
+            "release",
+            "--policy-role-threshold",
+            "auditor=2",
+            "--sign-key",
+            "auditor-one.key",
+            "--sign-key",
+            "auditor-two.key",
+            "--sign-key",
+            "release-one.key",
+            "--json",
+        ],
+    );
+    assert!(strict.status.success(), "{}", stderr(&strict));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&strict)).unwrap();
+    assert_eq!(value["policy_role_thresholds"]["auditor"], 2);
+    assert_eq!(value["signer_count"], 3);
+
+    let wrong_role = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "3",
+            "--policy-role",
+            "auditor",
+            "--policy-role",
+            "release",
+            "--policy-role-threshold",
+            "auditor=2",
+            "--sign-key",
+            "auditor-one.key",
+            "--sign-key",
+            "release-one.key",
+            "--sign-key",
+            "release-two.key",
+            "--json",
+        ],
+    );
+    assert!(!wrong_role.status.success(), "角色最低数不够必须拒绝");
+    assert!(
+        stderr(&wrong_role).contains("角色 auditor 至少 2 个签名"),
+        "{}",
+        stderr(&wrong_role)
+    );
+
+    let bad_role = run(
+        &root,
+        &[
+            "policy",
+            "set",
+            "--owner",
+            "qoder:policy",
+            "--require-signed-policy",
+            "--policy-threshold",
+            "2",
+            "--policy-role",
+            "auditor",
+            "--policy-role-threshold",
+            "release=2",
+        ],
+    );
+    assert!(
+        !bad_role.status.success(),
+        "未声明角色阈值必须在 CLI 层拒绝"
+    );
+    assert!(
+        stderr(&bad_role).contains("不在 policy_roles"),
+        "{}",
+        stderr(&bad_role)
+    );
+
+    let show = run(&root, &["policy", "--json"]);
+    assert!(show.status.success(), "{}", stderr(&show));
+    let policy: serde_json::Value = serde_json::from_str(&stdout(&show)).unwrap();
+    assert_eq!(policy["policy_role_thresholds"]["auditor"], 2);
+
+    let log = run(&root, &["audit", "log", "--json"]);
+    assert!(log.status.success(), "{}", stderr(&log));
+    let events: serde_json::Value = serde_json::from_str(&stdout(&log)).unwrap();
+    let event = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["kind"] == "policy")
+        .unwrap();
+    assert_eq!(event["payload"]["schema"], "trit-policy-v5");
+    assert_eq!(event["payload"]["policy_role_thresholds"]["auditor"], 2);
+}
+
+#[test]
 fn principal_quorum_cli_requires_distinct_principals() {
     let root = temp("principal-quorum");
     let init = run(&root, &["init"]);

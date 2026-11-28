@@ -1,7 +1,7 @@
-//! v2/v3/v4 策略事件的签名项验证：阈值按不同有效 key 或主体计数，
-//! 角色覆盖与主体分离单独检查。
+//! v2/v3/v4/v5 策略事件的签名项验证：阈值按不同有效 key 或主体计数，
+//! 角色覆盖、角色最低签名数与主体分离单独检查。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -9,15 +9,18 @@ use crate::audit::AuditIssue;
 use crate::journal::Event;
 use crate::policy::{
     Policy, policy_statement_v2_bytes, policy_statement_v3_bytes, policy_statement_v4_bytes,
+    policy_statement_v5_bytes,
 };
 
 use super::{SignedFields, verify_one_signer};
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check_v2_signatures(
     repo: &crate::repo::Repo,
     event: &Event,
     required_signatures: usize,
     required_roles: &[String],
+    required_role_mins: &BTreeMap<String, usize>,
     require_principals: bool,
     fields: Option<&SignedFields<'_>>,
     issues: &mut Vec<AuditIssue>,
@@ -27,6 +30,7 @@ pub(super) fn check_v2_signatures(
         event,
         required_signatures,
         required_roles,
+        required_role_mins,
         require_principals,
         fields,
         2,
@@ -34,11 +38,13 @@ pub(super) fn check_v2_signatures(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check_v3_signatures(
     repo: &crate::repo::Repo,
     event: &Event,
     required_signatures: usize,
     required_roles: &[String],
+    required_role_mins: &BTreeMap<String, usize>,
     require_principals: bool,
     fields: Option<&SignedFields<'_>>,
     issues: &mut Vec<AuditIssue>,
@@ -48,6 +54,7 @@ pub(super) fn check_v3_signatures(
         event,
         required_signatures,
         required_roles,
+        required_role_mins,
         require_principals,
         fields,
         3,
@@ -55,11 +62,13 @@ pub(super) fn check_v3_signatures(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check_v4_signatures(
     repo: &crate::repo::Repo,
     event: &Event,
     required_signatures: usize,
     required_roles: &[String],
+    required_role_mins: &BTreeMap<String, usize>,
     require_principals: bool,
     fields: Option<&SignedFields<'_>>,
     issues: &mut Vec<AuditIssue>,
@@ -69,9 +78,34 @@ pub(super) fn check_v4_signatures(
         event,
         required_signatures,
         required_roles,
+        required_role_mins,
         require_principals,
         fields,
         4,
+        issues,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn check_v5_signatures(
+    repo: &crate::repo::Repo,
+    event: &Event,
+    required_signatures: usize,
+    required_roles: &[String],
+    required_role_mins: &BTreeMap<String, usize>,
+    require_principals: bool,
+    fields: Option<&SignedFields<'_>>,
+    issues: &mut Vec<AuditIssue>,
+) {
+    check_versioned_signatures(
+        repo,
+        event,
+        required_signatures,
+        required_roles,
+        required_role_mins,
+        require_principals,
+        fields,
+        5,
         issues,
     );
 }
@@ -82,6 +116,7 @@ fn check_versioned_signatures(
     event: &Event,
     required_signatures: usize,
     required_roles: &[String],
+    required_role_mins: &BTreeMap<String, usize>,
     require_principals: bool,
     fields: Option<&SignedFields<'_>>,
     version: u8,
@@ -155,11 +190,13 @@ fn check_versioned_signatures(
         require_signed_policy: fields.signed_policy,
         policy_threshold: fields.policy_threshold,
         policy_roles: fields.policy_roles.clone(),
+        policy_role_thresholds: fields.policy_role_thresholds.clone(),
         policy_principal_quorum: fields.policy_principal_quorum,
     };
     let mut seen = HashSet::new();
     let mut valid = 0usize;
     let mut covered = HashSet::new();
+    let mut role_counts: HashMap<String, usize> = HashMap::new();
     let mut principal_roles: HashMap<String, String> = HashMap::new();
     for entry in entries {
         let Some(value) = entry.as_object() else {
@@ -199,6 +236,14 @@ fn check_versioned_signatures(
             continue;
         }
         let statement = match version {
+            5 => policy_statement_v5_bytes(
+                fields.session,
+                &policy,
+                fields.previous_text,
+                fields.policy_hash_text,
+                signed_at_ms,
+                key_id,
+            ),
             4 => policy_statement_v4_bytes(
                 fields.session,
                 &policy,
@@ -258,6 +303,7 @@ fn check_versioned_signatures(
                 continue;
             }
             principal_roles.insert(principal, role.clone());
+            *role_counts.entry(role.clone()).or_default() += 1;
             covered.insert(role);
         }
     }
@@ -281,6 +327,18 @@ fn check_versioned_signatures(
         ));
     }
     push_missing_roles(event, required_roles, &covered, issues);
+    for (role, minimum) in required_role_mins {
+        let count = role_counts.get(role).copied().unwrap_or(0);
+        if count < *minimum {
+            issues.push(AuditIssue::new(
+                "policy_role_threshold_insufficient",
+                format!(
+                    "第 {} 条 policy 事件在角色 {role} 上只有 {count} 个有效签名，要求至少 {minimum} 个",
+                    event.seq
+                ),
+            ));
+        }
+    }
 }
 
 pub(super) fn push_missing_roles(

@@ -6,6 +6,13 @@
 ## [Unreleased]
 
 ### Added
+- 策略每角色最低签名数：`Policy` 新增 `policy_role_thresholds`（默认空，只记大于 1 的角色），
+  `policy set --policy-role-threshold ROLE=N` 可重复；键必须在 `policy_roles` 中，未写的角色仍要求 1 个签名，
+  `policy_threshold` 不得小于各角色最低数之和（最多 16）。非空角色阈值写 `trit-policy-v5`，v5 规范载荷在
+  `policy_roles` 后固定加入 `policy_role_thresholds`，再放 `policy_principal_quorum`。调低阈值、降低角色最低数、
+  改角色或关闭严格策略时仍先满足旧/新阈值与旧/新角色最低数；总签名数取阈值较大者、角色最低数合计与角色数的最大值，
+  每个角色还要单独达到其最低数。审计新增 `policy_role_threshold_insufficient`；v5 事件缺/非法
+  `policy_role_thresholds` 报 `policy_bad`，字段进入 v5 签名载荷，篡改会使签名失效；v1/v2/v3/v4 事件继续按旧语义重放。
 - 策略主体计票：`Policy` 新增 `policy_principal_quorum`（默认 false），`policy set --policy-principal-quorum`
   打开后阈值按不同 `principal` 而不是不同 key 计数，同角色同主体的多把 key 只算一个主体；自定义角色集合写
   `trit-policy-v3`，打开主体计票写 `trit-policy-v4`，v4 规范载荷在 `policy_roles` 后固定加入

@@ -491,3 +491,132 @@ fn principal_quorum_requires_distinct_principals_not_just_distinct_keys() {
     assert_eq!(event.payload["signatures"].as_array().unwrap().len(), 2);
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn policy_role_thresholds_change_the_v5_statement_bytes() {
+    let two = Policy {
+        require_signed_policy: true,
+        policy_threshold: 3,
+        policy_roles: vec!["auditor".into(), "release".into()],
+        policy_role_thresholds: BTreeMap::from([("auditor".to_string(), 2)]),
+        ..Default::default()
+    };
+    let three = Policy {
+        require_signed_policy: true,
+        policy_threshold: 3,
+        policy_roles: vec!["auditor".into(), "release".into()],
+        policy_role_thresholds: BTreeMap::from([("auditor".to_string(), 3)]),
+        ..Default::default()
+    };
+    let one = policy_statement_v5_bytes("qoder:policy", &two, None, "hash", 1, "key").unwrap();
+    let other = policy_statement_v5_bytes("qoder:policy", &three, None, "hash", 1, "key").unwrap();
+    assert_ne!(one, other, "v5 签名载荷必须覆盖 policy_role_thresholds");
+}
+
+#[test]
+fn role_thresholds_require_distinct_role_signatures() {
+    let root = temp("role-thresholds");
+    let mut repo = Repo::init(&root).unwrap();
+    let (_, auditor_one) = add_policy_key(&mut repo, &root, "auditor-one", "auditor", "qoder:a1");
+    let (_, auditor_two) = add_policy_key(&mut repo, &root, "auditor-two", "auditor", "qoder:a2");
+    let (_, release_one) = add_policy_key(&mut repo, &root, "release-one", "release", "qoder:r1");
+    let (_, release_two) = add_policy_key(&mut repo, &root, "release-two", "release", "qoder:r2");
+
+    let policy = Policy {
+        require_signed_policy: true,
+        policy_threshold: 3,
+        policy_roles: vec!["auditor".into(), "release".into()],
+        policy_role_thresholds: BTreeMap::from([("auditor".to_string(), 2)]),
+        ..Default::default()
+    };
+    repo.set_policy_with_signers(
+        &policy,
+        "qoder:policy",
+        2_000,
+        &[&auditor_one, &auditor_two, &release_one],
+    )
+    .unwrap();
+    let report = crate::audit::status(&repo).unwrap();
+    assert!(report.ok, "{:?}", report.issues);
+    let event = repo
+        .journal()
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.kind == "policy")
+        .unwrap();
+    assert_eq!(event.payload["schema"], POLICY_SCHEMA_V5);
+    assert_eq!(event.payload["policy_role_thresholds"]["auditor"], 2);
+    assert!(
+        event.payload["policy_role_thresholds"]
+            .get("release")
+            .is_none()
+    );
+
+    let err = repo
+        .set_policy_with_signers(
+            &policy,
+            "qoder:policy",
+            3_000,
+            &[&auditor_one, &release_one, &release_two],
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("角色 auditor 至少 2 个签名"),
+        "总签名数够但角色最低数不够必须拒绝：{err}"
+    );
+
+    let downgraded = Policy {
+        require_signed_policy: true,
+        policy_threshold: 2,
+        policy_roles: vec!["auditor".into(), "release".into()],
+        ..Default::default()
+    };
+    let err = repo
+        .set_policy_with_signers(
+            &downgraded,
+            "qoder:policy",
+            4_000,
+            &[&auditor_one, &release_one, &release_two],
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("角色 auditor 至少 2 个签名"),
+        "降低角色最低数也必须先满足旧最低数：{err}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn role_thresholds_are_validated_and_bound_to_the_policy() {
+    let (root, mut repo, _key, _key_path) = signed_setup("role-thresholds-invalid");
+    let total_too_low = Policy {
+        require_signed_policy: true,
+        policy_threshold: 2,
+        policy_roles: vec!["auditor".into(), "release".into()],
+        policy_role_thresholds: BTreeMap::from([("auditor".to_string(), 2)]),
+        ..Default::default()
+    };
+    let err = repo
+        .set_policy(&total_too_low, "qoder:policy", 2_000)
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("小于每角色最低签名数合计"),
+        "{err}"
+    );
+    let unknown_role = Policy {
+        require_signed_policy: true,
+        policy_threshold: 2,
+        policy_roles: vec!["auditor".into()],
+        policy_role_thresholds: BTreeMap::from([("release".to_string(), 2)]),
+        ..Default::default()
+    };
+    let err = repo
+        .set_policy(&unknown_role, "qoder:policy", 2_500)
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("未在 policy_roles 中的角色"),
+        "{err}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}

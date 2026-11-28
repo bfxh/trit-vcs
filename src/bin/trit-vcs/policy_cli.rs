@@ -3,18 +3,19 @@
 //! `policy set` 的语义是“本次参数就是完整策略”：没带的开关一律归 false，
 //! 不沿用旧 true。这样一次命令就能复现“谁在什么时候把哪项打开/关掉”。
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::json;
-use trit_vcs::repo::{Policy, Repo};
+use trit_vcs::repo::{MAX_POLICY_THRESHOLD, Policy, Repo};
 
 use super::verdict::fail_err;
 use super::{flag, flags, has, now_secs, positionals, repo_path};
 
 const USAGE: &str = "policy 用法：\n  \
      trit-vcs policy [--json] [--repo PATH]\n  \
-     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--require-signed-policy] [--policy-threshold N] [--policy-role auditor|release]... [--policy-principal-quorum] [--sign-key FILE]... [--json] [--repo PATH]";
+     trit-vcs policy set --owner <宿主:会话id> [--require-witness] [--require-intent] [--require-signed-claims] [--require-signed-witness] [--require-signed-policy] [--policy-threshold N] [--policy-role auditor|release]... [--policy-role-threshold ROLE=N]... [--policy-principal-quorum] [--sign-key FILE]... [--json] [--repo PATH]";
 
 fn show(repo: &Repo, args: &[String]) -> ExitCode {
     let policy = match repo.policy() {
@@ -32,6 +33,7 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
                 "require_signed_policy": policy.require_signed_policy,
                 "policy_threshold": policy.policy_threshold,
                 "policy_roles": policy.policy_roles,
+                "policy_role_thresholds": policy.policy_role_thresholds,
                 "policy_principal_quorum": policy.policy_principal_quorum,
             }))
             .unwrap_or_else(|_| "{}".to_string())
@@ -44,9 +46,53 @@ fn show(repo: &Repo, args: &[String]) -> ExitCode {
         println!("require_signed_policy={}", policy.require_signed_policy);
         println!("policy_threshold={}", policy.policy_threshold);
         println!("policy_roles={}", policy.policy_roles.join(","));
+        println!(
+            "policy_role_thresholds={}",
+            policy
+                .policy_role_thresholds
+                .iter()
+                .map(|(role, threshold)| format!("{role}={threshold}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         println!("policy_principal_quorum={}", policy.policy_principal_quorum);
     }
     ExitCode::SUCCESS
+}
+
+fn parse_role_thresholds(
+    args: &[String],
+    roles: &[String],
+) -> Result<BTreeMap<String, u8>, String> {
+    let mut thresholds = BTreeMap::new();
+    for spec in flags(args, "--policy-role-threshold") {
+        let Some((role, value)) = spec.split_once('=') else {
+            return Err(format!(
+                "--policy-role-threshold 需要 ROLE=N 形式；收到 {spec}"
+            ));
+        };
+        let role = role.trim();
+        if !roles.iter().any(|known| known == role) {
+            return Err(format!(
+                "--policy-role-threshold 的角色 {role} 不在 policy_roles（{}）中",
+                roles.join("/")
+            ));
+        }
+        let threshold = value.trim().parse::<u8>().map_err(|_| {
+            format!(
+                "--policy-role-threshold 的 N 需要 1..={MAX_POLICY_THRESHOLD} 的整数；收到 {value}"
+            )
+        })?;
+        if !(1..=MAX_POLICY_THRESHOLD).contains(&threshold) {
+            return Err(format!(
+                "--policy-role-threshold 的 N 必须在 1..={MAX_POLICY_THRESHOLD}；收到 {threshold}"
+            ));
+        }
+        if threshold > 1 && thresholds.insert(role.to_string(), threshold).is_some() {
+            return Err(format!("--policy-role-threshold 重复指定角色 {role}"));
+        }
+    }
+    Ok(thresholds)
 }
 
 fn set(args: &[String]) -> ExitCode {
@@ -87,6 +133,13 @@ fn set(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let role_thresholds = match parse_role_thresholds(args, &roles) {
+        Ok(thresholds) => thresholds,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(2);
+        }
+    };
     let policy = Policy {
         require_witness: has(args, "--require-witness"),
         require_intent: has(args, "--require-intent"),
@@ -96,6 +149,7 @@ fn set(args: &[String]) -> ExitCode {
         policy_threshold: threshold,
         policy_roles: roles.clone(),
         policy_principal_quorum: has(args, "--policy-principal-quorum"),
+        policy_role_thresholds: role_thresholds,
     };
     let signer_paths = flags(args, "--sign-key")
         .into_iter()
@@ -119,6 +173,7 @@ fn set(args: &[String]) -> ExitCode {
                         "require_signed_policy": policy.require_signed_policy,
                         "policy_threshold": policy.policy_threshold,
                         "policy_roles": policy.policy_roles,
+                        "policy_role_thresholds": policy.policy_role_thresholds,
                         "policy_principal_quorum": policy.policy_principal_quorum,
                         "signed": !signers.is_empty(),
                         "signer_count": signers.len(),
@@ -128,7 +183,7 @@ fn set(args: &[String]) -> ExitCode {
                 );
             } else {
                 println!(
-                    "策略已更新：require_witness={} require_intent={} require_signed_claims={} require_signed_witness={} require_signed_policy={} policy_threshold={} policy_roles={} policy_principal_quorum={}（policy {}{}）",
+                    "策略已更新：require_witness={} require_intent={} require_signed_claims={} require_signed_witness={} require_signed_policy={} policy_threshold={} policy_roles={} policy_role_thresholds={} policy_principal_quorum={}（policy {}{}）",
                     policy.require_witness,
                     policy.require_intent,
                     policy.require_signed_claims,
@@ -136,6 +191,12 @@ fn set(args: &[String]) -> ExitCode {
                     policy.require_signed_policy,
                     policy.policy_threshold,
                     policy.policy_roles.join(","),
+                    policy
+                        .policy_role_thresholds
+                        .iter()
+                        .map(|(role, threshold)| format!("{role}={threshold}"))
+                        .collect::<Vec<_>>()
+                        .join(","),
                     policy.policy_principal_quorum,
                     hash.short(),
                     if signers.is_empty() {
@@ -163,6 +224,7 @@ pub(crate) fn policy_cmd(args: &[String]) -> ExitCode {
             "--sign-key",
             "--policy-threshold",
             "--policy-role",
+            "--policy-role-threshold",
         ],
     );
     match words.first().map(String::as_str) {
